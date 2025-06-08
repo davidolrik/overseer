@@ -11,7 +11,7 @@ import (
 func NewStartCommand() *cobra.Command {
 	startCmd := &cobra.Command{
 		Use:     "start",
-		Aliases: []string{},
+		Aliases: []string{"connect"},
 		Short:   "Start tunnel",
 		Long:    `Start tunnel`,
 		Args:    cobra.ExactArgs(1),

@@ -13,7 +13,8 @@ import (
 
 func NewStatusCommand() *cobra.Command {
 	statusCmd := &cobra.Command{
-		Use:   "status",
+		Use:     "status",
+		Aliases: []string{"list", "ls"},
 		Short: "Shows a list of all currently active tunnels",
 		Args:  cobra.NoArgs,
 		Run: func(cmd *cobra.Command, args []string) {

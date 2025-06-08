@@ -35,7 +35,7 @@ func activeHostCompletionFunc(cmd *cobra.Command, args []string, toComplete stri
 func NewStopCommand() *cobra.Command {
 	stopCmd := &cobra.Command{
 		Use:               "stop <alias>",
-		Aliases:           []string{},
+		Aliases:           []string{"disconnect"},
 		Short:             "Stop tunnel",
 		Long:              `Stop tunnel`,
 		Args:              cobra.RangeArgs(0, 1),
