@@ -7,7 +7,7 @@ import (
 
 func NewInternalCommand() *cobra.Command {
 	internalCmd := &cobra.Command{
-		Use:     "internal-daemon-start",
+		Use:     "internal-server",
 		Aliases: []string{},
 		Hidden:  true,
 		Run: func(cmd *cobra.Command, args []string) {

@@ -45,7 +45,7 @@ func EnsureDaemonIsRunning() {
 	}
 
 	slog.Info("Daemon not running. Starting it now...")
-	cmd := exec.Command(os.Args[0], "internal-daemon-start")
+	cmd := exec.Command(os.Args[0], "internal-server")
 	if err := cmd.Start(); err != nil {
 		slog.Error(fmt.Sprintf("Fatal: Could not fork daemon process: %v", err))
 		os.Exit(1)
