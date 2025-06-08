@@ -1,9 +1,9 @@
 package cmd
 
 import (
-	"fmt"
-	"log"
-	"strings"
+	"encoding/json"
+	"log/slog"
+	"os"
 
 	"github.com/spf13/cobra"
 	"olrik.dev/davidolrik/overseer/internal/daemon"
@@ -20,20 +20,13 @@ func activeHostCompletionFunc(cmd *cobra.Command, args []string, toComplete stri
 		return nil, cobra.ShellCompDirectiveNoFileComp
 	}
 
-	var activeHosts []string
-	lines := strings.Split(response, "\n")
+	jsonBytes, _ := json.Marshal(response.Data)
+	statuses := []daemon.DaemonStatus{}
+	json.Unmarshal(jsonBytes, &statuses)
 
-	for _, line := range lines {
-		trimmedLine := strings.TrimSpace(line)
-		// Active host lines in our status output start with a hyphen.
-		// Example line: "  - my-server (PID: 12345)"
-		if strings.HasPrefix(trimmedLine, "-") {
-			fields := strings.Fields(trimmedLine)
-			if len(fields) >= 2 {
-				// The alias is the second "word" on the line.
-				activeHosts = append(activeHosts, fields[1])
-			}
-		}
+	var activeHosts []string
+	for _, status := range statuses {
+		activeHosts = append(activeHosts, status.Hostname)
 	}
 
 	return activeHosts, cobra.ShellCompDirectiveNoFileComp
@@ -53,16 +46,19 @@ func NewStopCommand() *cobra.Command {
 				response, err := daemon.SendCommand("STOP " + alias)
 				if err != nil {
 					// This typically means the daemon wasn't running in the first place.
-					log.Fatal("Could not connect to daemon. Nothing to stop.")
+					slog.Error("Could not connect to daemon. Nothing to stop.")
+					os.Exit(1)
 				}
-				fmt.Print(response)
+				response.LogMessages()
 			} else {
 				response, err := daemon.SendCommand("STOPALL")
 				if err != nil {
 					// This typically means the daemon wasn't running in the first place.
-					log.Fatal("Could not connect to daemon. Nothing to stop.")
+					slog.Error("Could not connect to daemon. Nothing to stop.")
+					os.Exit(1)
+
 				}
-				fmt.Print(response)
+				response.LogMessages()
 			}
 		},
 	}

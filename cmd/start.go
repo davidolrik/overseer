@@ -1,8 +1,8 @@
 package cmd
 
 import (
-	"fmt"
-	"log"
+	"log/slog"
+	"os"
 
 	"github.com/spf13/cobra"
 	"olrik.dev/davidolrik/overseer/internal/daemon"
@@ -21,9 +21,10 @@ func NewStartCommand() *cobra.Command {
 			daemon.EnsureDaemonIsRunning()
 			response, err := daemon.SendCommand("START " + alias)
 			if err != nil {
-				log.Fatal(err)
+				slog.Error(err.Error())
+				os.Exit(1)
 			}
-			fmt.Print(response)
+			response.LogMessages()
 		},
 	}
 

@@ -1,9 +1,10 @@
 package daemon
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net"
 	"os"
 	"os/exec"
@@ -13,21 +14,28 @@ import (
 )
 
 // SendCommand connects to the daemon, sends a command, and returns the response.
-func SendCommand(command string) (string, error) {
+func SendCommand(command string) (Response, error) {
+	response := Response{}
+
 	conn, err := net.Dial("unix", core.GetSocketPath())
 	if err != nil {
-		return "", err
+		return response, err
 	}
 	defer conn.Close()
 
 	if _, err := conn.Write([]byte(command + "\n")); err != nil {
-		return "", fmt.Errorf("failed to send command to daemon: %w", err)
+		return response, fmt.Errorf("failed to send command to daemon: %w", err)
 	}
-	response, err := io.ReadAll(conn)
+	bytes, err := io.ReadAll(conn)
 	if err != nil {
-		return "", fmt.Errorf("failed to read response from daemon: %w", err)
+		return response, fmt.Errorf("failed to read response from daemon: %w", err)
 	}
-	return string(response), nil
+
+	if err := json.Unmarshal(bytes, &response); err != nil {
+		return response, fmt.Errorf("failed to parse response from daemon: %w", err)
+	}
+
+	return response, nil
 }
 
 // EnsureDaemonIsRunning handles the auto-start logic.
@@ -36,20 +44,22 @@ func EnsureDaemonIsRunning() {
 		return // Daemon is running
 	}
 
-	log.Println("Daemon not running. Starting it now...")
+	slog.Info("Daemon not running. Starting it now...")
 	cmd := exec.Command(os.Args[0], "internal-daemon-start")
 	if err := cmd.Start(); err != nil {
-		log.Fatalf("Fatal: Could not fork daemon process: %v", err)
+		slog.Error(fmt.Sprintf("Fatal: Could not fork daemon process: %v", err))
+		os.Exit(1)
 	}
-	log.Printf("Daemon process launched with PID: %d", cmd.Process.Pid)
+	slog.Info(fmt.Sprintf("Daemon process launched with PID: %d", cmd.Process.Pid))
 
 	// Wait for the daemon to create the socket
 	for i := 0; i < 20; i++ {
 		time.Sleep(100 * time.Millisecond)
 		if _, err := os.Stat(core.GetSocketPath()); err == nil {
-			log.Println("Daemon is ready.")
+			slog.Info("Daemon is ready.")
 			return
 		}
 	}
-	log.Fatal("Fatal: Daemon process was launched but socket was not created in time.")
+	slog.Error("Fatal: Daemon process was launched but socket was not created in time.")
+	os.Exit(1)
 }

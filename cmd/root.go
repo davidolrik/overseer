@@ -2,9 +2,12 @@ package cmd
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
+	"time"
 
 	"github.com/goforj/godump"
+	"github.com/lmittmann/tint"
 	"github.com/spf13/cobra"
 	"olrik.dev/davidolrik/overseer/internal/core"
 )
@@ -25,7 +28,20 @@ func NewRootCommand() *cobra.Command {
 			for _, message := range messages {
 				fmt.Println(message)
 			}
-			return err
+			if err != nil {
+				return err
+			}
+
+			// Set global logger with custom options
+			w := os.Stderr
+			slog.SetDefault(slog.New(
+				tint.NewHandler(w, &tint.Options{
+					Level:      slog.LevelDebug,
+					TimeFormat: time.DateTime,
+				}),
+			))
+
+			return nil
 		},
 	}
 	rootCmd.PersistentFlags().StringVar(
@@ -47,10 +63,7 @@ func NewRootCommand() *cobra.Command {
 				panic(err)
 			}
 
-			// 2. Use our new, safe extractor to get only the host aliases.
-			// This function CANNOT fail on `Match` directives or cause a panic.
 			hosts := extractHostAliases(fullConfigString)
-
 			godump.Dump(hosts)
 		},
 	}

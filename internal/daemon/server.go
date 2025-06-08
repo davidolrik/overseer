@@ -2,9 +2,8 @@ package daemon
 
 import (
 	"bufio"
-	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"net"
 	"os"
 	"os/exec"
@@ -13,20 +12,28 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
 	"olrik.dev/davidolrik/overseer/internal/core"
 )
 
 // Daemon manages the SSH tunnel processes.
 type Daemon struct {
-	tunnels      map[string]*exec.Cmd
+	tunnels      map[string]Tunnel
 	mu           sync.Mutex
 	listener     net.Listener
 	shutdownOnce sync.Once
 }
 
+type Tunnel struct {
+	Hostname  string
+	Pid       int
+	Cmd       *exec.Cmd
+	StartDate time.Time
+}
+
 func New() *Daemon {
-	return &Daemon{tunnels: make(map[string]*exec.Cmd)}
+	return &Daemon{tunnels: make(map[string]Tunnel)}
 }
 
 // Run starts the daemon's main loop.
@@ -39,17 +46,18 @@ func (d *Daemon) Run() {
 
 	listener, err := net.Listen("unix", socketPath)
 	if err != nil {
-		log.Fatalf("Fatal: Could not create socket listener: %v", err)
+		slog.Error(fmt.Sprintf("Fatal: Could not create socket listener: %v", err))
+		os.Exit(1)
 	}
 	d.listener = listener
-	log.Println("Daemon listening on", socketPath)
+	slog.Info(fmt.Sprintf("Daemon listening on %s", socketPath))
 
 	// Graceful shutdown on SIGTERM/SIGINT
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGTERM, syscall.SIGINT)
 	go func() {
 		<-sigChan
-		log.Println("Shutdown signal received. Closing all tunnels.")
+		slog.Info("Shutdown signal received. Closing all tunnels.")
 		d.shutdown()
 		os.Exit(0)
 	}()
@@ -59,7 +67,7 @@ func (d *Daemon) Run() {
 		conn, err := d.listener.Accept()
 		if err != nil {
 			if !strings.Contains(err.Error(), "use of closed network connection") {
-				log.Printf("Error accepting connection: %v", err)
+				slog.Info(fmt.Sprintf("Error accepting connection: %v", err))
 			}
 			break
 		}
@@ -80,7 +88,7 @@ func (d *Daemon) handleConnection(conn net.Conn) {
 	}
 	command, args := parts[0], parts[1:]
 
-	var response string
+	var response Response
 	switch command {
 	case "START":
 		if len(args) > 0 {
@@ -93,31 +101,30 @@ func (d *Daemon) handleConnection(conn net.Conn) {
 
 			// If a shutdown is imminent, append the notification to the client's response.
 			if shouldShutdown {
-				response += "\nINFO: Last tunnel closed. Daemon is shutting down."
+				response.AddMessage("Last tunnel closed. Daemon is shutting down.", "INFO")
 			}
 
 			// Send the final (potentially multi-line) response back to the client.
-			conn.Write([]byte(response + "\n"))
+			conn.Write([]byte(response.ToJSON()))
 
 			// Now, perform the shutdown on the daemon side.
 			if shouldShutdown {
 				// We can log here for the daemon's own records.
-				log.Println("Last tunnel closed. Shutting down.")
+				slog.Info("Last tunnel closed. Shutting down.")
 				d.shutdown()
 			}
 			return // We've handled the entire response and action for this case.
 		}
 	case "STOPALL":
-		response = ""
 		for alias := range d.tunnels {
 			stopResponse, shouldShutdown := d.stopTunnel(alias)
-			response += stopResponse + "\n"
+			response.AddMessage(stopResponse.Messages[0].Message, stopResponse.Messages[0].Status)
 
 			if shouldShutdown {
-				response += "INFO: Last tunnel closed. Daemon is shutting down."
+				response.AddMessage("Last tunnel closed. Daemon is shutting down.", "INFO")
 
 				// We can log here for the daemon's own records.
-				log.Println("Last tunnel closed. Shutting down.")
+				slog.Info("Last tunnel closed. Shutting down.")
 				d.shutdown()
 				break
 			}
@@ -125,35 +132,44 @@ func (d *Daemon) handleConnection(conn net.Conn) {
 	case "STATUS":
 		response = d.getStatus()
 	default:
-		response = "ERROR: Unknown command."
+		response.AddMessage("Unknown command.", "ERROR")
 	}
-	conn.Write([]byte(response + "\n"))
+	conn.Write([]byte(response.ToJSON()))
 }
 
-func (d *Daemon) startTunnel(alias string) string {
+func (d *Daemon) startTunnel(alias string) Response {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
+	response := Response{}
+
 	if _, exists := d.tunnels[alias]; exists {
-		return fmt.Sprintf("ERROR: Tunnel '%s' is already running.", alias)
+		response.AddMessage(fmt.Sprintf("Tunnel '%s' is already running.", alias), "ERROR")
+		return response
 	}
 
 	cmd := exec.Command("ssh", alias, "-N", "-o", "ExitOnForwardFailure=yes")
 	err := cmd.Start()
 	if err != nil {
-		return fmt.Sprintf("ERROR: Failed to launch SSH process for '%s': %v", alias, err)
+		response.AddMessage(fmt.Sprintf("Failed to launch SSH process for '%s': %v", alias, err), "ERROR")
+		return response
 	}
 
-	d.tunnels[alias] = cmd
-	log.Printf("Attempting to start tunnel for '%s' (PID %d)", alias, cmd.Process.Pid)
+	d.tunnels[alias] = Tunnel{
+		Hostname:  alias,
+		Pid:       cmd.Process.Pid,
+		Cmd:       cmd,
+		StartDate: time.Now(),
+	}
+	slog.Info(fmt.Sprintf("Attempting to start tunnel for '%s' (PID %d)", alias, cmd.Process.Pid))
 
 	// This goroutine waits for the process to exit for any reason.
 	go func() {
 		waitErr := cmd.Wait()
 		if waitErr != nil {
-			log.Printf("Tunnel process for '%s' exited with an error: %v", alias, waitErr)
+			slog.Info(fmt.Sprintf("Tunnel process for '%s' exited with an error: %v", alias, waitErr))
 		} else {
-			log.Printf("Tunnel process for '%s' exited successfully.", alias)
+			slog.Info(fmt.Sprintf("Tunnel process for '%s' exited successfully.", alias))
 		}
 
 		d.mu.Lock()
@@ -164,73 +180,85 @@ func (d *Daemon) startTunnel(alias string) string {
 		d.mu.Unlock()
 
 		if shouldShutdown {
-			log.Println("Last active tunnel process has exited. Triggering daemon shutdown.")
+			slog.Info("Last active tunnel process has exited. Triggering daemon shutdown.")
 			// Instead of os.Exit(), we call our safe shutdown function.
 			// This will close the listener and allow the main process to exit gracefully.
 			d.shutdown()
 		}
 	}()
 
-	return fmt.Sprintf("OK: Tunnel process for '%s' launched.", alias)
+	response.AddMessage(fmt.Sprintf("Tunnel process for '%s' launched.", alias), "INFO")
+	return response
 }
 
-func (d *Daemon) stopTunnel(alias string) (string, bool) {
+func (d *Daemon) stopTunnel(alias string) (Response, bool) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	cmd, exists := d.tunnels[alias]
+	response := Response{}
+
+	tunnel, exists := d.tunnels[alias]
 	if !exists {
-		return fmt.Sprintf("ERROR: Tunnel for '%s' is not running.", alias), false
+		response.AddMessage(fmt.Sprintf("Tunnel '%s' is not running.", alias), "ERROR")
+		return response, false
 	}
 
-	if err := cmd.Process.Kill(); err != nil {
+	if err := tunnel.Cmd.Process.Kill(); err != nil {
 		// Even if killing fails, we should clean up the map.
 		delete(d.tunnels, alias)
-		return fmt.Sprintf("ERROR: Failed to kill process for '%s': %v", alias, err), len(d.tunnels) == 0
+		response.AddMessage(fmt.Sprintf("Failed to kill process for '%s': %v", alias, err), "ERROR")
+		return response, len(d.tunnels) == 0
 	}
 
 	delete(d.tunnels, alias)
-	log.Printf("Stopped tunnel for '%s'.", alias)
+	slog.Info(fmt.Sprintf("Stopped tunnel for '%s'.", alias))
 
 	// Check if this was the last tunnel
 	shouldShutdown := len(d.tunnels) == 0
 
-	return fmt.Sprintf("OK: Tunnel for '%s' stopped.", alias), shouldShutdown
+	response.AddMessage(fmt.Sprintf("Tunnel process for '%s' stopped.", alias), "INFO")
+	return response, shouldShutdown
 }
 
 type DaemonStatus struct {
-	Hostname string `json:"hostname"`
-	Pid      int    `json:"pid"`
+	Hostname  string `json:"hostname"`
+	Pid       int    `json:"pid"`
+	StartDate string `json:"start_date"`
 }
 
-func (d *Daemon) getStatus() string {
+func (d *Daemon) getStatus() Response {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+
+	// Build statuses json
+	statuses := []DaemonStatus{}
+	response := Response{}
+
+	// No tunnels
 	if len(d.tunnels) == 0 {
-		return "[]"
+		response.AddMessage("No tunnels found", "WARN")
+		response.AddData(statuses)
+		return response
 	}
 
-	// Build status json
-	status := []DaemonStatus{}
-	for alias, cmd := range d.tunnels {
-		status = append(status, DaemonStatus{
-			Hostname: alias,
-			Pid:      cmd.Process.Pid,
+	// We have tunnels
+	response.AddMessage("OK", "INFO")
+	for alias, tunnel := range d.tunnels {
+		statuses = append(statuses, DaemonStatus{
+			Hostname:  alias,
+			Pid:       tunnel.Cmd.Process.Pid,
+			StartDate: tunnel.StartDate.Format(time.RFC3339),
 		})
 	}
+	response.AddData(statuses)
 
-	bytes, err := json.Marshal(status)
-	if err != nil {
-		panic(err)
-	}
-
-	return string(bytes)
+	return response
 }
 
 // This makes it safe to call multiple times from multiple goroutines.
 func (d *Daemon) shutdown() {
 	d.shutdownOnce.Do(func() {
-		log.Println("Executing shutdown sequence...")
+		slog.Info("Executing shutdown sequence...")
 
 		// Close the listener first to prevent any new client connections.
 		// This will unblock the main Accept() loop in the Run() function.
@@ -241,10 +269,10 @@ func (d *Daemon) shutdown() {
 		d.mu.Lock()
 		defer d.mu.Unlock()
 
-		for alias, cmd := range d.tunnels {
-			cmd.Process.Kill()
-			log.Printf("Killed process for '%s'", alias)
+		for alias, tunnel := range d.tunnels {
+			tunnel.Cmd.Process.Kill()
+			slog.Info(fmt.Sprintf("Killed process for '%s'", alias))
 		}
-		d.tunnels = make(map[string]*exec.Cmd)
+		d.tunnels = make(map[string]Tunnel)
 	})
 }
