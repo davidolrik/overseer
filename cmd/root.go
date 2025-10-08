@@ -75,7 +75,7 @@ func NewRootCommand() *cobra.Command {
 		NewStartCommand(),
 		NewStatusCommand(),
 		NewStopCommand(),
-		// NewVersionCommand(),
+		NewVersionCommand(),
 	)
 
 	return rootCmd
