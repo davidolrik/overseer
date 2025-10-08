@@ -69,11 +69,13 @@ func NewRootCommand() *cobra.Command {
 	}
 	rootCmd.AddCommand(
 		debugCmd,
+		NewAskpassCommand(),
+		NewDaemonCommand(),
+		NewPasswordCommand(),
 		NewStartCommand(),
 		NewStatusCommand(),
 		NewStopCommand(),
 		// NewVersionCommand(),
-		NewInternalCommand(),
 	)
 
 	return rootCmd

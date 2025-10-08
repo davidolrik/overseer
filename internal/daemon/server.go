@@ -15,25 +15,31 @@ import (
 	"time"
 
 	"olrik.dev/davidolrik/overseer/internal/core"
+	"olrik.dev/davidolrik/overseer/internal/keyring"
 )
 
 // Daemon manages the SSH tunnel processes.
 type Daemon struct {
 	tunnels      map[string]Tunnel
+	askpassTokens map[string]string // Maps token -> alias for validation
 	mu           sync.Mutex
 	listener     net.Listener
 	shutdownOnce sync.Once
 }
 
 type Tunnel struct {
-	Hostname  string
-	Pid       int
-	Cmd       *exec.Cmd
-	StartDate time.Time
+	Hostname     string
+	Pid          int
+	Cmd          *exec.Cmd
+	StartDate    time.Time
+	AskpassToken string // Token for this tunnel's askpass validation
 }
 
 func New() *Daemon {
-	return &Daemon{tunnels: make(map[string]Tunnel)}
+	return &Daemon{
+		tunnels:       make(map[string]Tunnel),
+		askpassTokens: make(map[string]string),
+	}
 }
 
 // Run starts the daemon's main loop.
@@ -131,6 +137,12 @@ func (d *Daemon) handleConnection(conn net.Conn) {
 		}
 	case "STATUS":
 		response = d.getStatus()
+	case "ASKPASS":
+		if len(args) >= 2 {
+			response = d.handleAskpass(args[0], args[1])
+		} else {
+			response.AddMessage("Invalid ASKPASS command", "ERROR")
+		}
 	default:
 		response.AddMessage("Unknown command.", "ERROR")
 	}
@@ -148,18 +160,39 @@ func (d *Daemon) startTunnel(alias string) Response {
 		return response
 	}
 
+	// Check if a password is stored for this alias
+	hasPassword := keyring.HasPassword(alias)
+
+	// Create SSH command
 	cmd := exec.Command("ssh", alias, "-N", "-o", "ExitOnForwardFailure=yes")
-	err := cmd.Start()
+	cmd.Env = os.Environ()
+
+	var token string
+	var err error
+	if hasPassword {
+		// Configure SSH to use overseer binary as askpass helper
+		token, err = keyring.ConfigureSSHAskpass(cmd, alias)
+		if err != nil {
+			response.AddMessage(fmt.Sprintf("Failed to configure askpass: %v", err), "ERROR")
+			return response
+		}
+
+		// Store token for validation when askpass command calls back
+		d.askpassTokens[token] = alias
+	}
+
+	err = cmd.Start()
 	if err != nil {
 		response.AddMessage(fmt.Sprintf("Failed to launch SSH process for '%s': %v", alias, err), "ERROR")
 		return response
 	}
 
 	d.tunnels[alias] = Tunnel{
-		Hostname:  alias,
-		Pid:       cmd.Process.Pid,
-		Cmd:       cmd,
-		StartDate: time.Now(),
+		Hostname:     alias,
+		Pid:          cmd.Process.Pid,
+		Cmd:          cmd,
+		StartDate:    time.Now(),
+		AskpassToken: token,
 	}
 	slog.Info(fmt.Sprintf("Attempting to start tunnel for '%s' (PID %d)", alias, cmd.Process.Pid))
 
@@ -173,6 +206,10 @@ func (d *Daemon) startTunnel(alias string) Response {
 		}
 
 		d.mu.Lock()
+		// Clean up askpass token if it exists
+		if tunnel, exists := d.tunnels[alias]; exists && tunnel.AskpassToken != "" {
+			delete(d.askpassTokens, tunnel.AskpassToken)
+		}
 		delete(d.tunnels, alias)
 
 		// Check if the map is empty after deletion.
@@ -204,12 +241,19 @@ func (d *Daemon) stopTunnel(alias string) (Response, bool) {
 	}
 
 	if err := tunnel.Cmd.Process.Kill(); err != nil {
-		// Even if killing fails, we should clean up the map.
+		// Even if killing fails, we should clean up the map and token
+		if tunnel.AskpassToken != "" {
+			delete(d.askpassTokens, tunnel.AskpassToken)
+		}
 		delete(d.tunnels, alias)
 		response.AddMessage(fmt.Sprintf("Failed to kill process for '%s': %v", alias, err), "ERROR")
 		return response, len(d.tunnels) == 0
 	}
 
+	// Clean up askpass token
+	if tunnel.AskpassToken != "" {
+		delete(d.askpassTokens, tunnel.AskpassToken)
+	}
 	delete(d.tunnels, alias)
 	slog.Info(fmt.Sprintf("Stopped tunnel for '%s'.", alias))
 
@@ -251,6 +295,37 @@ func (d *Daemon) getStatus() Response {
 		})
 	}
 	response.AddData(statuses)
+
+	return response
+}
+
+// handleAskpass validates the token and returns the password
+func (d *Daemon) handleAskpass(alias, token string) Response {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	response := Response{}
+
+	// Validate token matches the stored alias
+	storedAlias, exists := d.askpassTokens[token]
+	if !exists || storedAlias != alias {
+		// Invalid token or alias mismatch
+		response.AddMessage("", "ERROR")
+		return response
+	}
+
+	// Token is valid, retrieve password from keyring
+	password, err := keyring.GetPassword(alias)
+	if err != nil || password == "" {
+		response.AddMessage("", "ERROR")
+		return response
+	}
+
+	// Return password in the message (it will be output to stdout by askpass command)
+	response.AddMessage(password, "INFO")
+
+	// Don't delete token yet - SSH might call askpass multiple times
+	// Token will be cleaned up when tunnel stops
 
 	return response
 }

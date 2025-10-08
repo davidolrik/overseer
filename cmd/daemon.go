@@ -5,9 +5,9 @@ import (
 	"olrik.dev/davidolrik/overseer/internal/daemon"
 )
 
-func NewInternalCommand() *cobra.Command {
-	internalCmd := &cobra.Command{
-		Use:     "internal-server",
+func NewDaemonCommand() *cobra.Command {
+	daemonCmd := &cobra.Command{
+		Use:     "daemon",
 		Aliases: []string{},
 		Hidden:  true,
 		Run: func(cmd *cobra.Command, args []string) {
@@ -16,5 +16,5 @@ func NewInternalCommand() *cobra.Command {
 		},
 	}
 
-	return internalCmd
+	return daemonCmd
 }

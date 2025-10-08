@@ -12,6 +12,7 @@ Configure connection reuse, socks proxies, port forwarding and jump hosts in `~/
 * Start tunnel via host alias
 * Stop tunnel via host alias
 * Status of running tunnels, in both plaintext and JSON
+* Secure password storage for password-based SSH authentication
 
 ## Demo
 
@@ -38,3 +39,20 @@ Host jump.example.com
 Host *.internal.example.com
     ProxyJump jump.example.com
 ```
+
+## Password Management
+
+For SSH servers that require password authentication, Overseer can securely store passwords in your system keyring (Keychain on macOS, Secret Service on Linux, Credential Manager on Windows).
+
+```bash
+# Store a password for an SSH host
+overseer password set jump.example.com
+
+# List hosts with stored passwords
+overseer password list
+
+# Delete a stored password
+overseer password delete jump.example.com
+```
+
+**Note**: SSH key-based authentication is more secure and recommended. Only use password storage for servers that require it. Passwords are provided to SSH using the SSH_ASKPASS mechanism, which works with all modern SSH clients without requiring additional tools.
