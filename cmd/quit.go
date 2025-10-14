@@ -1,0 +1,29 @@
+package cmd
+
+import (
+	"log/slog"
+	"os"
+
+	"github.com/spf13/cobra"
+	"olrik.dev/davidolrik/overseer/internal/daemon"
+)
+
+func NewQuitCommand() *cobra.Command {
+	quitCmd := &cobra.Command{
+		Use:     "quit",
+		Aliases: []string{"exit", "shutdown"},
+		Short:   "Stop all tunnels and shutdown the daemon",
+		Long:    `Stops all active SSH tunnels and shuts down the overseer daemon. This is a clean way to exit overseer and terminate all managed connections.`,
+		Args:    cobra.NoArgs,
+		Run: func(cmd *cobra.Command, args []string) {
+			response, err := daemon.SendCommand("STOPALL")
+			if err != nil {
+				slog.Error("Could not connect to daemon. Nothing to stop.")
+				os.Exit(1)
+			}
+			response.LogMessages()
+		},
+	}
+
+	return quitCmd
+}
