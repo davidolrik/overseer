@@ -32,6 +32,26 @@ func GetPIDFilePath() string {
 	return filepath.Join(Config.GetString("config_path"), PidFileName)
 }
 
+func GetReconnectEnabled() bool {
+	return Config.GetBool("reconnect.enabled")
+}
+
+func GetReconnectInitialBackoff() string {
+	return Config.GetString("reconnect.initial_backoff")
+}
+
+func GetReconnectMaxBackoff() string {
+	return Config.GetString("reconnect.max_backoff")
+}
+
+func GetReconnectBackoffFactor() int {
+	return Config.GetInt("reconnect.backoff_factor")
+}
+
+func GetReconnectMaxRetries() int {
+	return Config.GetInt("reconnect.max_retries")
+}
+
 func InitializeConfig(cmd *cobra.Command) ([]string, error) {
 	Config = viper.New()
 
@@ -48,6 +68,11 @@ func InitializeConfig(cmd *cobra.Command) ([]string, error) {
 
 	// Set defaults
 	Config.SetDefault("verbose", 0)
+	Config.SetDefault("reconnect.enabled", true)
+	Config.SetDefault("reconnect.initial_backoff", "1s")
+	Config.SetDefault("reconnect.max_backoff", "5m")
+	Config.SetDefault("reconnect.backoff_factor", 2)
+	Config.SetDefault("reconnect.max_retries", 10)
 
 	// Config.SetDefault("socket_path", 0)
 

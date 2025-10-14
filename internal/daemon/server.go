@@ -28,12 +28,27 @@ type Daemon struct {
 	shutdownOnce sync.Once
 }
 
+type TunnelState string
+
+const (
+	StateConnected    TunnelState = "connected"
+	StateDisconnected TunnelState = "disconnected"
+	StateReconnecting TunnelState = "reconnecting"
+)
+
 type Tunnel struct {
-	Hostname     string
-	Pid          int
-	Cmd          *exec.Cmd
-	StartDate    time.Time
-	AskpassToken string // Token for this tunnel's askpass validation
+	Hostname          string
+	Pid               int
+	Cmd               *exec.Cmd
+	StartDate         time.Time   // Original tunnel creation time
+	LastConnectedTime time.Time   // Time of last successful connection (for age display)
+	AskpassToken      string      // Token for this tunnel's askpass validation
+	RetryCount        int         // Current reconnection attempt number
+	TotalReconnects   int         // Total successful reconnections (stability indicator)
+	LastRetryTime     time.Time
+	AutoReconnect     bool        // Whether to auto-reconnect on failure
+	State             TunnelState // Current connection state
+	NextRetryTime     time.Time   // When the next retry will occur
 }
 
 func New() *Daemon {
@@ -41,6 +56,43 @@ func New() *Daemon {
 		tunnels:       make(map[string]Tunnel),
 		askpassTokens: make(map[string]string),
 	}
+}
+
+// calculateBackoff calculates the exponential backoff duration
+func calculateBackoff(retryCount int) time.Duration {
+	// Parse config values
+	initialBackoffStr := core.GetReconnectInitialBackoff()
+	maxBackoffStr := core.GetReconnectMaxBackoff()
+	backoffFactor := core.GetReconnectBackoffFactor()
+
+	initialBackoff, err := time.ParseDuration(initialBackoffStr)
+	if err != nil {
+		slog.Error(fmt.Sprintf("Invalid initial_backoff config: %v, using default 1s", err))
+		initialBackoff = 1 * time.Second
+	}
+
+	maxBackoff, err := time.ParseDuration(maxBackoffStr)
+	if err != nil {
+		slog.Error(fmt.Sprintf("Invalid max_backoff config: %v, using default 5m", err))
+		maxBackoff = 5 * time.Minute
+	}
+
+	if retryCount <= 0 {
+		return initialBackoff
+	}
+
+	// Calculate exponential backoff: initialBackoff * (backoffFactor ^ retryCount)
+	backoff := initialBackoff
+	for i := 0; i < retryCount && backoff < maxBackoff; i++ {
+		backoff *= time.Duration(backoffFactor)
+	}
+
+	// Cap at maxBackoff
+	if backoff > maxBackoff {
+		backoff = maxBackoff
+	}
+
+	return backoff
 }
 
 // Run starts the daemon's main loop.
@@ -203,12 +255,17 @@ func (d *Daemon) startTunnel(alias string) Response {
 		return response
 	}
 
+	now := time.Now()
 	d.tunnels[alias] = Tunnel{
-		Hostname:     alias,
-		Pid:          cmd.Process.Pid,
-		Cmd:          cmd,
-		StartDate:    time.Now(),
-		AskpassToken: token,
+		Hostname:          alias,
+		Pid:               cmd.Process.Pid,
+		Cmd:               cmd,
+		StartDate:         now,
+		LastConnectedTime: now,
+		AskpassToken:      token,
+		RetryCount:        0,
+		AutoReconnect:     core.GetReconnectEnabled(), // Use config value
+		State:             StateConnected,              // Initial state is connected
 	}
 	slog.Info(fmt.Sprintf("Attempting to start tunnel for '%s' (PID %d)", alias, cmd.Process.Pid))
 
@@ -238,35 +295,200 @@ func (d *Daemon) startTunnel(alias string) Response {
 	}
 	response.AddMessage(fmt.Sprintf("Tunnel '%s' connected successfully.", alias), "INFO")
 
-	// This goroutine waits for the process to exit for any reason.
-	go func() {
+	// This goroutine monitors the tunnel process and handles reconnection
+	go d.monitorTunnel(alias)
+
+	return response
+}
+
+// monitorTunnel watches a tunnel process and handles reconnection with exponential backoff
+func (d *Daemon) monitorTunnel(alias string) {
+	for {
+		// Wait for the current process to exit
+		d.mu.Lock()
+		tunnel, exists := d.tunnels[alias]
+		if !exists {
+			d.mu.Unlock()
+			return // Tunnel was manually stopped
+		}
+		cmd := tunnel.Cmd
+		d.mu.Unlock()
+
 		waitErr := cmd.Wait()
+
+		d.mu.Lock()
+		tunnel, exists = d.tunnels[alias]
+		if !exists {
+			d.mu.Unlock()
+			return // Tunnel was manually stopped while we were waiting
+		}
+
+		// Log the exit
 		if waitErr != nil {
 			slog.Info(fmt.Sprintf("Tunnel process for '%s' exited with an error: %v", alias, waitErr))
 		} else {
 			slog.Info(fmt.Sprintf("Tunnel process for '%s' exited successfully.", alias))
 		}
 
-		d.mu.Lock()
-		// Clean up askpass token if it exists
-		if tunnel, exists := d.tunnels[alias]; exists && tunnel.AskpassToken != "" {
-			delete(d.askpassTokens, tunnel.AskpassToken)
-		}
-		delete(d.tunnels, alias)
+		// Update state to disconnected
+		tunnel.State = StateDisconnected
+		d.tunnels[alias] = tunnel
 
-		// Check if the map is empty after deletion.
-		shouldShutdown := len(d.tunnels) == 0
+		// Get max retries from config
+		maxRetries := core.GetReconnectMaxRetries()
+
+		// Check if auto-reconnect is enabled and we haven't exceeded max retries
+		if !tunnel.AutoReconnect || tunnel.RetryCount >= maxRetries {
+			// Clean up and don't reconnect
+			if tunnel.AskpassToken != "" {
+				delete(d.askpassTokens, tunnel.AskpassToken)
+			}
+			delete(d.tunnels, alias)
+
+			if tunnel.RetryCount >= maxRetries {
+				slog.Info(fmt.Sprintf("Tunnel '%s' exceeded max retry attempts (%d). Giving up.", alias, maxRetries))
+			} else {
+				slog.Info(fmt.Sprintf("Tunnel '%s' auto-reconnect disabled. Not reconnecting.", alias))
+			}
+
+			// Check if this was the last tunnel
+			shouldShutdown := len(d.tunnels) == 0
+			d.mu.Unlock()
+
+			if shouldShutdown {
+				slog.Info("Last active tunnel process has exited. Triggering daemon shutdown.")
+				d.shutdown()
+			}
+			return
+		}
+
+		// Calculate backoff delay
+		backoff := calculateBackoff(tunnel.RetryCount)
+		tunnel.RetryCount++
+		tunnel.LastRetryTime = time.Now()
+		tunnel.State = StateReconnecting
+		tunnel.NextRetryTime = time.Now().Add(backoff)
+
+		slog.Info(fmt.Sprintf("Tunnel '%s' will reconnect in %v (attempt %d/%d)",
+			alias, backoff, tunnel.RetryCount, maxRetries))
+
+		// Clean up old askpass token
+		if tunnel.AskpassToken != "" {
+			delete(d.askpassTokens, tunnel.AskpassToken)
+			tunnel.AskpassToken = ""
+		}
+
+		// Update tunnel with new retry count and state
+		d.tunnels[alias] = tunnel
 		d.mu.Unlock()
 
-		if shouldShutdown {
-			slog.Info("Last active tunnel process has exited. Triggering daemon shutdown.")
-			// Instead of os.Exit(), we call our safe shutdown function.
-			// This will close the listener and allow the main process to exit gracefully.
-			d.shutdown()
-		}
-	}()
+		// Wait for backoff period (outside the lock)
+		time.Sleep(backoff)
 
-	return response
+		// Attempt to reconnect
+		slog.Info(fmt.Sprintf("Attempting to reconnect tunnel '%s' (attempt %d/%d)",
+			alias, tunnel.RetryCount, maxRetries))
+
+		d.mu.Lock()
+		// Check again if tunnel still exists (might have been manually stopped during backoff)
+		tunnel, exists = d.tunnels[alias]
+		if !exists {
+			d.mu.Unlock()
+			return
+		}
+
+		// Check if a password is stored for this alias
+		hasPassword := keyring.HasPassword(alias)
+
+		// Create new SSH command
+		newCmd := exec.Command("ssh", alias, "-N", "-o", "ExitOnForwardFailure=yes", "-v")
+		newCmd.Env = os.Environ()
+
+		// Capture stderr to monitor connection status
+		stderrPipe, err := newCmd.StderrPipe()
+		if err != nil {
+			slog.Error(fmt.Sprintf("Failed to create stderr pipe for reconnection: %v", err))
+			delete(d.tunnels, alias)
+			shouldShutdown := len(d.tunnels) == 0
+			d.mu.Unlock()
+			if shouldShutdown {
+				d.shutdown()
+			}
+			return
+		}
+
+		var token string
+		if hasPassword {
+			token, err = keyring.ConfigureSSHAskpass(newCmd, alias)
+			if err != nil {
+				slog.Error(fmt.Sprintf("Failed to configure askpass for reconnection: %v", err))
+				delete(d.tunnels, alias)
+				shouldShutdown := len(d.tunnels) == 0
+				d.mu.Unlock()
+				if shouldShutdown {
+					d.shutdown()
+				}
+				return
+			}
+			d.askpassTokens[token] = alias
+		}
+
+		err = newCmd.Start()
+		if err != nil {
+			if token != "" {
+				delete(d.askpassTokens, token)
+			}
+			slog.Error(fmt.Sprintf("Failed to launch SSH process for reconnection: %v", err))
+			// Continue the loop to retry again
+			tunnel.Cmd = nil // Mark as failed
+			d.tunnels[alias] = tunnel
+			d.mu.Unlock()
+			continue
+		}
+
+		// Update tunnel info
+		tunnel.Pid = newCmd.Process.Pid
+		tunnel.Cmd = newCmd
+		tunnel.AskpassToken = token
+		tunnel.State = StateReconnecting // Still reconnecting until verified
+		d.tunnels[alias] = tunnel
+
+		slog.Info(fmt.Sprintf("Reconnection attempt started for '%s' (PID %d)", alias, newCmd.Process.Pid))
+		d.mu.Unlock()
+
+		// Wait for connection verification
+		connectionResult := make(chan error, 1)
+		go d.verifyConnection(stderrPipe, alias, connectionResult)
+
+		err = <-connectionResult
+		if err != nil {
+			slog.Warn(fmt.Sprintf("Reconnection failed for '%s': %v", alias, err))
+			// Kill the failed process and continue the loop to retry
+			d.mu.Lock()
+			if tunnel, exists := d.tunnels[alias]; exists {
+				if tunnel.Cmd != nil && tunnel.Cmd.Process != nil {
+					tunnel.Cmd.Process.Kill()
+				}
+			}
+			d.mu.Unlock()
+			continue
+		}
+
+		// Success! Reset retry count, update state, reset connection time, and increment total reconnects
+		slog.Info(fmt.Sprintf("Tunnel '%s' reconnected successfully.", alias))
+		d.mu.Lock()
+		if tunnel, exists := d.tunnels[alias]; exists {
+			tunnel.RetryCount = 0
+			tunnel.State = StateConnected
+			tunnel.NextRetryTime = time.Time{}     // Clear next retry time
+			tunnel.LastConnectedTime = time.Now() // Reset age to 0
+			tunnel.TotalReconnects++               // Increment stability counter
+			d.tunnels[alias] = tunnel
+		}
+		d.mu.Unlock()
+
+		// Continue monitoring this tunnel (loop back to Wait())
+	}
 }
 
 // verifyConnection monitors SSH stderr output to detect connection success or failure
@@ -377,9 +599,15 @@ func (d *Daemon) stopTunnel(alias string) (Response, bool) {
 }
 
 type DaemonStatus struct {
-	Hostname  string `json:"hostname"`
-	Pid       int    `json:"pid"`
-	StartDate string `json:"start_date"`
+	Hostname          string      `json:"hostname"`
+	Pid               int         `json:"pid"`
+	StartDate         string      `json:"start_date"`           // Original tunnel creation time
+	LastConnectedTime string      `json:"last_connected_time"` // Time of last successful connection
+	RetryCount        int         `json:"retry_count,omitempty"`
+	TotalReconnects   int         `json:"total_reconnects"`     // Total successful reconnections
+	AutoReconnect     bool        `json:"auto_reconnect"`
+	State             TunnelState `json:"state"`
+	NextRetry         string      `json:"next_retry,omitempty"` // ISO 8601 format
 }
 
 func (d *Daemon) getStatus() Response {
@@ -400,11 +628,23 @@ func (d *Daemon) getStatus() Response {
 	// We have tunnels
 	response.AddMessage("OK", "INFO")
 	for alias, tunnel := range d.tunnels {
-		statuses = append(statuses, DaemonStatus{
-			Hostname:  alias,
-			Pid:       tunnel.Cmd.Process.Pid,
-			StartDate: tunnel.StartDate.Format(time.RFC3339),
-		})
+		status := DaemonStatus{
+			Hostname:          alias,
+			Pid:               tunnel.Pid,
+			StartDate:         tunnel.StartDate.Format(time.RFC3339),
+			LastConnectedTime: tunnel.LastConnectedTime.Format(time.RFC3339),
+			RetryCount:        tunnel.RetryCount,
+			TotalReconnects:   tunnel.TotalReconnects,
+			AutoReconnect:     tunnel.AutoReconnect,
+			State:             tunnel.State,
+		}
+
+		// Add next retry time if tunnel is in reconnecting state
+		if tunnel.State == StateReconnecting && !tunnel.NextRetryTime.IsZero() {
+			status.NextRetry = tunnel.NextRetryTime.Format(time.RFC3339)
+		}
+
+		statuses = append(statuses, status)
 	}
 	response.AddData(statuses)
 

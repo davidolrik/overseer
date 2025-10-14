@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"sort"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -28,16 +29,69 @@ func NewStatusCommand() *cobra.Command {
 			statuses := []daemon.DaemonStatus{}
 			json.Unmarshal(jsonBytes, &statuses)
 
+			// Sort tunnels by hostname for consistent output
+			sort.Slice(statuses, func(i, j int) bool {
+				return statuses[i].Hostname < statuses[j].Hostname
+			})
+
 			format, _ := cmd.Flags().GetString("format")
 			switch format {
 			case "text":
 				fmt.Println("Active Tunnels:")
 				for _, status := range statuses {
-					startDate, _ := time.Parse(time.RFC3339, status.StartDate)
-					age := time.Since(startDate)
+					// Use LastConnectedTime for age (resets to 0 on reconnection)
+					lastConnected, _ := time.Parse(time.RFC3339, status.LastConnectedTime)
+					age := time.Since(lastConnected)
+
+					// ANSI color codes
+					const (
+						colorGreen  = "\033[32m"
+						colorYellow = "\033[33m"
+						colorRed    = "\033[31m"
+						colorReset  = "\033[0m"
+					)
+
+					// Build state indicator with colored icon and alias
+					var icon, color, extraInfo string
+					switch status.State {
+					case "connected":
+						icon = "✓"
+						color = colorGreen
+					case "disconnected":
+						icon = "✗"
+						color = colorRed
+					case "reconnecting":
+						icon = "⟳"
+						color = colorYellow
+						if status.NextRetry != "" {
+							nextRetry, err := time.Parse(time.RFC3339, status.NextRetry)
+							if err == nil {
+								timeUntil := time.Until(nextRetry)
+								if timeUntil > 0 {
+									extraInfo = fmt.Sprintf(" (next attempt in %s)", timeUntil.Round(time.Second))
+								} else {
+									extraInfo = " (attempting now)"
+								}
+							}
+						}
+						if status.RetryCount > 0 {
+							extraInfo += fmt.Sprintf(" [attempt %d]", status.RetryCount)
+						}
+					}
+
+					// Build reconnect count info
+					reconnectInfo := ""
+					if status.TotalReconnects > 0 {
+						reconnectInfo = fmt.Sprintf(", Reconnects: %d", status.TotalReconnects)
+					}
+
 					fmt.Printf(
-						"  - %s (PID: %d, Age: %s)\n",
-						status.Hostname, status.Pid, age.Round(time.Second).String(),
+						"  %s%s%s %s%s%s (PID: %d, Age: %s%s)%s\n",
+						color, icon, colorReset,
+						color, status.Hostname, colorReset,
+						status.Pid, age.Round(time.Second).String(),
+						reconnectInfo,
+						extraInfo,
 					)
 				}
 			case "json":
