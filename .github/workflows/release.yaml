@@ -16,8 +16,27 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
       - name: Set up Go
         uses: actions/setup-go@v5
+
+      - name: Install Quill
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/anchore/quill/main/install.sh | sh -s -- -b /usr/local/bin
+
+      - name: Import Code Signing Certificates
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          # Create temporary directory for certificates
+          CERT_DIR=$(mktemp -d)
+
+          # Decode and save the P12 certificate
+          echo "${{ secrets.APPLE_CERTIFICATE_P12_BASE64 }}" | base64 --decode > "$CERT_DIR/certificate.p12"
+
+          # Export path for goreleaser to use
+          echo "QUILL_P12_PATH=$CERT_DIR/certificate.p12" >> $GITHUB_ENV
+          echo "QUILL_P12_PASSWORD=${{ secrets.APPLE_CERTIFICATE_PASSWORD }}" >> $GITHUB_ENV
+
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v6
         if: startsWith(github.ref, 'refs/tags/')
@@ -27,3 +46,14 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          QUILL_P12_PATH: ${{ env.QUILL_P12_PATH }}
+          QUILL_P12_PASSWORD: ${{ env.QUILL_P12_PASSWORD }}
+
+      - name: Cleanup Certificates
+        if: always() && startsWith(github.ref, 'refs/tags/')
+        run: |
+          # Clean up temporary certificate files
+          if [ -f "$QUILL_P12_PATH" ]; then
+            rm -f "$QUILL_P12_PATH"
+            rm -rf "$(dirname "$QUILL_P12_PATH")"
+          fi

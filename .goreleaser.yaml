@@ -9,11 +9,31 @@ before:
     - go generate ./...
 
 builds:
-  - env:
+  - id: overseer
+    env:
       - CGO_ENABLED=0
     goos:
       - linux
       - darwin
+    goarch:
+      - amd64
+      - arm64
+
+signs:
+  - cmd: sh
+    args:
+      - -c
+      - |
+        if [[ "${artifact}" == *"Darwin"* ]]; then
+          quill sign --p12 "${QUILL_P12_PATH}" --password "${QUILL_P12_PASSWORD}" --entitlements entitlements.plist --timestamp "${artifact}"
+        else
+          echo "Skipping signing for non-macOS binary: ${artifact}"
+        fi
+    artifacts: binary
+    signature: ""
+    ids:
+      - overseer
+    output: true
 
 archives:
   - formats: [tar.gz]
