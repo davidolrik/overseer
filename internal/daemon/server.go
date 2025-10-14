@@ -3,6 +3,7 @@ package daemon
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"os"
@@ -150,12 +151,15 @@ func (d *Daemon) handleConnection(conn net.Conn) {
 }
 
 func (d *Daemon) startTunnel(alias string) Response {
+	// Note: We cannot use defer d.mu.Unlock() here because we need to unlock
+	// early (before waiting for connection verification) and the function continues
+	// to execute afterward. Using defer would cause a double-unlock panic.
 	d.mu.Lock()
-	defer d.mu.Unlock()
 
 	response := Response{}
 
 	if _, exists := d.tunnels[alias]; exists {
+		d.mu.Unlock()
 		response.AddMessage(fmt.Sprintf("Tunnel '%s' is already running.", alias), "ERROR")
 		return response
 	}
@@ -163,16 +167,24 @@ func (d *Daemon) startTunnel(alias string) Response {
 	// Check if a password is stored for this alias
 	hasPassword := keyring.HasPassword(alias)
 
-	// Create SSH command
-	cmd := exec.Command("ssh", alias, "-N", "-o", "ExitOnForwardFailure=yes")
+	// Create SSH command with verbose mode to detect connection status
+	cmd := exec.Command("ssh", alias, "-N", "-o", "ExitOnForwardFailure=yes", "-v")
 	cmd.Env = os.Environ()
 
+	// Capture stderr to monitor connection status
+	stderrPipe, err := cmd.StderrPipe()
+	if err != nil {
+		d.mu.Unlock()
+		response.AddMessage(fmt.Sprintf("Failed to create stderr pipe: %v", err), "ERROR")
+		return response
+	}
+
 	var token string
-	var err error
 	if hasPassword {
 		// Configure SSH to use overseer binary as askpass helper
 		token, err = keyring.ConfigureSSHAskpass(cmd, alias)
 		if err != nil {
+			d.mu.Unlock()
 			response.AddMessage(fmt.Sprintf("Failed to configure askpass: %v", err), "ERROR")
 			return response
 		}
@@ -183,6 +195,10 @@ func (d *Daemon) startTunnel(alias string) Response {
 
 	err = cmd.Start()
 	if err != nil {
+		if token != "" {
+			delete(d.askpassTokens, token)
+		}
+		d.mu.Unlock()
 		response.AddMessage(fmt.Sprintf("Failed to launch SSH process for '%s': %v", alias, err), "ERROR")
 		return response
 	}
@@ -195,6 +211,32 @@ func (d *Daemon) startTunnel(alias string) Response {
 		AskpassToken: token,
 	}
 	slog.Info(fmt.Sprintf("Attempting to start tunnel for '%s' (PID %d)", alias, cmd.Process.Pid))
+
+	// Unlock mutex before waiting for connection verification.
+	// We cannot use defer because the function continues executing after this unlock.
+	d.mu.Unlock()
+
+	// Wait for connection verification (indefinitely until success or failure)
+	connectionResult := make(chan error, 1)
+	go d.verifyConnection(stderrPipe, alias, connectionResult)
+
+	// Wait for either success or failure - no timeout
+	err = <-connectionResult
+	if err != nil {
+		response.AddMessage(fmt.Sprintf("Tunnel '%s' failed to connect: %v", alias, err), "ERROR")
+		// Clean up the failed tunnel
+		d.mu.Lock()
+		if tunnel, exists := d.tunnels[alias]; exists {
+			tunnel.Cmd.Process.Kill()
+			if tunnel.AskpassToken != "" {
+				delete(d.askpassTokens, tunnel.AskpassToken)
+			}
+			delete(d.tunnels, alias)
+		}
+		d.mu.Unlock()
+		return response
+	}
+	response.AddMessage(fmt.Sprintf("Tunnel '%s' connected successfully.", alias), "INFO")
 
 	// This goroutine waits for the process to exit for any reason.
 	go func() {
@@ -224,8 +266,78 @@ func (d *Daemon) startTunnel(alias string) Response {
 		}
 	}()
 
-	response.AddMessage(fmt.Sprintf("Tunnel process for '%s' launched.", alias), "INFO")
 	return response
+}
+
+// verifyConnection monitors SSH stderr output to detect connection success or failure
+func (d *Daemon) verifyConnection(stderr io.ReadCloser, alias string, result chan<- error) {
+	defer func() {
+		// Ensure we always send a result, even if we exit unexpectedly
+		select {
+		case result <- fmt.Errorf("SSH process terminated unexpectedly"):
+		default:
+			// Channel already has a value, nothing to do
+		}
+	}()
+
+	scanner := bufio.NewScanner(stderr)
+	authenticated := false
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		slog.Debug(fmt.Sprintf("[%s] SSH: %s", alias, line))
+
+		// Track authentication completion
+		if strings.Contains(line, "Authentication succeeded") ||
+			strings.Contains(line, "Authenticated to") {
+			authenticated = true
+			// Don't return yet - we need to wait for the session to be established
+		}
+
+		// Look for success indicators - session fully established
+		// For -N (no command), look for "pledge: network" or "Entering interactive session"
+		if authenticated && (strings.Contains(line, "Entering interactive session") ||
+			strings.Contains(line, "pledge: network")) {
+			result <- nil
+			return
+		}
+
+		// Look for failure indicators
+		if strings.Contains(line, "Permission denied") {
+			result <- fmt.Errorf("authentication failed")
+			return
+		}
+		if strings.Contains(line, "Connection refused") {
+			result <- fmt.Errorf("connection refused")
+			return
+		}
+		if strings.Contains(line, "No route to host") {
+			result <- fmt.Errorf("no route to host")
+			return
+		}
+		if strings.Contains(line, "Connection timed out") {
+			result <- fmt.Errorf("connection timed out")
+			return
+		}
+		if strings.Contains(line, "Could not resolve hostname") {
+			result <- fmt.Errorf("could not resolve hostname")
+			return
+		}
+		if strings.Contains(line, "Host key verification failed") {
+			result <- fmt.Errorf("host key verification failed")
+			return
+		}
+		if strings.Contains(line, "Too many authentication failures") {
+			result <- fmt.Errorf("too many authentication failures")
+			return
+		}
+	}
+
+	// If we exit the loop without finding success/failure, check scanner error
+	if err := scanner.Err(); err != nil {
+		slog.Debug(fmt.Sprintf("[%s] Error reading SSH output: %v", alias, err))
+		result <- fmt.Errorf("error reading SSH output: %v", err)
+	}
 }
 
 func (d *Daemon) stopTunnel(alias string) (Response, bool) {
