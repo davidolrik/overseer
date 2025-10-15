@@ -3,7 +3,6 @@ package keyring
 import (
 	"fmt"
 	"os"
-	"syscall"
 
 	"golang.org/x/term"
 )
@@ -12,7 +11,16 @@ import (
 func PromptPassword(alias string) (string, error) {
 	fmt.Fprintf(os.Stderr, "Enter password for '%s': ", alias)
 
-	passwordBytes, err := term.ReadPassword(int(syscall.Stdin))
+	// Try to open /dev/tty directly for terminal input
+	// Fall back to stdin if tty is not available
+	fd := int(os.Stdin.Fd())
+	tty, err := os.Open("/dev/tty")
+	if err == nil {
+		defer tty.Close()
+		fd = int(tty.Fd())
+	}
+
+	passwordBytes, err := term.ReadPassword(fd)
 	fmt.Fprintln(os.Stderr) // Print newline after password input
 
 	if err != nil {
@@ -30,7 +38,17 @@ func PromptAndConfirmPassword(alias string) (string, error) {
 	}
 
 	fmt.Fprintf(os.Stderr, "Confirm password for '%s': ", alias)
-	passwordBytes, err := term.ReadPassword(int(syscall.Stdin))
+
+	// Try to open /dev/tty directly for terminal input
+	// Fall back to stdin if tty is not available
+	fd := int(os.Stdin.Fd())
+	tty, err := os.Open("/dev/tty")
+	if err == nil {
+		defer tty.Close()
+		fd = int(tty.Fd())
+	}
+
+	passwordBytes, err := term.ReadPassword(fd)
 	fmt.Fprintln(os.Stderr)
 
 	if err != nil {
