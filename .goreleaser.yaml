@@ -9,15 +9,44 @@ before:
     - go generate ./...
 
 builds:
-  - id: overseer
+  # Linux builds - CGO disabled for static linking
+  - id: linux
     env:
       - CGO_ENABLED=0
     goos:
       - linux
-      - darwin
     goarch:
       - amd64
       - arm64
+
+  # macOS builds - CGO enabled for keychain access
+  - id: darwin-amd64
+    env:
+      - CGO_ENABLED=1
+      - CC=o64-clang
+      - CXX=o64-clang++
+    goos:
+      - darwin
+    goarch:
+      - amd64
+    flags:
+      - -mod=readonly
+    ldflags:
+      - -s -w -X main.version={{.Version}} -X main.commit={{.Commit}} -X main.date={{.Date}}
+
+  - id: darwin-arm64
+    env:
+      - CGO_ENABLED=1
+      - CC=oa64-clang
+      - CXX=oa64-clang++
+    goos:
+      - darwin
+    goarch:
+      - arm64
+    flags:
+      - -mod=readonly
+    ldflags:
+      - -s -w -X main.version={{.Version}} -X main.commit={{.Commit}} -X main.date={{.Date}}
 
 signs:
   - cmd: sh
@@ -32,7 +61,9 @@ signs:
     artifacts: binary
     signature: ""
     ids:
-      - overseer
+      - linux
+      - darwin-amd64
+      - darwin-arm64
     output: true
 
 archives:

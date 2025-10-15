@@ -20,6 +20,25 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
 
+      - name: Install osxcross for CGO cross-compilation
+        run: |
+          # Install dependencies
+          sudo apt-get update
+          sudo apt-get install -y clang llvm-dev libxml2-dev uuid-dev libssl-dev bash patch make tar xz-utils bzip2 gzip sed cpio libbz2-dev
+
+          # Clone osxcross
+          git clone https://github.com/tpoechtrager/osxcross /tmp/osxcross
+          cd /tmp/osxcross
+
+          # Download macOS SDK (using the publicly available SDK)
+          wget -q https://github.com/joseluisq/macosx-sdks/releases/download/14.5/MacOSX14.5.sdk.tar.xz -O tarballs/MacOSX14.5.sdk.tar.xz
+
+          # Build osxcross
+          UNATTENDED=1 OSX_VERSION_MIN=11.0 ./build.sh
+
+          # Add to PATH for subsequent steps
+          echo "/tmp/osxcross/target/bin" >> $GITHUB_PATH
+
       - name: Install Quill
         run: |
           curl -sSfL https://raw.githubusercontent.com/anchore/quill/main/install.sh | sh -s -- -b /usr/local/bin
