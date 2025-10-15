@@ -41,6 +41,7 @@ func NewStopCommand() *cobra.Command {
 		Args:              cobra.RangeArgs(0, 1),
 		ValidArgsFunction: activeHostCompletionFunc,
 		Run: func(cmd *cobra.Command, args []string) {
+			daemon.CheckVersionMismatch()
 			if len(args) == 1 {
 				alias := args[0]
 				response, err := daemon.SendCommand("STOP " + alias)

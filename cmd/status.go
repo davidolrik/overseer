@@ -19,6 +19,7 @@ func NewStatusCommand() *cobra.Command {
 		Short: "Shows a list of all currently active tunnels",
 		Args:  cobra.NoArgs,
 		Run: func(cmd *cobra.Command, args []string) {
+			daemon.CheckVersionMismatch()
 			response, err := daemon.SendCommand("STATUS")
 			if err != nil {
 				slog.Warn("No active tunnels (daemon is not running).")

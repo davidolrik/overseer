@@ -190,6 +190,8 @@ func (d *Daemon) handleConnection(conn net.Conn) {
 		}
 	case "STATUS":
 		response = d.getStatus()
+	case "VERSION":
+		response = d.getVersion()
 	case "ASKPASS":
 		if len(args) >= 2 {
 			response = d.handleAskpass(args[0], args[1])
@@ -647,6 +649,18 @@ func (d *Daemon) getStatus() Response {
 		statuses = append(statuses, status)
 	}
 	response.AddData(statuses)
+
+	return response
+}
+
+func (d *Daemon) getVersion() Response {
+	response := Response{}
+
+	// Return the daemon version
+	response.AddMessage("OK", "INFO")
+	response.AddData(map[string]string{
+		"version": core.Version,
+	})
 
 	return response
 }

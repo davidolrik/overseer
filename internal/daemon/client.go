@@ -8,9 +8,15 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"sync"
 	"time"
 
 	"olrik.dev/davidolrik/overseer/internal/core"
+)
+
+var (
+	versionCheckOnce sync.Once
+	versionWarned    bool
 )
 
 // SendCommand connects to the daemon, sends a command, and returns the response.
@@ -62,4 +68,34 @@ func EnsureDaemonIsRunning() {
 	}
 	slog.Error("Fatal: Daemon process was launched but socket was not created in time.")
 	os.Exit(1)
+}
+
+// CheckVersionMismatch checks if the client and daemon versions match and warns if they don't.
+// This check is done only once per command execution.
+func CheckVersionMismatch() {
+	versionCheckOnce.Do(func() {
+		response, err := SendCommand("VERSION")
+		if err != nil {
+			// Daemon not running, no need to check version
+			return
+		}
+
+		if response.Data != nil {
+			jsonBytes, _ := json.Marshal(response.Data)
+			var versionData map[string]string
+			if json.Unmarshal(jsonBytes, &versionData) == nil {
+				daemonVersion := versionData["version"]
+				clientVersion := core.Version
+
+				if clientVersion != daemonVersion {
+					// Use formatted versions in the warning
+					clientFormatted := core.FormatVersion(clientVersion)
+					daemonFormatted := core.FormatVersion(daemonVersion)
+					slog.Warn(fmt.Sprintf("Version mismatch! Client (%s) and daemon (%s) versions differ.", clientFormatted, daemonFormatted))
+					slog.Warn("The daemon may be running an outdated version. Run 'overseer quit' and try again.")
+					versionWarned = true
+				}
+			}
+		}
+	})
 }

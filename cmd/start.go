@@ -19,6 +19,7 @@ func NewStartCommand() *cobra.Command {
 		Run: func(cmd *cobra.Command, args []string) {
 			alias := args[0]
 			daemon.EnsureDaemonIsRunning()
+			daemon.CheckVersionMismatch()
 			response, err := daemon.SendCommand("START " + alias)
 			if err != nil {
 				slog.Error(err.Error())

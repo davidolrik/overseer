@@ -6,7 +6,6 @@ import (
 	"os"
 	"time"
 
-	"github.com/goforj/godump"
 	"github.com/lmittmann/tint"
 	"github.com/spf13/cobra"
 	"olrik.dev/davidolrik/overseer/internal/core"
@@ -50,25 +49,7 @@ func NewRootCommand() *cobra.Command {
 	)
 	rootCmd.PersistentFlags().CountVarP(&verbose, "verbose", "v", "more output, repeat for even more")
 
-	debugCmd := &cobra.Command{
-		Use:    "debug",
-		Short:  "Debug command",
-		Long:   "Debug command",
-		Hidden: true,
-		Run: func(cmd *cobra.Command, args []string) {
-			godump.Dump(core.Config.AllSettings())
-
-			fullConfigString, err := recursivelyReadAllSSHConfigs("/Users/djo/.ssh/config", make(map[string]bool))
-			if err != nil {
-				panic(err)
-			}
-
-			hosts := extractHostAliases(fullConfigString)
-			godump.Dump(hosts)
-		},
-	}
 	rootCmd.AddCommand(
-		debugCmd,
 		NewAskpassCommand(),
 		NewDaemonCommand(),
 		NewPasswordCommand(),
