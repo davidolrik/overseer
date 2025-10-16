@@ -21,11 +21,12 @@ import (
 
 // Daemon manages the SSH tunnel processes.
 type Daemon struct {
-	tunnels      map[string]Tunnel
+	tunnels       map[string]Tunnel
 	askpassTokens map[string]string // Maps token -> alias for validation
-	mu           sync.Mutex
-	listener     net.Listener
-	shutdownOnce sync.Once
+	mu            sync.Mutex
+	listener      net.Listener
+	shutdownOnce  sync.Once
+	logBroadcast  *LogBroadcaster // For streaming logs to clients
 }
 
 type TunnelState string
@@ -40,11 +41,11 @@ type Tunnel struct {
 	Hostname          string
 	Pid               int
 	Cmd               *exec.Cmd
-	StartDate         time.Time   // Original tunnel creation time
-	LastConnectedTime time.Time   // Time of last successful connection (for age display)
-	AskpassToken      string      // Token for this tunnel's askpass validation
-	RetryCount        int         // Current reconnection attempt number
-	TotalReconnects   int         // Total successful reconnections (stability indicator)
+	StartDate         time.Time // Original tunnel creation time
+	LastConnectedTime time.Time // Time of last successful connection (for age display)
+	AskpassToken      string    // Token for this tunnel's askpass validation
+	RetryCount        int       // Current reconnection attempt number
+	TotalReconnects   int       // Total successful reconnections (stability indicator)
 	LastRetryTime     time.Time
 	AutoReconnect     bool        // Whether to auto-reconnect on failure
 	State             TunnelState // Current connection state
@@ -55,6 +56,7 @@ func New() *Daemon {
 	return &Daemon{
 		tunnels:       make(map[string]Tunnel),
 		askpassTokens: make(map[string]string),
+		logBroadcast:  NewLogBroadcaster(),
 	}
 }
 
@@ -97,6 +99,9 @@ func calculateBackoff(retryCount int) time.Duration {
 
 // Run starts the daemon's main loop.
 func (d *Daemon) Run() {
+	// Setup custom logger that broadcasts to connected clients
+	d.setupLogging()
+
 	// Setup PID and socket files and ensure they are cleaned up on exit.
 	socketPath := core.GetSocketPath()
 	os.WriteFile(core.GetPIDFilePath(), []byte(strconv.Itoa(os.Getpid())), 0o644)
@@ -136,6 +141,7 @@ func (d *Daemon) Run() {
 
 func (d *Daemon) handleConnection(conn net.Conn) {
 	defer conn.Close()
+
 	scanner := bufio.NewScanner(conn)
 	if !scanner.Scan() {
 		return
@@ -146,6 +152,16 @@ func (d *Daemon) handleConnection(conn net.Conn) {
 		return
 	}
 	command, args := parts[0], parts[1:]
+
+	// Log the command execution (skip VERSION and ASKPASS as they're internal)
+	// VERSION: automatic version check, ASKPASS: contains sensitive auth token
+	if command != "VERSION" && command != "ASKPASS" {
+		if len(args) > 0 {
+			slog.Info(fmt.Sprintf("Executing command: %s %v", command, args))
+		} else {
+			slog.Info(fmt.Sprintf("Executing command: %s", command))
+		}
+	}
 
 	var response Response
 	switch command {
@@ -200,6 +216,10 @@ func (d *Daemon) handleConnection(conn net.Conn) {
 		}
 	case "RESET":
 		response = d.resetRetries()
+	case "LOGS":
+		// Handle log streaming - don't send JSON response, just stream logs
+		d.handleLogs(conn)
+		return // Don't send JSON response
 	default:
 		response.AddMessage("Unknown command.", "ERROR")
 	}
@@ -269,7 +289,7 @@ func (d *Daemon) startTunnel(alias string) Response {
 		AskpassToken:      token,
 		RetryCount:        0,
 		AutoReconnect:     core.GetReconnectEnabled(), // Use config value
-		State:             StateConnected,              // Initial state is connected
+		State:             StateConnected,             // Initial state is connected
 	}
 	slog.Info(fmt.Sprintf("Attempting to start tunnel for '%s' (PID %d)", alias, cmd.Process.Pid))
 
@@ -297,6 +317,10 @@ func (d *Daemon) startTunnel(alias string) Response {
 		d.mu.Unlock()
 		return response
 	}
+
+	// Log success in daemon
+	slog.Info(fmt.Sprintf("Tunnel '%s' connected successfully (PID %d)", alias, cmd.Process.Pid))
+	// Send success message to client
 	response.AddMessage(fmt.Sprintf("Tunnel '%s' connected successfully.", alias), "INFO")
 
 	// This goroutine monitors the tunnel process and handles reconnection
@@ -484,9 +508,9 @@ func (d *Daemon) monitorTunnel(alias string) {
 		if tunnel, exists := d.tunnels[alias]; exists {
 			tunnel.RetryCount = 0
 			tunnel.State = StateConnected
-			tunnel.NextRetryTime = time.Time{}     // Clear next retry time
+			tunnel.NextRetryTime = time.Time{}    // Clear next retry time
 			tunnel.LastConnectedTime = time.Now() // Reset age to 0
-			tunnel.TotalReconnects++               // Increment stability counter
+			tunnel.TotalReconnects++              // Increment stability counter
 			d.tunnels[alias] = tunnel
 		}
 		d.mu.Unlock()
@@ -605,10 +629,10 @@ func (d *Daemon) stopTunnel(alias string) (Response, bool) {
 type DaemonStatus struct {
 	Hostname          string      `json:"hostname"`
 	Pid               int         `json:"pid"`
-	StartDate         string      `json:"start_date"`           // Original tunnel creation time
+	StartDate         string      `json:"start_date"`          // Original tunnel creation time
 	LastConnectedTime string      `json:"last_connected_time"` // Time of last successful connection
 	RetryCount        int         `json:"retry_count,omitempty"`
-	TotalReconnects   int         `json:"total_reconnects"`     // Total successful reconnections
+	TotalReconnects   int         `json:"total_reconnects"` // Total successful reconnections
 	AutoReconnect     bool        `json:"auto_reconnect"`
 	State             TunnelState `json:"state"`
 	NextRetry         string      `json:"next_retry,omitempty"` // ISO 8601 format
