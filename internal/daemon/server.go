@@ -198,6 +198,8 @@ func (d *Daemon) handleConnection(conn net.Conn) {
 		} else {
 			response.AddMessage("Invalid ASKPASS command", "ERROR")
 		}
+	case "RESET":
+		response = d.resetRetries()
 	default:
 		response.AddMessage("Unknown command.", "ERROR")
 	}
@@ -692,6 +694,44 @@ func (d *Daemon) handleAskpass(alias, token string) Response {
 
 	// Don't delete token yet - SSH might call askpass multiple times
 	// Token will be cleaned up when tunnel stops
+
+	return response
+}
+
+// resetRetries resets retry counters for all tunnels to zero
+func (d *Daemon) resetRetries() Response {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	response := Response{}
+
+	if len(d.tunnels) == 0 {
+		response.AddMessage("No tunnels to reset.", "WARN")
+		return response
+	}
+
+	resetCount := 0
+	for alias, tunnel := range d.tunnels {
+		// Reset tunnels that have any retry activity (current or historical)
+		if tunnel.RetryCount > 0 || tunnel.TotalReconnects > 0 || tunnel.State == StateReconnecting {
+			tunnel.RetryCount = 0
+			tunnel.TotalReconnects = 0
+			tunnel.NextRetryTime = time.Time{} // Clear next retry time
+			// Note: We keep the tunnel in its current state (connected/disconnected/reconnecting)
+			// but reset all retry/reconnect counters to give it a fresh start
+			d.tunnels[alias] = tunnel
+			resetCount++
+			slog.Info(fmt.Sprintf("Reset retry counters for tunnel '%s'", alias))
+		}
+	}
+
+	if resetCount == 0 {
+		response.AddMessage("No tunnels needed resetting.", "INFO")
+	} else if resetCount == 1 {
+		response.AddMessage("Reset 1 tunnel's retry counters.", "INFO")
+	} else {
+		response.AddMessage(fmt.Sprintf("Reset %d tunnels' retry counters.", resetCount), "INFO")
+	}
 
 	return response
 }

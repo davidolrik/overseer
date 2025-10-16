@@ -54,6 +54,7 @@ func NewRootCommand() *cobra.Command {
 		NewDaemonCommand(),
 		NewPasswordCommand(),
 		NewQuitCommand(),
+		NewResetCommand(),
 		NewStartCommand(),
 		NewStatusCommand(),
 		NewStopCommand(),
