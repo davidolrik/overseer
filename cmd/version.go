@@ -40,7 +40,7 @@ func NewVersionCommand() *cobra.Command {
 
 					// Check for version mismatch
 					if clientVersion != daemonVersion {
-						slog.Warn(fmt.Sprintf("Version mismatch! Client (%s) and daemon (%s) versions differ. Consider restarting the daemon.", clientFormatted, daemonFormatted))
+						slog.Warn(fmt.Sprintf("Version mismatch! Client %s and daemon %s versions differ. Consider restarting the daemon.", clientFormatted, daemonFormatted))
 					}
 				}
 			}
