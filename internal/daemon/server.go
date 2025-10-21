@@ -104,15 +104,40 @@ func (d *Daemon) Run() {
 
 	// Setup PID and socket files and ensure they are cleaned up on exit.
 	socketPath := core.GetSocketPath()
-	os.WriteFile(core.GetPIDFilePath(), []byte(strconv.Itoa(os.Getpid())), 0o644)
-	defer os.Remove(core.GetPIDFilePath())
-	defer os.Remove(core.GetSocketPath())
+	pidFilePath := core.GetPIDFilePath()
 
+	// Try to create the socket listener
 	listener, err := net.Listen("unix", socketPath)
 	if err != nil {
-		slog.Error(fmt.Sprintf("Fatal: Could not create socket listener: %v", err))
-		os.Exit(1)
+		// Socket creation failed - this could be due to a stale socket file
+		if _, statErr := os.Stat(socketPath); statErr == nil {
+			// Socket file exists, try to connect to it to see if daemon is actually running
+			conn, dialErr := net.Dial("unix", socketPath)
+			if dialErr == nil {
+				// Successfully connected, daemon is running
+				conn.Close()
+				slog.Error("Fatal: Daemon is already running")
+				os.Exit(1)
+			}
+			// Connection failed, socket file is stale - remove it
+			slog.Info(fmt.Sprintf("Removing stale socket file: %s", socketPath))
+			if removeErr := os.Remove(socketPath); removeErr != nil {
+				slog.Error(fmt.Sprintf("Fatal: Could not remove stale socket: %v", removeErr))
+				os.Exit(1)
+			}
+			// Try to create listener again
+			listener, err = net.Listen("unix", socketPath)
+		}
+		if err != nil {
+			slog.Error(fmt.Sprintf("Fatal: Could not create socket listener: %v", err))
+			os.Exit(1)
+		}
 	}
+
+	os.WriteFile(pidFilePath, []byte(strconv.Itoa(os.Getpid())), 0o644)
+	defer os.Remove(pidFilePath)
+	defer os.Remove(socketPath)
+
 	d.listener = listener
 	slog.Info(fmt.Sprintf("Daemon listening on %s", socketPath))
 

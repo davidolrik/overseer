@@ -58,10 +58,11 @@ func EnsureDaemonIsRunning() {
 	}
 	slog.Info(fmt.Sprintf("Daemon process launched with PID: %d", cmd.Process.Pid))
 
-	// Wait for the daemon to create the socket
-	for i := 0; i < 20; i++ {
+	// Wait for the daemon to create the socket and be ready to accept connections
+	for range 20 {
 		time.Sleep(100 * time.Millisecond)
-		if _, err := os.Stat(core.GetSocketPath()); err == nil {
+		// Try to connect to the socket to verify daemon is actually listening
+		if _, err := SendCommand("STATUS"); err == nil {
 			slog.Info("Daemon is ready.")
 			return
 		}
