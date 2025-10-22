@@ -8,19 +8,19 @@ import (
 	"olrik.dev/davidolrik/overseer/internal/daemon"
 )
 
-func NewStartCommand() *cobra.Command {
-	startCmd := &cobra.Command{
-		Use:     "start",
-		Aliases: []string{"connect"},
-		Short:   "Start tunnel",
-		Long:    `Start tunnel`,
+func NewConnectCommand() *cobra.Command {
+	connectCmd := &cobra.Command{
+		Use:     "connect",
+		Aliases: []string{"c"},
+		Short:   "Connect SSH tunnel",
+		Long:    `Connect SSH tunnel`,
 		Args:    cobra.ExactArgs(1),
 		ValidArgsFunction: sshHostCompletionFunc,
 		Run: func(cmd *cobra.Command, args []string) {
 			alias := args[0]
 			daemon.EnsureDaemonIsRunning()
 			daemon.CheckVersionMismatch()
-			response, err := daemon.SendCommand("START " + alias)
+			response, err := daemon.SendCommand("SSH_CONNECT " + alias)
 			if err != nil {
 				slog.Error(err.Error())
 				os.Exit(1)
@@ -29,5 +29,5 @@ func NewStartCommand() *cobra.Command {
 		},
 	}
 
-	return startCmd
+	return connectCmd
 }

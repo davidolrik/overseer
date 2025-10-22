@@ -32,30 +32,30 @@ func activeHostCompletionFunc(cmd *cobra.Command, args []string, toComplete stri
 	return activeHosts, cobra.ShellCompDirectiveNoFileComp
 }
 
-func NewStopCommand() *cobra.Command {
-	stopCmd := &cobra.Command{
-		Use:               "stop <alias>",
-		Aliases:           []string{"disconnect"},
-		Short:             "Stop tunnel",
-		Long:              `Stop tunnel`,
+func NewDisconnectCommand() *cobra.Command {
+	disconnectCmd := &cobra.Command{
+		Use:               "disconnect <alias>",
+		Aliases:           []string{"d"},
+		Short:             "Disconnect SSH tunnel",
+		Long:              `Disconnect SSH tunnel`,
 		Args:              cobra.RangeArgs(0, 1),
 		ValidArgsFunction: activeHostCompletionFunc,
 		Run: func(cmd *cobra.Command, args []string) {
 			daemon.CheckVersionMismatch()
 			if len(args) == 1 {
 				alias := args[0]
-				response, err := daemon.SendCommand("STOP " + alias)
+				response, err := daemon.SendCommand("SSH_DISCONNECT " + alias)
 				if err != nil {
 					// This typically means the daemon wasn't running in the first place.
-					slog.Error("Could not connect to daemon. Nothing to stop.")
+					slog.Error("Could not connect to daemon. Nothing to disconnect.")
 					os.Exit(1)
 				}
 				response.LogMessages()
 			} else {
-				response, err := daemon.SendCommand("STOPALL")
+				response, err := daemon.SendCommand("SSH_DISCONNECT_ALL")
 				if err != nil {
 					// This typically means the daemon wasn't running in the first place.
-					slog.Error("Could not connect to daemon. Nothing to stop.")
+					slog.Error("Could not connect to daemon. Nothing to disconnect.")
 					os.Exit(1)
 
 				}
@@ -64,5 +64,5 @@ func NewStopCommand() *cobra.Command {
 		},
 	}
 
-	return stopCmd
+	return disconnectCmd
 }

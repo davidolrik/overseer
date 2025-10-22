@@ -13,11 +13,11 @@ func NewQuitCommand() *cobra.Command {
 		Use:     "quit",
 		Aliases: []string{"exit", "shutdown"},
 		Short:   "Stop all tunnels and shutdown the daemon",
-		Long:    `Stops all active SSH tunnels and shuts down the overseer daemon. This is a clean way to exit overseer and terminate all managed connections.`,
+		Long:    `Stops all active SSH tunnels and shuts down the overseer daemon.`,
 		Args:    cobra.NoArgs,
 		Run: func(cmd *cobra.Command, args []string) {
 			daemon.CheckVersionMismatch()
-			response, err := daemon.SendCommand("STOPALL")
+			response, err := daemon.SendCommand("SSH_DISCONNECT_ALL")
 			if err != nil {
 				slog.Error("Could not connect to daemon. Nothing to stop.")
 				os.Exit(1)

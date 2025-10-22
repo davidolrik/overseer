@@ -190,11 +190,11 @@ func (d *Daemon) handleConnection(conn net.Conn) {
 
 	var response Response
 	switch command {
-	case "START":
+	case "SSH_CONNECT":
 		if len(args) > 0 {
 			response = d.startTunnel(args[0])
 		}
-	case "STOP":
+	case "SSH_DISCONNECT":
 		if len(args) > 0 {
 			var shouldShutdown bool
 			response, shouldShutdown = d.stopTunnel(args[0])
@@ -215,7 +215,7 @@ func (d *Daemon) handleConnection(conn net.Conn) {
 			}
 			return // We've handled the entire response and action for this case.
 		}
-	case "STOPALL":
+	case "SSH_DISCONNECT_ALL":
 		for alias := range d.tunnels {
 			stopResponse, shouldShutdown := d.stopTunnel(alias)
 			response.AddMessage(stopResponse.Messages[0].Message, stopResponse.Messages[0].Status)
