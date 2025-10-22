@@ -18,16 +18,16 @@ Configure connection reuse, socks proxies, port forwarding and jump hosts in `~/
 ## Quick Start
 
 ```bash
-# Start a tunnel using SSH config alias
-overseer start jump.example.com
+# Connect a tunnel using SSH config alias
+overseer connect jump.example.com
 
 # Check tunnel status
 overseer status
 
-# Stop a specific tunnel
-overseer stop jump.example.com
+# Disconnect a specific tunnel
+overseer disconnect jump.example.com
 
-# Stop all tunnels and shutdown daemon
+# Disconnect all tunnels and shutdown daemon
 overseer quit
 ```
 
@@ -109,15 +109,15 @@ max_retries = 10            # Give up after this many attempts
 ### Tunnel Management
 
 ```sh
-# Start a tunnel (daemon starts automatically if not running)
-overseer start <ssh-alias>
-overseer connect <ssh-alias>  # alias for 'start'
+# Connect a tunnel (daemon starts automatically if not running)
+overseer connect <ssh-alias>
+overseer c <ssh-alias>  # alias for 'connect'
 
-# Stop a specific tunnel
-overseer stop <ssh-alias>
-overseer disconnect <ssh-alias>  # alias for 'stop'
+# Disconnect a specific tunnel
+overseer disconnect <ssh-alias>
+overseer d <ssh-alias>  # alias for 'disconnect'
 
-# Stop all tunnels and shutdown daemon
+# Disconnect all tunnels and shutdown daemon
 overseer quit
 
 # View tunnel status
@@ -151,7 +151,7 @@ overseer help
 overseer --help
 
 # Command-specific help
-overseer start --help
+overseer connect --help
 ```
 
 ## License
