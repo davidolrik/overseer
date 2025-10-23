@@ -93,10 +93,31 @@ func CheckVersionMismatch() {
 					clientFormatted := core.FormatVersion(clientVersion)
 					daemonFormatted := core.FormatVersion(daemonVersion)
 					slog.Warn(fmt.Sprintf("Version mismatch! Client (%s) and daemon (%s) versions differ.", clientFormatted, daemonFormatted))
-					slog.Warn("The daemon may be running an outdated version. Run 'overseer quit' and try again.")
+					slog.Warn("The daemon may be running an outdated version. Run 'overseer stop' and try again.")
 					versionWarned = true
 				}
 			}
 		}
 	})
+}
+
+// StartDaemon starts the daemon process in the background
+func StartDaemon() error {
+	cmd := exec.Command(os.Args[0], "daemon")
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("could not fork daemon process: %w", err)
+	}
+	slog.Debug(fmt.Sprintf("Daemon process launched with PID: %d", cmd.Process.Pid))
+	return nil
+}
+
+// WaitForDaemon waits for the daemon to be ready
+func WaitForDaemon() error {
+	for range 20 {
+		time.Sleep(100 * time.Millisecond)
+		if _, err := SendCommand("STATUS"); err == nil {
+			return nil
+		}
+	}
+	return fmt.Errorf("daemon was launched but socket was not created in time")
 }

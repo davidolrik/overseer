@@ -38,6 +38,13 @@ func NewStatusCommand() *cobra.Command {
 			format, _ := cmd.Flags().GetString("format")
 			switch format {
 			case "text":
+				// Show security context if enabled
+			// Show security context (always active)
+			contextResponse, err := daemon.SendCommand("CONTEXT_STATUS")
+			if err == nil && contextResponse.Data != nil {
+				displayContextBanner(contextResponse.Data)
+			}
+
 				fmt.Println("Active Tunnels:")
 				for _, status := range statuses {
 					// Use LastConnectedTime for age (resets to 0 on reconnection)
@@ -106,4 +113,38 @@ func NewStatusCommand() *cobra.Command {
 	statusCmd.Flags().StringP("format", "F", "text", "Format to use (text/json)")
 
 	return statusCmd
+}
+
+// displayContextBanner shows a compact context banner at the top of status output
+func displayContextBanner(data interface{}) {
+	jsonData, err := json.Marshal(data)
+	if err != nil {
+		return
+	}
+
+	var status struct {
+		Context string            `json:"context"`
+		Sensors map[string]string `json:"sensors"`
+	}
+
+	if err := json.Unmarshal(jsonData, &status); err != nil {
+		return
+	}
+
+	// ANSI color codes
+	const (
+		colorCyan  = "\033[36m"
+		colorReset = "\033[0m"
+	)
+
+	// Display compact context info
+	fmt.Printf("%sContext:%s %s", colorCyan, colorReset, status.Context)
+
+	// Show public IP if available
+	if ip, ok := status.Sensors["public_ip"]; ok && ip != "" {
+		fmt.Printf(" (Public IP: %s)", ip)
+	}
+
+	fmt.Println()
+	fmt.Println()
 }

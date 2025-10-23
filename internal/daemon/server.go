@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"io"
 	"log/slog"
@@ -9,24 +10,30 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
 
+	"github.com/fsnotify/fsnotify"
 	"olrik.dev/davidolrik/overseer/internal/core"
 	"olrik.dev/davidolrik/overseer/internal/keyring"
+	"olrik.dev/davidolrik/overseer/internal/security"
 )
 
-// Daemon manages the SSH tunnel processes.
+// Daemon manages the SSH tunnel processes and security context.
 type Daemon struct {
-	tunnels       map[string]Tunnel
-	askpassTokens map[string]string // Maps token -> alias for validation
-	mu            sync.Mutex
-	listener      net.Listener
-	shutdownOnce  sync.Once
-	logBroadcast  *LogBroadcaster // For streaming logs to clients
+	tunnels         map[string]Tunnel
+	askpassTokens   map[string]string // Maps token -> alias for validation
+	mu              sync.Mutex
+	listener        net.Listener
+	shutdownOnce    sync.Once
+	logBroadcast    *LogBroadcaster    // For streaming logs to clients
+	securityManager *security.Manager  // Security context manager
+	ctx             context.Context    // Context for lifecycle management
+	cancelFunc      context.CancelFunc // Cancel function for context
 }
 
 type TunnelState string
@@ -53,19 +60,22 @@ type Tunnel struct {
 }
 
 func New() *Daemon {
+	ctx, cancel := context.WithCancel(context.Background())
 	return &Daemon{
 		tunnels:       make(map[string]Tunnel),
 		askpassTokens: make(map[string]string),
 		logBroadcast:  NewLogBroadcaster(),
+		ctx:           ctx,
+		cancelFunc:    cancel,
 	}
 }
 
 // calculateBackoff calculates the exponential backoff duration
 func calculateBackoff(retryCount int) time.Duration {
 	// Parse config values
-	initialBackoffStr := core.GetReconnectInitialBackoff()
-	maxBackoffStr := core.GetReconnectMaxBackoff()
-	backoffFactor := core.GetReconnectBackoffFactor()
+	initialBackoffStr := core.Config.Reconnect.InitialBackoff
+	maxBackoffStr := core.Config.Reconnect.MaxBackoff
+	backoffFactor := core.Config.Reconnect.BackoffFactor
 
 	initialBackoff, err := time.ParseDuration(initialBackoffStr)
 	if err != nil {
@@ -141,11 +151,23 @@ func (d *Daemon) Run() {
 	d.listener = listener
 	slog.Info(fmt.Sprintf("Daemon listening on %s", socketPath))
 
+	// Initialize security context manager (always active)
+	if err := d.initSecurityManager(); err != nil {
+		slog.Error("Failed to initialize security manager", "error", err)
+	} else {
+		slog.Info("Security context monitoring started")
+	}
+
+	// Watch config file for changes
+	d.watchConfig()
+
+	// Handle signals
+	shutdownChan := make(chan os.Signal, 1)
+	signal.Notify(shutdownChan, syscall.SIGTERM, syscall.SIGINT)
+
 	// Graceful shutdown on SIGTERM/SIGINT
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGTERM, syscall.SIGINT)
 	go func() {
-		<-sigChan
+		<-shutdownChan
 		slog.Info("Shutdown signal received. Closing all tunnels.")
 		d.shutdown()
 		os.Exit(0)
@@ -196,39 +218,21 @@ func (d *Daemon) handleConnection(conn net.Conn) {
 		}
 	case "SSH_DISCONNECT":
 		if len(args) > 0 {
-			var shouldShutdown bool
-			response, shouldShutdown = d.stopTunnel(args[0])
-
-			// If a shutdown is imminent, append the notification to the client's response.
-			if shouldShutdown {
-				response.AddMessage("Last tunnel closed. Daemon is shutting down.", "INFO")
-			}
-
-			// Send the final (potentially multi-line) response back to the client.
-			conn.Write([]byte(response.ToJSON()))
-
-			// Now, perform the shutdown on the daemon side.
-			if shouldShutdown {
-				// We can log here for the daemon's own records.
-				slog.Info("Last tunnel closed. Shutting down.")
-				d.shutdown()
-			}
-			return // We've handled the entire response and action for this case.
+			response = d.stopTunnel(args[0])
 		}
 	case "SSH_DISCONNECT_ALL":
 		for alias := range d.tunnels {
-			stopResponse, shouldShutdown := d.stopTunnel(alias)
+			stopResponse := d.stopTunnel(alias)
 			response.AddMessage(stopResponse.Messages[0].Message, stopResponse.Messages[0].Status)
-
-			if shouldShutdown {
-				response.AddMessage("Last tunnel closed. Daemon is shutting down.", "INFO")
-
-				// We can log here for the daemon's own records.
-				slog.Info("Last tunnel closed. Shutting down.")
-				d.shutdown()
-				break
-			}
 		}
+	case "STOP":
+		response = d.stopDaemon()
+		// Send response before shutting down
+		conn.Write([]byte(response.ToJSON()))
+		// Shutdown the daemon
+		slog.Info("Stop command received. Shutting down daemon.")
+		d.shutdown()
+		return // Don't send response again
 	case "STATUS":
 		response = d.getStatus()
 	case "VERSION":
@@ -245,6 +249,8 @@ func (d *Daemon) handleConnection(conn net.Conn) {
 		// Handle log streaming - don't send JSON response, just stream logs
 		d.handleLogs(conn)
 		return // Don't send JSON response
+	case "CONTEXT_STATUS":
+		response = d.getContextStatus()
 	default:
 		response.AddMessage("Unknown command.", "ERROR")
 	}
@@ -313,7 +319,7 @@ func (d *Daemon) startTunnel(alias string) Response {
 		LastConnectedTime: now,
 		AskpassToken:      token,
 		RetryCount:        0,
-		AutoReconnect:     core.GetReconnectEnabled(), // Use config value
+		AutoReconnect:     core.Config.Reconnect.Enabled, // Use config value
 		State:             StateConnected,             // Initial state is connected
 	}
 	slog.Info(fmt.Sprintf("Attempting to start tunnel for '%s' (PID %d)", alias, cmd.Process.Pid))
@@ -388,7 +394,7 @@ func (d *Daemon) monitorTunnel(alias string) {
 		d.tunnels[alias] = tunnel
 
 		// Get max retries from config
-		maxRetries := core.GetReconnectMaxRetries()
+		maxRetries := core.Config.Reconnect.MaxRetries
 
 		// Check if auto-reconnect is enabled and we haven't exceeded max retries
 		if !tunnel.AutoReconnect || tunnel.RetryCount >= maxRetries {
@@ -615,7 +621,7 @@ func (d *Daemon) verifyConnection(stderr io.ReadCloser, alias string, result cha
 	}
 }
 
-func (d *Daemon) stopTunnel(alias string) (Response, bool) {
+func (d *Daemon) stopTunnel(alias string) Response {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
@@ -624,7 +630,7 @@ func (d *Daemon) stopTunnel(alias string) (Response, bool) {
 	tunnel, exists := d.tunnels[alias]
 	if !exists {
 		response.AddMessage(fmt.Sprintf("Tunnel '%s' is not running.", alias), "ERROR")
-		return response, false
+		return response
 	}
 
 	if err := tunnel.Cmd.Process.Kill(); err != nil {
@@ -634,7 +640,7 @@ func (d *Daemon) stopTunnel(alias string) (Response, bool) {
 		}
 		delete(d.tunnels, alias)
 		response.AddMessage(fmt.Sprintf("Failed to kill process for '%s': %v", alias, err), "ERROR")
-		return response, len(d.tunnels) == 0
+		return response
 	}
 
 	// Clean up askpass token
@@ -644,11 +650,8 @@ func (d *Daemon) stopTunnel(alias string) (Response, bool) {
 	delete(d.tunnels, alias)
 	slog.Info(fmt.Sprintf("Stopped tunnel for '%s'.", alias))
 
-	// Check if this was the last tunnel
-	shouldShutdown := len(d.tunnels) == 0
-
 	response.AddMessage(fmt.Sprintf("Tunnel process for '%s' stopped.", alias), "INFO")
-	return response, shouldShutdown
+	return response
 }
 
 type DaemonStatus struct {
@@ -790,6 +793,16 @@ func (d *Daemon) shutdown() {
 	d.shutdownOnce.Do(func() {
 		slog.Info("Executing shutdown sequence...")
 
+		// Stop security manager if running
+		if d.securityManager != nil {
+			d.securityManager.Stop()
+		}
+
+		// Cancel context to stop all background tasks
+		if d.cancelFunc != nil {
+			d.cancelFunc()
+		}
+
 		// Close the listener first to prevent any new client connections.
 		// This will unblock the main Accept() loop in the Run() function.
 		if d.listener != nil {
@@ -805,4 +818,432 @@ func (d *Daemon) shutdown() {
 		}
 		d.tunnels = make(map[string]Tunnel)
 	})
+}
+
+// initSecurityManager initializes the security context manager
+func (d *Daemon) initSecurityManager() error {
+	return d.initSecurityManagerInternal(core.Config.CheckOnStartup)
+}
+
+// initSecurityManagerWithoutStartupCheck initializes the security manager without startup check
+func (d *Daemon) initSecurityManagerWithoutStartupCheck() error {
+	return d.initSecurityManagerInternal(false)
+}
+
+// initSecurityManagerInternal is the internal implementation for initializing the security manager
+func (d *Daemon) initSecurityManagerInternal(checkOnStartup bool) error {
+	// Convert context rules from config to security rules
+	rules := make([]security.Rule, 0, len(core.Config.Contexts))
+
+	for _, contextRule := range core.Config.Contexts {
+		rules = append(rules, security.Rule{
+			Name:       contextRule.Name,
+			Conditions: contextRule.Conditions,
+			Actions: security.RuleActions{
+				Connect:    contextRule.Actions.Connect,
+				Disconnect: contextRule.Actions.Disconnect,
+			},
+		})
+	}
+
+	// Ensure there's always an "untrusted" fallback rule at the end
+	hasUntrusted := false
+	for _, rule := range rules {
+		if rule.Name == "untrusted" {
+			hasUntrusted = true
+			break
+		}
+	}
+	if !hasUntrusted {
+		rules = append(rules, security.Rule{
+			Name:       "untrusted",
+			Conditions: map[string][]string{}, // Empty conditions = fallback/default
+			Actions: security.RuleActions{
+				Disconnect: []string{}, // By default, disconnect nothing
+			},
+		})
+	}
+
+	// Create security manager
+	config := security.ManagerConfig{
+		Rules:           rules,
+		OutputFile:      core.Config.ContextOutputFile,
+		CheckOnStartup:  checkOnStartup,
+		OnContextChange: d.handleContextChange,
+		Logger:          slog.Default(),
+	}
+
+	manager, err := security.NewManager(config)
+	if err != nil {
+		return fmt.Errorf("failed to create security manager: %w", err)
+	}
+
+	d.securityManager = manager
+
+	// Start the manager
+	if err := manager.Start(d.ctx, checkOnStartup); err != nil {
+		return fmt.Errorf("failed to start security manager: %w", err)
+	}
+
+	return nil
+}
+
+// handleContextChange is called when the security context changes
+func (d *Daemon) handleContextChange(from, to string, rule *security.Rule) {
+	slog.Info("Security context changed",
+		"from", from,
+		"to", to)
+
+	// If no rule matched, nothing to do
+	if rule == nil {
+		return
+	}
+
+	// Execute disconnect actions first
+	for _, alias := range rule.Actions.Disconnect {
+		d.mu.Lock()
+		_, exists := d.tunnels[alias]
+		d.mu.Unlock()
+
+		if exists {
+			slog.Info("Auto-disconnecting tunnel due to context change",
+				"tunnel", alias,
+				"context", to)
+			d.stopTunnel(alias)
+		}
+	}
+
+	// Then execute connect actions
+	for _, alias := range rule.Actions.Connect {
+		d.mu.Lock()
+		_, exists := d.tunnels[alias]
+		d.mu.Unlock()
+
+		if !exists {
+			slog.Info("Auto-connecting tunnel due to context change",
+				"tunnel", alias,
+				"context", to)
+			d.startTunnel(alias)
+		}
+	}
+}
+
+// ContextStatus represents the current security context information
+type ContextStatus struct {
+	Context        string                     `json:"context"`
+	LastChange     string                     `json:"last_change"`
+	Uptime         string                     `json:"uptime"`
+	Sensors        map[string]string          `json:"sensors"`
+	ChangeHistory  []ContextChangeInfo        `json:"change_history,omitempty"`
+}
+
+// ContextChangeInfo represents a context change event
+type ContextChangeInfo struct {
+	From      string `json:"from"`
+	To        string `json:"to"`
+	Timestamp string `json:"timestamp"`
+	Trigger   string `json:"trigger"`
+}
+
+// getContextStatus returns the current security context status
+func (d *Daemon) getContextStatus() Response {
+	response := Response{}
+
+	// Check if security manager is initialized
+	if d.securityManager == nil {
+		response.AddMessage("Security context manager not initialized", "ERROR")
+		return response
+	}
+
+	// Get current context
+	ctx := d.securityManager.GetContext()
+
+	// Build sensor map
+	sensors := make(map[string]string)
+	for key, value := range ctx.GetAllSensors() {
+		sensors[key] = value.String()
+	}
+
+	// Get change history
+	history := ctx.GetChangeHistory()
+	changeHistory := make([]ContextChangeInfo, 0, len(history))
+
+	// Only include last 10 changes to keep response size manageable
+	startIdx := 0
+	if len(history) > 10 {
+		startIdx = len(history) - 10
+	}
+
+	for i := startIdx; i < len(history); i++ {
+		change := history[i]
+		changeHistory = append(changeHistory, ContextChangeInfo{
+			From:      change.From,
+			To:        change.To,
+			Timestamp: change.Timestamp.Format(time.RFC3339),
+			Trigger:   change.Trigger,
+		})
+	}
+
+	// Build status
+	status := ContextStatus{
+		Context:       ctx.GetContext(),
+		LastChange:    ctx.GetLastChange().Format(time.RFC3339),
+		Uptime:        ctx.GetUptime().Round(time.Second).String(),
+		Sensors:       sensors,
+		ChangeHistory: changeHistory,
+	}
+
+	response.AddMessage("OK", "INFO")
+	response.AddData(status)
+	return response
+}
+
+// stopDaemon handles the STOP command to shutdown the daemon
+func (d *Daemon) stopDaemon() Response {
+	response := Response{}
+
+	d.mu.Lock()
+	tunnelCount := len(d.tunnels)
+	d.mu.Unlock()
+
+	if tunnelCount > 0 {
+		response.AddMessage(fmt.Sprintf("Stopping daemon and disconnecting %d active tunnel(s)...", tunnelCount), "INFO")
+	} else {
+		response.AddMessage("Stopping daemon...", "INFO")
+	}
+
+	return response
+}
+
+// reloadConfig reloads the configuration and restarts the security manager
+func (d *Daemon) reloadConfig() error {
+	// Save the old config in case we need to roll back
+	oldConfig := core.Config
+
+	// Reload the configuration from the KDL file
+	kdlPath := filepath.Join(core.Config.ConfigPath, "config.kdl")
+	newConfig, err := core.LoadConfig(kdlPath)
+	if err != nil {
+		// Config parsing failed - keep the old config and log error
+		// Clean up the error message by removing verbose prefixes and visual pointer
+		errMsg := err.Error()
+		// Remove "failed to unmarshal KDL: parse failed: " prefix if present
+		errMsg = strings.TrimPrefix(errMsg, "failed to unmarshal KDL: parse failed: ")
+		errMsg = strings.TrimPrefix(errMsg, "failed to unmarshal KDL: scan failed: ")
+
+		// Remove the visual pointer (everything after the line/column info)
+		// Format: "error at line X, column Y:\n...code snippet...\n   ^"
+		if idx := strings.Index(errMsg, ":\n"); idx != -1 {
+			errMsg = errMsg[:idx]
+		}
+
+		slog.Error("Configuration file has syntax errors, keeping previous configuration",
+			"file", kdlPath,
+			"error", errMsg)
+		return fmt.Errorf("config parse error")
+	}
+
+	// Preserve the config path
+	newConfig.ConfigPath = oldConfig.ConfigPath
+
+	// Preserve the current context before stopping the manager
+	var oldContext string
+	var oldManager *security.Manager
+	if d.securityManager != nil {
+		ctx := d.securityManager.GetContext()
+		oldContext = ctx.GetContext()
+		oldManager = d.securityManager
+		slog.Debug("Preserving context during reload", "context", oldContext)
+	}
+
+	// Temporarily update the global config for initialization
+	core.Config = newConfig
+
+	// Try to initialize new security manager with new config
+	// Don't stop the old one yet in case this fails
+	var newManager *security.Manager
+	if err := func() error {
+		// Create a temporary manager to test the new config
+		rules := make([]security.Rule, 0, len(newConfig.Contexts))
+		for _, contextRule := range newConfig.Contexts {
+			rules = append(rules, security.Rule{
+				Name:       contextRule.Name,
+				Conditions: contextRule.Conditions,
+				Actions: security.RuleActions{
+					Connect:    contextRule.Actions.Connect,
+					Disconnect: contextRule.Actions.Disconnect,
+				},
+			})
+		}
+
+		// Ensure there's always an "untrusted" fallback rule
+		hasUntrusted := false
+		for _, rule := range rules {
+			if rule.Name == "untrusted" {
+				hasUntrusted = true
+				break
+			}
+		}
+		if !hasUntrusted {
+			rules = append(rules, security.Rule{
+				Name:       "untrusted",
+				Conditions: map[string][]string{},
+				Actions: security.RuleActions{
+					Disconnect: []string{},
+				},
+			})
+		}
+
+		config := security.ManagerConfig{
+			Rules:           rules,
+			OutputFile:      newConfig.ContextOutputFile,
+			CheckOnStartup:  false,
+			OnContextChange: d.handleContextChange,
+			Logger:          slog.Default(),
+		}
+
+		manager, err := security.NewManager(config)
+		if err != nil {
+			return fmt.Errorf("failed to create security manager: %w", err)
+		}
+
+		if err := manager.Start(d.ctx, false); err != nil {
+			return fmt.Errorf("failed to start security manager: %w", err)
+		}
+
+		newManager = manager
+		return nil
+	}(); err != nil {
+		// New manager failed to initialize - rollback to old config
+		core.Config = oldConfig
+		slog.Error("New configuration is invalid, keeping previous configuration")
+		slog.Debug("Security manager init error details", "error", err)
+		return fmt.Errorf("security manager init failed")
+	}
+
+	// Success! Now we can safely stop the old manager and switch to the new one
+	if oldManager != nil {
+		oldManager.Stop()
+	}
+	d.securityManager = newManager
+
+	// Restore the previous context if we had one
+	if oldContext != "" && oldContext != "unknown" && d.securityManager != nil {
+		newCtx := d.securityManager.GetContext()
+		newCtx.SetContext(oldContext, "config_reload_restore")
+		slog.Debug("Restored previous context", "context", oldContext)
+	}
+
+	// Force an immediate context check after reload to apply new rules
+	if d.securityManager != nil {
+		if err := d.securityManager.TriggerCheckWithReason("config_reload"); err != nil {
+			slog.Warn("Failed to check context after config reload", "error", err)
+		} else {
+			slog.Info("Context re-evaluated after config reload")
+		}
+	}
+
+	return nil
+}
+
+// watchConfig sets up automatic config file watching
+func (d *Daemon) watchConfig() {
+	// Watch the config file manually using fsnotify
+	kdlPath := filepath.Join(core.Config.ConfigPath, "config.kdl")
+
+	watcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		slog.Error("Failed to create config file watcher", "error", err)
+		return
+	}
+
+	if err := watcher.Add(kdlPath); err != nil {
+		slog.Error("Failed to watch config file", "error", err, "path", kdlPath)
+		watcher.Close()
+		return
+	}
+
+	// Set up a debounced reload handler
+	var reloadTimer *time.Timer
+	var reloadMutex sync.Mutex
+
+	go func() {
+		defer watcher.Close()
+
+		for {
+			select {
+			case <-d.ctx.Done():
+				return
+			case event, ok := <-watcher.Events:
+				if !ok {
+					return
+				}
+
+				// Log ALL events for debugging (helps identify editor-specific behaviors)
+				slog.Debug("Filesystem event on config file", "event", event.Op.String(), "file", event.Name)
+
+				// Re-add watch after RENAME, REMOVE, or CREATE events
+				// Editors using atomic writes remove the original from the watch list.
+				// We may need to retry if the file doesn't exist yet during the atomic operation.
+				if event.Op&(fsnotify.Rename|fsnotify.Remove|fsnotify.Create) != 0 {
+					go func() {
+						// Retry with exponential backoff (10ms, 20ms, 40ms, 80ms, 160ms)
+						for attempt := 0; attempt < 5; attempt++ {
+							if attempt > 0 {
+								delay := time.Duration(10<<uint(attempt-1)) * time.Millisecond
+								time.Sleep(delay)
+							}
+
+							// Remove old watch (ignore errors - it might not exist)
+							watcher.Remove(kdlPath)
+
+							// Try to add the watch
+							if err := watcher.Add(kdlPath); err == nil {
+								slog.Debug("Successfully re-added watch", "path", kdlPath, "attempt", attempt+1)
+								return
+							} else if attempt == 4 {
+								// Only log error on final attempt
+								slog.Error("Failed to re-add watch after multiple attempts", "error", err, "path", kdlPath)
+							}
+						}
+					}()
+				}
+
+				// Reload on write, create, or rename events
+				// Many editors use atomic rename operations instead of direct writes
+				if event.Op&(fsnotify.Write|fsnotify.Create|fsnotify.Rename) == 0 {
+					slog.Debug("Ignoring event (not write/create/rename)", "event", event.Op.String())
+					continue
+				}
+
+				slog.Debug("Config file change detected, will reload", "event", event.Op.String(), "file", event.Name)
+
+				reloadMutex.Lock()
+				// Debounce: wait 500ms after last change before reloading
+				if reloadTimer != nil {
+					reloadTimer.Stop()
+				}
+
+				reloadTimer = time.AfterFunc(500*time.Millisecond, func() {
+					slog.Info("Configuration file changed, reloading...", "file", event.Name)
+					if err := d.reloadConfig(); err != nil {
+						// Error already logged in reloadConfig() with details
+						// Just log that reload failed (no need to repeat the error)
+						slog.Debug("Config reload failed", "error", err)
+					} else {
+						slog.Info("Configuration reloaded successfully")
+					}
+				})
+				reloadMutex.Unlock()
+
+			case err, ok := <-watcher.Errors:
+				if !ok {
+					return
+				}
+				slog.Error("Config file watcher error", "error", err)
+			}
+		}
+	}()
+
+	slog.Info("Watching configuration file for changes")
 }

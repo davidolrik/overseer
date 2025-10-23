@@ -1,23 +1,27 @@
 <img width="25%" align="right" alt="Overseer logo" src="https://raw.githubusercontent.com/davidolrik/overseer/main/assets/img/overseer.png">
 
-# Overseer - SSH tunnel manager
+# Overseer - Contextual Computing
 
-Connect and manage multiple SSH tunnels, uses your existing OpenSSH config.
+Detect Security Context based upon sensors & manage SSH tunnels,
+uses your existing OpenSSH config.
 
 Configure connection reuse, socks proxies, port forwarding and jump hosts in `~/.ssh/config` and use `overseer` to manage your tunnels.
 
 ## Features
 
 * **Full OpenSSH Integration**: Supports everything OpenSSH can do (connection reuse, SOCKS proxies, port forwarding, jump hosts)
+* **Security Context Awareness**: Automatically detect your logical location and connect/disconnect tunnels based on your context
 * **Automatic Reconnection**: Tunnels automatically reconnect with exponential backoff when connections fail
 * **Secure Password Storage**: Store passwords in system keyring (Keychain/Secret Service/Credential Manager)
-* **Shell Completion**: Dynamic completion for SSH host aliases (bash, zsh, fish, powershell)
+* **Shell Completion**: Dynamic completion commands and SSH host aliases (bash, zsh, fish)
 * **Multiple Output Formats**: Status available in plaintext (with colors) and JSON for easy automation
-* **Smart Auto-Shutdown**: Daemon automatically shuts down when last tunnel closes
 
 ## Quick Start
 
 ```bash
+# Start overseer daemon
+overseer start
+
 # Connect a tunnel using SSH config alias
 overseer connect jump.example.com
 
@@ -28,7 +32,7 @@ overseer status
 overseer disconnect jump.example.com
 
 # Disconnect all tunnels and shutdown daemon
-overseer quit
+overseer stop
 ```
 
 ## Installation
@@ -45,8 +49,8 @@ mise use --global ubi:davidolrik/overseer@latest
 
 ## SSH Config
 
-All configuration related to your tunnels must be defined in your SSH config, `overseer` will only manage running
-tunnels based upon the SSH config.
+All configuration related to your tunnels must be defined in your SSH config,
+`overseer` will only manage running tunnels based upon the SSH config.
 
 ```ssh-config
 Host *
@@ -93,16 +97,94 @@ overseer status
 #   ✗ backup-server (PID: 0, Age: 10m)
 ```
 
-Configure reconnection behavior in `~/.config/overseer/config.toml`:
+Configure reconnection behavior in `~/.config/overseer/config.kdl`:
 
-```toml
-[reconnect]
-enabled = true              # Enable/disable auto-reconnect
-initial_backoff = "1s"      # First retry delay
-max_backoff = "5m"          # Maximum delay between retries
-backoff_factor = 2          # Multiplier for each retry
-max_retries = 10            # Give up after this many attempts
+```kdl
+reconnect {
+  enabled true              // Enable/disable auto-reconnect
+  initial_backoff "1s"      // First retry delay
+  max_backoff "5m"          // Maximum delay between retries
+  backoff_factor 2          // Multiplier for each retry
+  max_retries 10            // Give up after this many attempts
+}
 ```
+
+## Security Context Awareness
+
+Overseer automatically detects your network context and can connect/disconnect tunnels
+based on where you are.
+This enables true contextual computing - your tunnels adapt to your environment.
+
+**How it works:**
+
+* Monitors your public IP address (via DNS query to OpenDNS)
+* Detects network changes in real-time (macOS/Linux)
+* Evaluates context rules to determine your location
+* Automatically manages tunnels based on context changes
+
+**Example configuration** (`~/.config/overseer/config.kdl`):
+
+```kdl
+// Optional: Write current context to file for external integrations
+context_output_file "/tmp/overseer-context.txt"
+
+// Contexts are evaluated from top to bottom (first match wins)
+// Place more specific contexts first
+context "home" {
+  display_name "Home"
+
+  conditions {
+    public_ip "92.0.2.42"       // Your home IP
+    public_ip "192.168.1.0/24"  // Or local network range
+  }
+
+  actions {
+    connect "home-lab"          // Connect to home services
+    disconnect "office-vpn"     // Disconnect from office
+  }
+}
+
+context "office" {
+  display_name "Office"
+
+  conditions {
+    public_ip "198.51.100.0/24" // Office IP range
+  }
+
+  actions {
+    connect "office-vpn"
+    disconnect "home-lab"
+  }
+}
+
+// Fallback context when no rules match
+// (automatically added if not defined)
+context "untrusted" {
+  display_name "Untrusted"
+
+  actions {
+    disconnect "home-lab"
+    disconnect "office-vpn"
+  }
+}
+```
+
+**View current context:**
+
+```bash
+# Detailed context information
+overseer context
+
+# Quick view in status output
+overseer status
+```
+
+**Pattern matching in conditions:**
+
+* Exact IP: `public_ip "123.45.67.89"`
+* CIDR range: `public_ip "192.168.1.0/24"`
+* Wildcards: `public_ip "192.168.*"`
+* Multiple values: `public_ip "123.45.67.89"` and `public_ip "123.45.67.90"` (matches any)
 
 ## Commands
 

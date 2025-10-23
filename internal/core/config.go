@@ -7,8 +7,6 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
-	"github.com/spf13/pflag"
-	"github.com/spf13/viper"
 )
 
 const (
@@ -17,104 +15,107 @@ const (
 	SocketName  = "daemon.sock"
 )
 
-var Config *viper.Viper
-
-var globalFlagsToConfigKey = map[string]string{
-	"config-path": "config_path",
-	"verbose":     "verbose",
-}
-
+// GetSocketPath returns the path to the daemon socket
 func GetSocketPath() string {
-	return filepath.Join(Config.GetString("config_path"), SocketName)
+	return filepath.Join(Config.ConfigPath, SocketName)
 }
 
+// GetPIDFilePath returns the path to the daemon PID file
 func GetPIDFilePath() string {
-	return filepath.Join(Config.GetString("config_path"), PidFileName)
+	return filepath.Join(Config.ConfigPath, PidFileName)
 }
 
-func GetReconnectEnabled() bool {
-	return Config.GetBool("reconnect.enabled")
-}
-
-func GetReconnectInitialBackoff() string {
-	return Config.GetString("reconnect.initial_backoff")
-}
-
-func GetReconnectMaxBackoff() string {
-	return Config.GetString("reconnect.max_backoff")
-}
-
-func GetReconnectBackoffFactor() int {
-	return Config.GetInt("reconnect.backoff_factor")
-}
-
-func GetReconnectMaxRetries() int {
-	return Config.GetInt("reconnect.max_retries")
-}
-
+// InitializeConfig loads the configuration from the KDL file
 func InitializeConfig(cmd *cobra.Command) ([]string, error) {
-	Config = viper.New()
-
-	// Set config path from user input
+	// Get config path from user input
 	configPath, err := cmd.Parent().Flags().GetString("config-path")
 	if err != nil {
 		panic("Unable to determine config path")
 	}
-	Config.AddConfigPath(configPath)
 
-	// Set config name
-	Config.SetConfigName("config")
-	Config.SetConfigType("toml")
+	// Load KDL config
+	kdlPath := filepath.Join(configPath, "config.kdl")
+	if _, err := os.Stat(kdlPath); err == nil {
+		// KDL file exists, parse it
+		Config, err = LoadConfig(kdlPath)
+		if err != nil {
+			// Clean up the error message
+			errMsg := err.Error()
+			errMsg = strings.TrimPrefix(errMsg, "failed to unmarshal KDL: parse failed: ")
+			errMsg = strings.TrimPrefix(errMsg, "failed to unmarshal KDL: scan failed: ")
 
-	// Set defaults
-	Config.SetDefault("verbose", 0)
-	Config.SetDefault("reconnect.enabled", true)
-	Config.SetDefault("reconnect.initial_backoff", "1s")
-	Config.SetDefault("reconnect.max_backoff", "5m")
-	Config.SetDefault("reconnect.backoff_factor", 2)
-	Config.SetDefault("reconnect.max_retries", 10)
-
-	// Config.SetDefault("socket_path", 0)
-
-	// Setup env reading
-	Config.SetEnvPrefix("overseer")
-
-	// Load config file
-	if err := Config.ReadInConfig(); err != nil {
-		if _, ok := err.(viper.ConfigFileNotFoundError); ok {
-			// Config file not found - create config path and write config with defaults
-			err := os.MkdirAll(configPath, 0o755)
-			if err != nil {
-				panic(err)
+			// Remove the visual pointer (everything after the line/column info)
+			if idx := strings.Index(errMsg, ":\n"); idx != -1 {
+				errMsg = errMsg[:idx]
 			}
-			Config.SafeWriteConfig()
-		} else {
-			// Config file was found but another error occurred
+
+			fmt.Fprintf(os.Stderr, "Error: Configuration file has syntax errors\n")
+			fmt.Fprintf(os.Stderr, "  File: %s\n", kdlPath)
+			fmt.Fprintf(os.Stderr, "  %s\n", errMsg)
+			os.Exit(1)
+		}
+	} else {
+		// No config file found - create default KDL config
+		err := os.MkdirAll(configPath, 0o755)
+		if err != nil {
 			panic(err)
+		}
+		// Write default KDL config
+		if err := writeDefaultKDLConfig(kdlPath); err != nil {
+			panic(fmt.Sprintf("Failed to write default config: %v", err))
+		}
+		// Load the newly created config
+		Config, err = LoadConfig(kdlPath)
+		if err != nil {
+			// This should never happen with default config, but handle it gracefully
+			fmt.Fprintf(os.Stderr, "Error: Failed to parse default configuration: %v\n", err)
+			os.Exit(1)
 		}
 	}
 
-	// In order to get environment variables mapped into config sections, we need to replace . with _
-	Config.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
-	Config.AutomaticEnv() // read in environment variables that match
+	// Set the config path
+	Config.ConfigPath = configPath
 
-	// Bind the current command's flags to viper
+	// Override verbose from command-line flag if provided
 	if cmd != nil {
-		cmd.Flags().VisitAll(func(f *pflag.Flag) {
-			// Is this a global flag
-			configKey, ok := globalFlagsToConfigKey[f.Name]
-			if !ok {
-				return
-			}
-
-			// Apply the viper config value to the flag when the flag is not set and viper has a value
-			if !f.Changed && Config.IsSet(configKey) {
-				cmd.Flags().Set(f.Name, fmt.Sprintf("%v", Config.Get(configKey)))
-			} else {
-				Config.Set(configKey, fmt.Sprintf("%v", f.Value))
-			}
-		})
+		if verboseFlag, err := cmd.Flags().GetCount("verbose"); err == nil && verboseFlag > 0 {
+			Config.Verbose = verboseFlag
+		}
 	}
 
 	return []string{}, nil
+}
+
+// writeDefaultKDLConfig writes a default KDL configuration file
+func writeDefaultKDLConfig(path string) error {
+	defaultConfig := `// Overseer Configuration
+// See https://kdl.dev for KDL syntax reference
+
+// Global settings
+verbose 0
+
+// Reconnect settings for SSH tunnels
+reconnect {
+  enabled true
+  initial_backoff "1s"
+  max_backoff "5m"
+  backoff_factor 2
+  max_retries 10
+}
+
+// Example context: Uncomment and customize for your network
+// Contexts are evaluated in order (first match wins), so put more specific contexts first
+// context "home" {
+//   display_name "Home"
+//
+//   conditions {
+//     public_ip "92.0.2.42"
+//   }
+//
+//   actions {
+//     connect "home-lab"
+//   }
+// }
+`
+	return os.WriteFile(path, []byte(defaultConfig), 0644)
 }
