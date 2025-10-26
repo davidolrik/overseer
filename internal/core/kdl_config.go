@@ -15,11 +15,18 @@ type Configuration struct {
 	ConfigPath        string                  // Directory containing config files
 	Verbose           int                     // Verbosity level
 	ContextOutputFile string                  // Optional file to write current context name
+	SSH               SSHConfig               // SSH connection settings
 	Reconnect         ReconnectConfig         // Reconnect settings
 	Contexts          map[string]*ContextRule // Context rules keyed by context name
 	// Context behavior settings
 	CheckOnStartup       bool
 	CheckOnNetworkChange bool
+}
+
+// SSHConfig represents SSH connection settings
+type SSHConfig struct {
+	ServerAliveInterval int // Send keepalive every N seconds (0 to disable)
+	ServerAliveCountMax int // Exit after N failed keepalives
 }
 
 // ReconnectConfig represents reconnect settings for SSH tunnels
@@ -49,8 +56,14 @@ type ContextActions struct {
 type kdlConfig struct {
 	Verbose           int                     `kdl:"verbose"`
 	ContextOutputFile string                  `kdl:"context_output_file"`
+	SSH               *kdlSSH                 `kdl:"ssh"`
 	Reconnect         *kdlReconnect           `kdl:"reconnect"`
 	Contexts          map[string]*kdlContext  `kdl:"context,multiple"`
+}
+
+type kdlSSH struct {
+	ServerAliveInterval int `kdl:"server_alive_interval"`
+	ServerAliveCountMax int `kdl:"server_alive_count_max"`
 }
 
 type kdlReconnect struct {
@@ -97,6 +110,20 @@ func LoadConfig(filename string) (*Configuration, error) {
 		CheckOnStartup:       true,  // Default
 		CheckOnNetworkChange: true,  // Default
 		Contexts:             make(map[string]*ContextRule),
+	}
+
+	// Convert SSH settings
+	if kdlCfg.SSH != nil {
+		cfg.SSH = SSHConfig{
+			ServerAliveInterval: kdlCfg.SSH.ServerAliveInterval,
+			ServerAliveCountMax: kdlCfg.SSH.ServerAliveCountMax,
+		}
+	} else {
+		// Defaults
+		cfg.SSH = SSHConfig{
+			ServerAliveInterval: 15,
+			ServerAliveCountMax: 3,
+		}
 	}
 
 	// Convert reconnect settings
@@ -154,6 +181,10 @@ func GetDefaultConfig() *Configuration {
 		Verbose:              0,
 		CheckOnStartup:       true,
 		CheckOnNetworkChange: true,
+		SSH: SSHConfig{
+			ServerAliveInterval: 15,
+			ServerAliveCountMax: 3,
+		},
 		Reconnect: ReconnectConfig{
 			Enabled:        true,
 			InitialBackoff: "1s",

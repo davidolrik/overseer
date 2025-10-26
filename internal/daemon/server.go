@@ -275,7 +275,17 @@ func (d *Daemon) startTunnel(alias string) Response {
 	hasPassword := keyring.HasPassword(alias)
 
 	// Create SSH command with verbose mode to detect connection status
-	cmd := exec.Command("ssh", alias, "-N", "-o", "ExitOnForwardFailure=yes", "-v")
+	// Build SSH options from config
+	sshArgs := []string{alias, "-N", "-o", "ExitOnForwardFailure=yes", "-v"}
+
+	// Add ServerAliveInterval if configured (0 means disabled)
+	if core.Config.SSH.ServerAliveInterval > 0 {
+		sshArgs = append(sshArgs,
+			"-o", fmt.Sprintf("ServerAliveInterval=%d", core.Config.SSH.ServerAliveInterval),
+			"-o", fmt.Sprintf("ServerAliveCountMax=%d", core.Config.SSH.ServerAliveCountMax))
+	}
+
+	cmd := exec.Command("ssh", sshArgs...)
 	cmd.Env = os.Environ()
 
 	// Capture stderr to monitor connection status
@@ -410,14 +420,7 @@ func (d *Daemon) monitorTunnel(alias string) {
 				slog.Info(fmt.Sprintf("Tunnel '%s' auto-reconnect disabled. Not reconnecting.", alias))
 			}
 
-			// Check if this was the last tunnel
-			shouldShutdown := len(d.tunnels) == 0
 			d.mu.Unlock()
-
-			if shouldShutdown {
-				slog.Info("Last active tunnel process has exited. Triggering daemon shutdown.")
-				d.shutdown()
-			}
 			return
 		}
 
@@ -460,7 +463,17 @@ func (d *Daemon) monitorTunnel(alias string) {
 		hasPassword := keyring.HasPassword(alias)
 
 		// Create new SSH command
-		newCmd := exec.Command("ssh", alias, "-N", "-o", "ExitOnForwardFailure=yes", "-v")
+		// Build SSH options from config
+		sshArgs := []string{alias, "-N", "-o", "ExitOnForwardFailure=yes", "-v"}
+
+		// Add ServerAliveInterval if configured (0 means disabled)
+		if core.Config.SSH.ServerAliveInterval > 0 {
+			sshArgs = append(sshArgs,
+				"-o", fmt.Sprintf("ServerAliveInterval=%d", core.Config.SSH.ServerAliveInterval),
+				"-o", fmt.Sprintf("ServerAliveCountMax=%d", core.Config.SSH.ServerAliveCountMax))
+		}
+
+		newCmd := exec.Command("ssh", sshArgs...)
 		newCmd.Env = os.Environ()
 
 		// Capture stderr to monitor connection status
@@ -468,11 +481,7 @@ func (d *Daemon) monitorTunnel(alias string) {
 		if err != nil {
 			slog.Error(fmt.Sprintf("Failed to create stderr pipe for reconnection: %v", err))
 			delete(d.tunnels, alias)
-			shouldShutdown := len(d.tunnels) == 0
 			d.mu.Unlock()
-			if shouldShutdown {
-				d.shutdown()
-			}
 			return
 		}
 
@@ -482,11 +491,7 @@ func (d *Daemon) monitorTunnel(alias string) {
 			if err != nil {
 				slog.Error(fmt.Sprintf("Failed to configure askpass for reconnection: %v", err))
 				delete(d.tunnels, alias)
-				shouldShutdown := len(d.tunnels) == 0
 				d.mu.Unlock()
-				if shouldShutdown {
-					d.shutdown()
-				}
 				return
 			}
 			d.askpassTokens[token] = alias

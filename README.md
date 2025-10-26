@@ -97,9 +97,16 @@ overseer status
 #   ✗ backup-server (PID: 0, Age: 10m)
 ```
 
-Configure reconnection behavior in `~/.config/overseer/config.kdl`:
+Configure connection monitoring and reconnection behavior in `~/.config/overseer/config.kdl`:
 
 ```kdl
+// SSH connection health monitoring
+ssh {
+  server_alive_interval 15  // Send keepalive every N seconds (0 to disable)
+  server_alive_count_max 3  // Exit after N failed keepalives
+}
+
+// Automatic reconnection settings
 reconnect {
   enabled true              // Enable/disable auto-reconnect
   initial_backoff "1s"      // First retry delay
@@ -108,6 +115,13 @@ reconnect {
   max_retries 10            // Give up after this many attempts
 }
 ```
+
+**Connection Health Monitoring:**
+
+* Detects dead connections within 45 seconds (with default settings)
+* SSH automatically exits when connection becomes unresponsive
+* Triggers automatic reconnection with exponential backoff
+* Can be customized or disabled (set `server_alive_interval` to 0)
 
 ## Security Context Awareness
 
