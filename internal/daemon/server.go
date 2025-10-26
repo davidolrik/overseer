@@ -837,12 +837,22 @@ func (d *Daemon) initSecurityManagerWithoutStartupCheck() error {
 
 // initSecurityManagerInternal is the internal implementation for initializing the security manager
 func (d *Daemon) initSecurityManagerInternal(checkOnStartup bool) error {
+	// Convert location definitions from config
+	locations := make(map[string]security.Location)
+	for name, loc := range core.Config.Locations {
+		locations[name] = security.Location{
+			Name:       loc.Name,
+			Conditions: loc.Conditions,
+		}
+	}
+
 	// Convert context rules from config to security rules
 	rules := make([]security.Rule, 0, len(core.Config.Contexts))
 
 	for _, contextRule := range core.Config.Contexts {
 		rules = append(rules, security.Rule{
 			Name:       contextRule.Name,
+			Locations:  contextRule.Locations,
 			Conditions: contextRule.Conditions,
 			Actions: security.RuleActions{
 				Connect:    contextRule.Actions.Connect,
@@ -872,6 +882,7 @@ func (d *Daemon) initSecurityManagerInternal(checkOnStartup bool) error {
 	// Create security manager
 	config := security.ManagerConfig{
 		Rules:           rules,
+		Locations:       locations,
 		OutputFile:      core.Config.ContextOutputFile,
 		CheckOnStartup:  checkOnStartup,
 		OnContextChange: d.handleContextChange,
@@ -935,19 +946,22 @@ func (d *Daemon) handleContextChange(from, to string, rule *security.Rule) {
 
 // ContextStatus represents the current security context information
 type ContextStatus struct {
-	Context        string                     `json:"context"`
-	LastChange     string                     `json:"last_change"`
-	Uptime         string                     `json:"uptime"`
-	Sensors        map[string]string          `json:"sensors"`
-	ChangeHistory  []ContextChangeInfo        `json:"change_history,omitempty"`
+	Context       string              `json:"context"`
+	Location      string              `json:"location,omitempty"`
+	LastChange    string              `json:"last_change"`
+	Uptime        string              `json:"uptime"`
+	Sensors       map[string]string   `json:"sensors"`
+	ChangeHistory []ContextChangeInfo `json:"change_history,omitempty"`
 }
 
 // ContextChangeInfo represents a context change event
 type ContextChangeInfo struct {
-	From      string `json:"from"`
-	To        string `json:"to"`
-	Timestamp string `json:"timestamp"`
-	Trigger   string `json:"trigger"`
+	From         string `json:"from"`
+	To           string `json:"to"`
+	FromLocation string `json:"from_location,omitempty"`
+	ToLocation   string `json:"to_location,omitempty"`
+	Timestamp    string `json:"timestamp"`
+	Trigger      string `json:"trigger"`
 }
 
 // getContextStatus returns the current security context status
@@ -982,16 +996,19 @@ func (d *Daemon) getContextStatus() Response {
 	for i := startIdx; i < len(history); i++ {
 		change := history[i]
 		changeHistory = append(changeHistory, ContextChangeInfo{
-			From:      change.From,
-			To:        change.To,
-			Timestamp: change.Timestamp.Format(time.RFC3339),
-			Trigger:   change.Trigger,
+			From:         change.From,
+			To:           change.To,
+			FromLocation: change.FromLocation,
+			ToLocation:   change.ToLocation,
+			Timestamp:    change.Timestamp.Format(time.RFC3339),
+			Trigger:      change.Trigger,
 		})
 	}
 
 	// Build status
 	status := ContextStatus{
 		Context:       ctx.GetContext(),
+		Location:      ctx.GetLocation(),
 		LastChange:    ctx.GetLastChange().Format(time.RFC3339),
 		Uptime:        ctx.GetUptime().Round(time.Second).String(),
 		Sensors:       sensors,
@@ -1068,11 +1085,21 @@ func (d *Daemon) reloadConfig() error {
 	// Don't stop the old one yet in case this fails
 	var newManager *security.Manager
 	if err := func() error {
+		// Convert location definitions from new config
+		locations := make(map[string]security.Location)
+		for name, loc := range newConfig.Locations {
+			locations[name] = security.Location{
+				Name:       loc.Name,
+				Conditions: loc.Conditions,
+			}
+		}
+
 		// Create a temporary manager to test the new config
 		rules := make([]security.Rule, 0, len(newConfig.Contexts))
 		for _, contextRule := range newConfig.Contexts {
 			rules = append(rules, security.Rule{
 				Name:       contextRule.Name,
+				Locations:  contextRule.Locations,
 				Conditions: contextRule.Conditions,
 				Actions: security.RuleActions{
 					Connect:    contextRule.Actions.Connect,
@@ -1101,6 +1128,7 @@ func (d *Daemon) reloadConfig() error {
 
 		config := security.ManagerConfig{
 			Rules:           rules,
+			Locations:       locations,
 			OutputFile:      newConfig.ContextOutputFile,
 			CheckOnStartup:  false,
 			OnContextChange: d.handleContextChange,

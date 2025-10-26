@@ -81,14 +81,17 @@ func displayContextStatus(data interface{}, format string) {
 
 	var status struct {
 		Context       string            `json:"context"`
+		Location      string            `json:"location,omitempty"`
 		LastChange    string            `json:"last_change"`
 		Uptime        string            `json:"uptime"`
 		Sensors       map[string]string `json:"sensors"`
 		ChangeHistory []struct {
-			From      string `json:"from"`
-			To        string `json:"to"`
-			Timestamp string `json:"timestamp"`
-			Trigger   string `json:"trigger"`
+			From         string `json:"from"`
+			To           string `json:"to"`
+			FromLocation string `json:"from_location,omitempty"`
+			ToLocation   string `json:"to_location,omitempty"`
+			Timestamp    string `json:"timestamp"`
+			Trigger      string `json:"trigger"`
 		} `json:"change_history"`
 	}
 
@@ -104,6 +107,9 @@ func displayContextStatus(data interface{}, format string) {
 	)
 
 	fmt.Printf("Current Context: %s%s%s\n", colorCyan, status.Context, colorReset)
+	if status.Location != "" {
+		fmt.Printf("Location:        %s\n", status.Location)
+	}
 	fmt.Printf("Context Age:     %s\n", status.Uptime)
 
 	// Display sensors
@@ -118,7 +124,28 @@ func displayContextStatus(data interface{}, format string) {
 	if len(status.ChangeHistory) > 0 {
 		fmt.Printf("\nRecent Changes:\n")
 		for _, change := range status.ChangeHistory {
-			fmt.Printf("  %s → %s (%s)\n", change.From, change.To, change.Trigger)
+			// Build the change display string
+			changeStr := fmt.Sprintf("%s → %s", change.From, change.To)
+
+			// Add location information if available
+			if change.FromLocation != "" || change.ToLocation != "" {
+				changeStr += " ("
+				if change.FromLocation != "" {
+					changeStr += change.FromLocation
+				} else {
+					changeStr += "no location"
+				}
+				changeStr += " → "
+				if change.ToLocation != "" {
+					changeStr += change.ToLocation
+				} else {
+					changeStr += "no location"
+				}
+				changeStr += ")"
+			}
+
+			changeStr += fmt.Sprintf(" [%s]", change.Trigger)
+			fmt.Printf("  %s\n", changeStr)
 		}
 	}
 }

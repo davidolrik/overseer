@@ -94,26 +94,66 @@ func writeDefaultKDLConfig(path string) error {
 // Global settings
 verbose 0
 
-// Reconnect settings for SSH tunnels
-reconnect {
-  enabled true
-  initial_backoff "1s"
-  max_backoff "5m"
-  backoff_factor 2
-  max_retries 10
+// Optional: Write current context to a file for external integration
+// context_output_file "/path/to/context.txt"
+
+// SSH connection settings
+ssh {
+  // Keep alive settings - detect dead connections
+  server_alive_interval 15   // Send keepalive every N seconds (0 to disable)
+  server_alive_count_max 3   // Exit after N failed keepalives
+
+  // Automatic reconnection settings
+  reconnect_enabled true
+  initial_backoff "1s"       // First retry delay
+  max_backoff "5m"           // Maximum delay between retries
+  backoff_factor 2           // Multiplier for each retry
+  max_retries 10             // Give up after this many attempts
 }
 
-// Example context: Uncomment and customize for your network
-// Contexts are evaluated in order (first match wins), so put more specific contexts first
-// context "home" {
-//   display_name "Home"
+// Location definitions - reusable network/physical locations
+// Uncomment and customize for your networks
+// location "home" {
+//   display_name "Home Network"
 //
 //   conditions {
-//     public_ip "92.0.2.42"
+//     public_ip "203.0.113.42"      // Your home IP
+//     public_ip "198.51.100.0/24"   // CIDR ranges supported
+//   }
+// }
+//
+// location "office" {
+//   display_name "Office"
+//
+//   conditions {
+//     public_ip "192.0.2.0/24"
+//   }
+// }
+
+// Context definitions - evaluated in order (first match wins)
+// Contexts can reference locations or use direct conditions
+// Put more specific contexts first
+// context "trusted" {
+//   display_name "Trusted Network"
+//   location "home"        // Reference a location
+//   location "office"      // Multiple locations supported
+//
+//   actions {
+//     connect "home-lab"   // Connect these tunnels
+//     connect "dev-server"
+//   }
+// }
+//
+// context "mobile" {
+//   display_name "Mobile Network"
+//
+//   conditions {
+//     public_ip "109.58.0.0/16"    // Direct conditions also supported
 //   }
 //
 //   actions {
-//     connect "home-lab"
+//     connect "vpn"
+//     disconnect "home-lab"  // Disconnect these tunnels
 //   }
 // }
 `

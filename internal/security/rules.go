@@ -6,11 +6,18 @@ import (
 	"strings"
 )
 
+// Location represents a physical or network location
+type Location struct {
+	Name       string              // Location name (e.g., "hq", "home")
+	Conditions map[string][]string // Sensor conditions (e.g., "public_ip": ["192.168.1.1", "10.0.0.0/24"])
+}
+
 // Rule represents a context rule that maps sensor conditions to actions
 type Rule struct {
-	Name       string                // Context name (e.g., "home", "office")
-	Conditions map[string][]string   // Sensor conditions (e.g., "public_ip": ["192.168.1.1", "10.0.0.0/24"])
-	Actions    RuleActions           // Actions to take when this rule matches
+	Name       string              // Context name (e.g., "home", "office")
+	Locations  []string            // Location names this context can match
+	Conditions map[string][]string // Sensor conditions (e.g., "public_ip": ["192.168.1.1", "10.0.0.0/24"])
+	Actions    RuleActions         // Actions to take when this rule matches
 }
 
 // RuleActions defines what to do when a rule matches
@@ -19,38 +26,81 @@ type RuleActions struct {
 	Disconnect []string // Tunnels to disconnect
 }
 
+// EvaluationResult contains the result of rule evaluation
+type EvaluationResult struct {
+	Context      string  // Matched context name
+	Location     string  // Matched location name (if any)
+	Rule         *Rule   // The matched rule
+	MatchedBy    string  // What matched: "location" or "conditions"
+}
+
 // RuleEngine evaluates rules against sensor values to determine context
 type RuleEngine struct {
-	rules []Rule
+	rules     []Rule
+	locations map[string]Location
 }
 
 // NewRuleEngine creates a new rule evaluation engine
 // Rules are evaluated in the order they are provided (first match wins)
-func NewRuleEngine(rules []Rule) *RuleEngine {
+func NewRuleEngine(rules []Rule, locations map[string]Location) *RuleEngine {
 	return &RuleEngine{
-		rules: rules,
+		rules:     rules,
+		locations: locations,
 	}
 }
 
 // Evaluate determines which context matches the current sensor values
-func (re *RuleEngine) Evaluate(sensors map[string]SensorValue) (string, *Rule) {
+func (re *RuleEngine) Evaluate(sensors map[string]SensorValue) *EvaluationResult {
 	// Try each rule in order (first match wins)
 	for i := range re.rules {
 		rule := &re.rules[i]
 
-		// Empty conditions means this is a default/fallback rule
-		if len(rule.Conditions) == 0 {
-			return rule.Name, rule
+		// Check if any locations match first
+		for _, locationName := range rule.Locations {
+			location, exists := re.locations[locationName]
+			if !exists {
+				continue
+			}
+
+			// Check if location conditions match
+			if re.matchesConditions(location.Conditions, sensors) {
+				return &EvaluationResult{
+					Context:   rule.Name,
+					Location:  location.Name,
+					Rule:      rule,
+					MatchedBy: "location",
+				}
+			}
 		}
 
-		// Check if all conditions match
-		if re.matchesConditions(rule.Conditions, sensors) {
-			return rule.Name, rule
+		// Empty conditions means this is a default/fallback rule
+		if len(rule.Conditions) == 0 && len(rule.Locations) == 0 {
+			return &EvaluationResult{
+				Context:   rule.Name,
+				Location:  "",
+				Rule:      rule,
+				MatchedBy: "fallback",
+			}
+		}
+
+		// Check if rule conditions match directly
+		if len(rule.Conditions) > 0 && re.matchesConditions(rule.Conditions, sensors) {
+			return &EvaluationResult{
+				Context:   rule.Name,
+				Location:  "",
+				Rule:      rule,
+				MatchedBy: "conditions",
+			}
 		}
 	}
 
 	// No rule matched, return unknown
-	return "unknown", nil
+	return &EvaluationResult{
+		Context:   "unknown",
+		Location:  "",
+		Rule:      nil,
+		MatchedBy: "none",
+	}
 }
 
 // matchesConditions checks if sensor values satisfy all rule conditions

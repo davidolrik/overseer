@@ -7,20 +7,23 @@ import (
 
 // SecurityContext represents the current security/location context
 type SecurityContext struct {
-	mu             sync.RWMutex
-	currentContext string                 // Current context name (e.g., "home", "office", "unknown")
-	sensors        map[string]SensorValue // Current sensor readings
-	lastChange     time.Time              // When the context last changed
-	changeHistory  []ContextChange        // History of context changes
-	maxHistory     int                    // Maximum number of history entries to keep
+	mu              sync.RWMutex
+	currentContext  string                 // Current context name (e.g., "home", "office", "unknown")
+	currentLocation string                 // Current location name (e.g., "hq", "home", "")
+	sensors         map[string]SensorValue // Current sensor readings
+	lastChange      time.Time              // When the context last changed
+	changeHistory   []ContextChange        // History of context changes
+	maxHistory      int                    // Maximum number of history entries to keep
 }
 
 // ContextChange represents a transition from one context to another
 type ContextChange struct {
-	From      string    // Previous context
-	To        string    // New context
-	Timestamp time.Time // When the change occurred
-	Trigger   string    // What triggered the change (e.g., "network_change", "startup")
+	From         string    // Previous context
+	To           string    // New context
+	FromLocation string    // Previous location (if any)
+	ToLocation   string    // New location (if any)
+	Timestamp    time.Time // When the change occurred
+	Trigger      string    // What triggered the change (e.g., "network_change", "startup")
 }
 
 // NewSecurityContext creates a new security context tracker
@@ -39,6 +42,13 @@ func (sc *SecurityContext) GetContext() string {
 	sc.mu.RLock()
 	defer sc.mu.RUnlock()
 	return sc.currentContext
+}
+
+// GetLocation returns the current location name
+func (sc *SecurityContext) GetLocation() string {
+	sc.mu.RLock()
+	defer sc.mu.RUnlock()
+	return sc.currentLocation
 }
 
 // GetSensorValue returns the current value for a specific sensor
@@ -88,23 +98,31 @@ func (sc *SecurityContext) UpdateSensor(value SensorValue) {
 
 // SetContext updates the current context and records the change
 func (sc *SecurityContext) SetContext(newContext string, trigger string) bool {
+	return sc.SetContextAndLocation(newContext, "", trigger)
+}
+
+// SetContextAndLocation updates the current context and location, recording the change
+func (sc *SecurityContext) SetContextAndLocation(newContext, newLocation, trigger string) bool {
 	sc.mu.Lock()
 	defer sc.mu.Unlock()
 
-	// Check if context actually changed
-	if sc.currentContext == newContext {
+	// Check if context or location actually changed
+	if sc.currentContext == newContext && sc.currentLocation == newLocation {
 		return false // No change
 	}
 
 	// Record the change
 	change := ContextChange{
-		From:      sc.currentContext,
-		To:        newContext,
-		Timestamp: time.Now(),
-		Trigger:   trigger,
+		From:         sc.currentContext,
+		To:           newContext,
+		FromLocation: sc.currentLocation,
+		ToLocation:   newLocation,
+		Timestamp:    time.Now(),
+		Trigger:      trigger,
 	}
 
 	sc.currentContext = newContext
+	sc.currentLocation = newLocation
 	sc.lastChange = change.Timestamp
 	sc.changeHistory = append(sc.changeHistory, change)
 

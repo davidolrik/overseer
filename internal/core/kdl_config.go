@@ -16,6 +16,7 @@ type Configuration struct {
 	Verbose           int                     // Verbosity level
 	ContextOutputFile string                  // Optional file to write current context name
 	SSH               SSHConfig               // SSH connection settings (including reconnect)
+	Locations         map[string]*Location    // Location definitions keyed by location name
 	Contexts          map[string]*ContextRule // Context rules keyed by context name
 	// Context behavior settings
 	CheckOnStartup       bool
@@ -33,12 +34,20 @@ type SSHConfig struct {
 	MaxRetries          int    // Give up after this many attempts
 }
 
+// Location represents a physical or network location with sensor conditions
+type Location struct {
+	Name        string              // Location name (e.g., "hq", "home")
+	DisplayName string              // Human-friendly display name
+	Conditions  map[string][]string // Sensor conditions (e.g., "public_ip": ["1.2.3.4", "5.6.7.0/24"])
+}
+
 // ContextRule represents a security context rule
 type ContextRule struct {
-	Name        string            // Context name (e.g., "home", "office")
-	DisplayName string            // Human-friendly display name
+	Name        string         // Context name (e.g., "home", "office")
+	DisplayName string         // Human-friendly display name
+	Locations   []string       // Location names this context applies to
 	Conditions  map[string][]string // Sensor conditions (e.g., "public_ip": ["1.2.3.4", "5.6.7.0/24"])
-	Actions     ContextActions    // Actions to take when entering this context
+	Actions     ContextActions // Actions to take when entering this context
 }
 
 // ContextActions represents actions for a context
@@ -49,10 +58,11 @@ type ContextActions struct {
 
 // KDL unmarshaling structs (internal use only)
 type kdlConfig struct {
-	Verbose           int                    `kdl:"verbose"`
-	ContextOutputFile string                 `kdl:"context_output_file"`
-	SSH               *kdlSSH                `kdl:"ssh"`
-	Contexts          map[string]*kdlContext `kdl:"context,multiple"`
+	Verbose           int                     `kdl:"verbose"`
+	ContextOutputFile string                  `kdl:"context_output_file"`
+	SSH               *kdlSSH                 `kdl:"ssh"`
+	Locations         map[string]*kdlLocation `kdl:"location,multiple"`
+	Contexts          map[string]*kdlContext  `kdl:"context,multiple"`
 }
 
 type kdlSSH struct {
@@ -65,8 +75,14 @@ type kdlSSH struct {
 	MaxRetries          int    `kdl:"max_retries"`
 }
 
+type kdlLocation struct {
+	DisplayName string         `kdl:"display_name"`
+	Conditions  *kdlConditions `kdl:"conditions"`
+}
+
 type kdlContext struct {
 	DisplayName string         `kdl:"display_name"`
+	Locations   []string       `kdl:"location"`
 	Conditions  *kdlConditions `kdl:"conditions"`
 	Actions     *kdlActions    `kdl:"actions"`
 }
@@ -100,6 +116,7 @@ func LoadConfig(filename string) (*Configuration, error) {
 		ContextOutputFile:    kdlCfg.ContextOutputFile,
 		CheckOnStartup:       true,  // Default
 		CheckOnNetworkChange: true,  // Default
+		Locations:            make(map[string]*Location),
 		Contexts:             make(map[string]*ContextRule),
 	}
 
@@ -127,11 +144,30 @@ func LoadConfig(filename string) (*Configuration, error) {
 		}
 	}
 
+	// Convert location definitions
+	for name, kdlLoc := range kdlCfg.Locations {
+		loc := &Location{
+			Name:        name,
+			DisplayName: kdlLoc.DisplayName,
+			Conditions:  make(map[string][]string),
+		}
+
+		// Convert conditions
+		if kdlLoc.Conditions != nil {
+			if len(kdlLoc.Conditions.PublicIP) > 0 {
+				loc.Conditions["public_ip"] = kdlLoc.Conditions.PublicIP
+			}
+		}
+
+		cfg.Locations[name] = loc
+	}
+
 	// Convert context rules
 	for name, kdlCtx := range kdlCfg.Contexts {
 		rule := &ContextRule{
 			Name:        name,
 			DisplayName: kdlCtx.DisplayName,
+			Locations:   kdlCtx.Locations,
 			Conditions:  make(map[string][]string),
 		}
 
@@ -171,6 +207,7 @@ func GetDefaultConfig() *Configuration {
 			BackoffFactor:       2,
 			MaxRetries:          10,
 		},
-		Contexts: make(map[string]*ContextRule),
+		Locations: make(map[string]*Location),
+		Contexts:  make(map[string]*ContextRule),
 	}
 }

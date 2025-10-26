@@ -16,8 +16,8 @@ func NewStatusCommand() *cobra.Command {
 	statusCmd := &cobra.Command{
 		Use:     "status",
 		Aliases: []string{"list", "ls"},
-		Short: "Shows a list of all currently active tunnels",
-		Args:  cobra.NoArgs,
+		Short:   "Shows a list of all currently active tunnels",
+		Args:    cobra.NoArgs,
 		Run: func(cmd *cobra.Command, args []string) {
 			daemon.CheckVersionMismatch()
 			response, err := daemon.SendCommand("STATUS")
@@ -39,11 +39,11 @@ func NewStatusCommand() *cobra.Command {
 			switch format {
 			case "text":
 				// Show security context if enabled
-			// Show security context (always active)
-			contextResponse, err := daemon.SendCommand("CONTEXT_STATUS")
-			if err == nil && contextResponse.Data != nil {
-				displayContextBanner(contextResponse.Data)
-			}
+				// Show security context (always active)
+				contextResponse, err := daemon.SendCommand("CONTEXT_STATUS")
+				if err == nil && contextResponse.Data != nil {
+					displayContextBanner(contextResponse.Data)
+				}
 
 				fmt.Println("Active Tunnels:")
 				for _, status := range statuses {
@@ -123,8 +123,9 @@ func displayContextBanner(data interface{}) {
 	}
 
 	var status struct {
-		Context string            `json:"context"`
-		Sensors map[string]string `json:"sensors"`
+		Context  string            `json:"context"`
+		Location string            `json:"location,omitempty"`
+		Sensors  map[string]string `json:"sensors"`
 	}
 
 	if err := json.Unmarshal(jsonData, &status); err != nil {
@@ -133,12 +134,21 @@ func displayContextBanner(data interface{}) {
 
 	// ANSI color codes
 	const (
-		colorCyan  = "\033[36m"
-		colorReset = "\033[0m"
+		colorBold      = "\033[1m"
+		colorBoldWhite = "\033[1m\033[37m"
+		colorBoldCyan  = "\033[1m\033[36m"
+		colorCyan      = "\033[36m"
+		colorReset     = "\033[0m"
 	)
 
+	// Show location if available
+	location := ""
+	if status.Location != "" {
+		location = fmt.Sprintf("%s%s%s @ ", colorBoldWhite, status.Location, colorReset)
+	}
+
 	// Display compact context info
-	fmt.Printf("%sContext:%s %s", colorCyan, colorReset, status.Context)
+	fmt.Printf("%s%s%s%s", location, colorBoldCyan, status.Context, colorReset)
 
 	// Show public IP if available
 	if ip, ok := status.Sensors["public_ip"]; ok && ip != "" {

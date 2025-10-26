@@ -25,11 +25,12 @@ type Manager struct {
 
 // ManagerConfig holds configuration for the security manager
 type ManagerConfig struct {
-	Rules            []Rule
-	OutputFile       string
-	CheckOnStartup   bool
-	OnContextChange  func(from, to string, rule *Rule)
-	Logger           *slog.Logger
+	Rules           []Rule
+	Locations       map[string]Location
+	OutputFile      string
+	CheckOnStartup  bool
+	OnContextChange func(from, to string, rule *Rule)
+	Logger          *slog.Logger
 }
 
 // NewManager creates a new security context manager
@@ -40,7 +41,7 @@ func NewManager(config ManagerConfig) (*Manager, error) {
 
 	m := &Manager{
 		context:         NewSecurityContext(),
-		ruleEngine:      NewRuleEngine(config.Rules),
+		ruleEngine:      NewRuleEngine(config.Rules, config.Locations),
 		sensors:         []Sensor{NewIPSensor()},
 		networkMonitor:  NewNetworkMonitor(config.Logger),
 		logger:          config.Logger,
@@ -132,23 +133,27 @@ func (m *Manager) checkContext(trigger string) error {
 
 	// Evaluate rules to determine context
 	sensors := m.context.GetAllSensors()
-	newContext, rule := m.ruleEngine.Evaluate(sensors)
+	result := m.ruleEngine.Evaluate(sensors)
 
-	// Get current context
+	// Get current context and location
 	oldContext := m.context.GetContext()
+	oldLocation := m.context.GetLocation()
 
-	// Update context if changed
-	changed := m.context.SetContext(newContext, trigger)
+	// Update context and location if changed
+	changed := m.context.SetContextAndLocation(result.Context, result.Location, trigger)
 
 	if changed {
 		m.logger.Debug("Security context changed",
 			"from", oldContext,
-			"to", newContext,
+			"to", result.Context,
+			"from_location", oldLocation,
+			"to_location", result.Location,
+			"matched_by", result.MatchedBy,
 			"trigger", trigger)
 
 		// Write to file if enabled
 		if m.fileWriter != nil {
-			if err := m.fileWriter.Write(newContext); err != nil {
+			if err := m.fileWriter.Write(result.Context); err != nil {
 				m.logger.Error("Failed to write context file", "error", err)
 			} else {
 				m.logger.Debug("Context written to file", "path", m.fileWriter.GetPath())
@@ -157,10 +162,10 @@ func (m *Manager) checkContext(trigger string) error {
 
 		// Call callback if registered
 		if m.onContextChange != nil {
-			m.onContextChange(oldContext, newContext, rule)
+			m.onContextChange(oldContext, result.Context, result.Rule)
 		}
 	} else {
-		m.logger.Debug("Context unchanged", "context", newContext)
+		m.logger.Debug("Context unchanged", "context", result.Context, "location", result.Location)
 	}
 
 	return nil
