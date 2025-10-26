@@ -16,8 +16,10 @@ func TestLoadConfig(t *testing.T) {
 verbose 0
 context_output_file "/tmp/test-context.txt"
 
-reconnect {
-  enabled true
+ssh {
+  server_alive_interval 15
+  server_alive_count_max 3
+  reconnect_enabled true
   initial_backoff "1s"
   max_backoff "5m"
   backoff_factor 2
@@ -75,25 +77,33 @@ context "office" {
 		t.Errorf("Expected output_file='/tmp/test-context.txt', got '%v'", config.ContextOutputFile)
 	}
 
-	// Verify reconnect settings
-	if !config.Reconnect.Enabled {
-		t.Error("Expected reconnect.enabled=true")
+	// Verify SSH settings (including reconnect)
+	if config.SSH.ServerAliveInterval != 15 {
+		t.Errorf("Expected ssh.server_alive_interval=15, got %v", config.SSH.ServerAliveInterval)
 	}
 
-	if config.Reconnect.InitialBackoff != "1s" {
-		t.Errorf("Expected reconnect.initial_backoff='1s', got '%v'", config.Reconnect.InitialBackoff)
+	if config.SSH.ServerAliveCountMax != 3 {
+		t.Errorf("Expected ssh.server_alive_count_max=3, got %v", config.SSH.ServerAliveCountMax)
 	}
 
-	if config.Reconnect.MaxBackoff != "5m" {
-		t.Errorf("Expected reconnect.max_backoff='5m', got '%v'", config.Reconnect.MaxBackoff)
+	if !config.SSH.ReconnectEnabled {
+		t.Error("Expected ssh.reconnect_enabled=true")
 	}
 
-	if config.Reconnect.BackoffFactor != 2 {
-		t.Errorf("Expected reconnect.backoff_factor=2, got %v", config.Reconnect.BackoffFactor)
+	if config.SSH.InitialBackoff != "1s" {
+		t.Errorf("Expected ssh.initial_backoff='1s', got '%v'", config.SSH.InitialBackoff)
 	}
 
-	if config.Reconnect.MaxRetries != 10 {
-		t.Errorf("Expected reconnect.max_retries=10, got %v", config.Reconnect.MaxRetries)
+	if config.SSH.MaxBackoff != "5m" {
+		t.Errorf("Expected ssh.max_backoff='5m', got '%v'", config.SSH.MaxBackoff)
+	}
+
+	if config.SSH.BackoffFactor != 2 {
+		t.Errorf("Expected ssh.backoff_factor=2, got %v", config.SSH.BackoffFactor)
+	}
+
+	if config.SSH.MaxRetries != 10 {
+		t.Errorf("Expected ssh.max_retries=10, got %v", config.SSH.MaxRetries)
 	}
 
 	// Verify context rules
@@ -161,7 +171,7 @@ context "office" {
 
 	t.Logf("✓ KDL config loaded successfully")
 	t.Logf("  Verbose: %v", config.Verbose)
-	t.Logf("  Reconnect enabled: %v", config.Reconnect.Enabled)
+	t.Logf("  SSH reconnect enabled: %v", config.SSH.ReconnectEnabled)
 	t.Logf("  Context rules: %d", len(config.Contexts))
 	t.Logf("  Home context IPs: %v", publicIPs)
 }

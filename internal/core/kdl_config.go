@@ -15,8 +15,7 @@ type Configuration struct {
 	ConfigPath        string                  // Directory containing config files
 	Verbose           int                     // Verbosity level
 	ContextOutputFile string                  // Optional file to write current context name
-	SSH               SSHConfig               // SSH connection settings
-	Reconnect         ReconnectConfig         // Reconnect settings
+	SSH               SSHConfig               // SSH connection settings (including reconnect)
 	Contexts          map[string]*ContextRule // Context rules keyed by context name
 	// Context behavior settings
 	CheckOnStartup       bool
@@ -25,17 +24,13 @@ type Configuration struct {
 
 // SSHConfig represents SSH connection settings
 type SSHConfig struct {
-	ServerAliveInterval int // Send keepalive every N seconds (0 to disable)
-	ServerAliveCountMax int // Exit after N failed keepalives
-}
-
-// ReconnectConfig represents reconnect settings for SSH tunnels
-type ReconnectConfig struct {
-	Enabled        bool
-	InitialBackoff string
-	MaxBackoff     string
-	BackoffFactor  int
-	MaxRetries     int
+	ServerAliveInterval int    // Send keepalive every N seconds (0 to disable)
+	ServerAliveCountMax int    // Exit after N failed keepalives
+	ReconnectEnabled    bool   // Enable/disable auto-reconnect
+	InitialBackoff      string // First retry delay
+	MaxBackoff          string // Maximum delay between retries
+	BackoffFactor       int    // Multiplier for each retry
+	MaxRetries          int    // Give up after this many attempts
 }
 
 // ContextRule represents a security context rule
@@ -54,24 +49,20 @@ type ContextActions struct {
 
 // KDL unmarshaling structs (internal use only)
 type kdlConfig struct {
-	Verbose           int                     `kdl:"verbose"`
-	ContextOutputFile string                  `kdl:"context_output_file"`
-	SSH               *kdlSSH                 `kdl:"ssh"`
-	Reconnect         *kdlReconnect           `kdl:"reconnect"`
-	Contexts          map[string]*kdlContext  `kdl:"context,multiple"`
+	Verbose           int                    `kdl:"verbose"`
+	ContextOutputFile string                 `kdl:"context_output_file"`
+	SSH               *kdlSSH                `kdl:"ssh"`
+	Contexts          map[string]*kdlContext `kdl:"context,multiple"`
 }
 
 type kdlSSH struct {
-	ServerAliveInterval int `kdl:"server_alive_interval"`
-	ServerAliveCountMax int `kdl:"server_alive_count_max"`
-}
-
-type kdlReconnect struct {
-	Enabled        bool   `kdl:"enabled"`
-	InitialBackoff string `kdl:"initial_backoff"`
-	MaxBackoff     string `kdl:"max_backoff"`
-	BackoffFactor  int    `kdl:"backoff_factor"`
-	MaxRetries     int    `kdl:"max_retries"`
+	ServerAliveInterval int    `kdl:"server_alive_interval"`
+	ServerAliveCountMax int    `kdl:"server_alive_count_max"`
+	ReconnectEnabled    bool   `kdl:"reconnect_enabled"`
+	InitialBackoff      string `kdl:"initial_backoff"`
+	MaxBackoff          string `kdl:"max_backoff"`
+	BackoffFactor       int    `kdl:"backoff_factor"`
+	MaxRetries          int    `kdl:"max_retries"`
 }
 
 type kdlContext struct {
@@ -112,37 +103,27 @@ func LoadConfig(filename string) (*Configuration, error) {
 		Contexts:             make(map[string]*ContextRule),
 	}
 
-	// Convert SSH settings
+	// Convert SSH settings (including reconnect settings)
 	if kdlCfg.SSH != nil {
 		cfg.SSH = SSHConfig{
 			ServerAliveInterval: kdlCfg.SSH.ServerAliveInterval,
 			ServerAliveCountMax: kdlCfg.SSH.ServerAliveCountMax,
+			ReconnectEnabled:    kdlCfg.SSH.ReconnectEnabled,
+			InitialBackoff:      kdlCfg.SSH.InitialBackoff,
+			MaxBackoff:          kdlCfg.SSH.MaxBackoff,
+			BackoffFactor:       kdlCfg.SSH.BackoffFactor,
+			MaxRetries:          kdlCfg.SSH.MaxRetries,
 		}
 	} else {
 		// Defaults
 		cfg.SSH = SSHConfig{
 			ServerAliveInterval: 15,
 			ServerAliveCountMax: 3,
-		}
-	}
-
-	// Convert reconnect settings
-	if kdlCfg.Reconnect != nil {
-		cfg.Reconnect = ReconnectConfig{
-			Enabled:        kdlCfg.Reconnect.Enabled,
-			InitialBackoff: kdlCfg.Reconnect.InitialBackoff,
-			MaxBackoff:     kdlCfg.Reconnect.MaxBackoff,
-			BackoffFactor:  kdlCfg.Reconnect.BackoffFactor,
-			MaxRetries:     kdlCfg.Reconnect.MaxRetries,
-		}
-	} else {
-		// Defaults
-		cfg.Reconnect = ReconnectConfig{
-			Enabled:        true,
-			InitialBackoff: "1s",
-			MaxBackoff:     "5m",
-			BackoffFactor:  2,
-			MaxRetries:     10,
+			ReconnectEnabled:    true,
+			InitialBackoff:      "1s",
+			MaxBackoff:          "5m",
+			BackoffFactor:       2,
+			MaxRetries:          10,
 		}
 	}
 
@@ -184,13 +165,11 @@ func GetDefaultConfig() *Configuration {
 		SSH: SSHConfig{
 			ServerAliveInterval: 15,
 			ServerAliveCountMax: 3,
-		},
-		Reconnect: ReconnectConfig{
-			Enabled:        true,
-			InitialBackoff: "1s",
-			MaxBackoff:     "5m",
-			BackoffFactor:  2,
-			MaxRetries:     10,
+			ReconnectEnabled:    true,
+			InitialBackoff:      "1s",
+			MaxBackoff:          "5m",
+			BackoffFactor:       2,
+			MaxRetries:          10,
 		},
 		Contexts: make(map[string]*ContextRule),
 	}

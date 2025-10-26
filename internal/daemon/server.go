@@ -73,9 +73,9 @@ func New() *Daemon {
 // calculateBackoff calculates the exponential backoff duration
 func calculateBackoff(retryCount int) time.Duration {
 	// Parse config values
-	initialBackoffStr := core.Config.Reconnect.InitialBackoff
-	maxBackoffStr := core.Config.Reconnect.MaxBackoff
-	backoffFactor := core.Config.Reconnect.BackoffFactor
+	initialBackoffStr := core.Config.SSH.InitialBackoff
+	maxBackoffStr := core.Config.SSH.MaxBackoff
+	backoffFactor := core.Config.SSH.BackoffFactor
 
 	initialBackoff, err := time.ParseDuration(initialBackoffStr)
 	if err != nil {
@@ -329,7 +329,7 @@ func (d *Daemon) startTunnel(alias string) Response {
 		LastConnectedTime: now,
 		AskpassToken:      token,
 		RetryCount:        0,
-		AutoReconnect:     core.Config.Reconnect.Enabled, // Use config value
+		AutoReconnect:     core.Config.SSH.ReconnectEnabled, // Use config value
 		State:             StateConnected,             // Initial state is connected
 	}
 	slog.Info(fmt.Sprintf("Attempting to start tunnel for '%s' (PID %d)", alias, cmd.Process.Pid))
@@ -404,7 +404,7 @@ func (d *Daemon) monitorTunnel(alias string) {
 		d.tunnels[alias] = tunnel
 
 		// Get max retries from config
-		maxRetries := core.Config.Reconnect.MaxRetries
+		maxRetries := core.Config.SSH.MaxRetries
 
 		// Check if auto-reconnect is enabled and we haven't exceeded max retries
 		if !tunnel.AutoReconnect || tunnel.RetryCount >= maxRetries {
