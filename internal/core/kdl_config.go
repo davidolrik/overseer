@@ -1,23 +1,31 @@
 package core
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 
 	"github.com/sblinch/kdl-go"
+	"github.com/sblinch/kdl-go/document"
 )
 
 // Config is the global configuration instance
 var Config *Configuration
 
+// ExportConfig represents a single export configuration
+type ExportConfig struct {
+	Type string // Export type: "dotenv", "context", "location", "public_ip"
+	Path string // File path to write to
+}
+
 // Configuration represents the complete Overseer configuration
 type Configuration struct {
 	ConfigPath        string                  // Directory containing config files
 	Verbose           int                     // Verbosity level
-	ContextOutputFile string                  // Optional file to write current context name
+	Exports           []ExportConfig          // Export configurations
 	SSH               SSHConfig               // SSH connection settings (including reconnect)
 	Locations         map[string]*Location    // Location definitions keyed by location name
-	Contexts          map[string]*ContextRule // Context rules keyed by context name
+	Contexts          []*ContextRule          // Context rules in evaluation order (first match wins)
 	// Context behavior settings
 	CheckOnStartup       bool
 	CheckOnNetworkChange bool
@@ -39,15 +47,17 @@ type Location struct {
 	Name        string              // Location name (e.g., "hq", "home")
 	DisplayName string              // Human-friendly display name
 	Conditions  map[string][]string // Sensor conditions (e.g., "public_ip": ["1.2.3.4", "5.6.7.0/24"])
+	Environment map[string]string   // Custom environment variables to export
 }
 
 // ContextRule represents a security context rule
 type ContextRule struct {
-	Name        string         // Context name (e.g., "home", "office")
-	DisplayName string         // Human-friendly display name
-	Locations   []string       // Location names this context applies to
+	Name        string              // Context name (e.g., "home", "office")
+	DisplayName string              // Human-friendly display name
+	Locations   []string            // Location names this context applies to
 	Conditions  map[string][]string // Sensor conditions (e.g., "public_ip": ["1.2.3.4", "5.6.7.0/24"])
-	Actions     ContextActions // Actions to take when entering this context
+	Actions     ContextActions      // Actions to take when entering this context
+	Environment map[string]string   // Custom environment variables to export
 }
 
 // ContextActions represents actions for a context
@@ -58,11 +68,18 @@ type ContextActions struct {
 
 // KDL unmarshaling structs (internal use only)
 type kdlConfig struct {
-	Verbose           int                     `kdl:"verbose"`
-	ContextOutputFile string                  `kdl:"context_output_file"`
-	SSH               *kdlSSH                 `kdl:"ssh"`
-	Locations         map[string]*kdlLocation `kdl:"location,multiple"`
-	Contexts          map[string]*kdlContext  `kdl:"context,multiple"`
+	Verbose   int                     `kdl:"verbose"`
+	Exports   *kdlExports             `kdl:"exports"`
+	SSH       *kdlSSH                 `kdl:"ssh"`
+	Locations map[string]*kdlLocation `kdl:"location,multiple"`
+	Contexts  map[string]*kdlContext  `kdl:"context,multiple"`
+}
+
+type kdlExports struct {
+	Dotenv   string `kdl:"dotenv"`
+	Context  string `kdl:"context"`
+	Location string `kdl:"location"`
+	PublicIP string `kdl:"public_ip"`
 }
 
 type kdlSSH struct {
@@ -78,6 +95,7 @@ type kdlSSH struct {
 type kdlLocation struct {
 	DisplayName string         `kdl:"display_name"`
 	Conditions  *kdlConditions `kdl:"conditions"`
+	Environment interface{}    `kdl:"environment"` // Parsed manually, field here to satisfy unmarshaler
 }
 
 type kdlContext struct {
@@ -85,6 +103,7 @@ type kdlContext struct {
 	Locations   []string       `kdl:"location"`
 	Conditions  *kdlConditions `kdl:"conditions"`
 	Actions     *kdlActions    `kdl:"actions"`
+	Environment interface{}    `kdl:"environment"` // Parsed manually, field here to satisfy unmarshaler
 }
 
 type kdlConditions struct {
@@ -96,12 +115,80 @@ type kdlActions struct {
 	Disconnect []string `kdl:"disconnect"`
 }
 
+// extractEnvironmentFromNode extracts environment variables from a KDL node's children
+func extractEnvironmentFromNode(node *document.Node) map[string]string {
+	env := make(map[string]string)
+	if node.Children == nil {
+		return env
+	}
+
+	// Look for an "environment" child node
+	for _, child := range node.Children {
+		if child.Name != nil && child.Name.Value == "environment" {
+			// Extract all properties from the environment node
+			if child.Children != nil {
+				for _, envVar := range child.Children {
+					if envVar.Name != nil && len(envVar.Arguments) > 0 {
+						key := envVar.Name.Value.(string)
+						if val, ok := envVar.Arguments[0].Value.(string); ok {
+							env[key] = val
+						}
+					}
+				}
+			}
+			break
+		}
+	}
+
+	return env
+}
+
 // LoadConfig loads the KDL configuration file and returns a Configuration struct
 func LoadConfig(filename string) (*Configuration, error) {
 	// Read the KDL file
 	data, err := os.ReadFile(filename)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read KDL file: %w", err)
+	}
+
+	// First, parse the KDL document to preserve context order
+	doc, err := kdl.Parse(bytes.NewReader(data))
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse KDL: %w", err)
+	}
+
+	// Extract context order and environment variables from the document
+	contextOrder := make([]string, 0)
+	contextEnvs := make(map[string]map[string]string)
+	locationEnvs := make(map[string]map[string]string)
+
+	for _, node := range doc.Nodes {
+		if node.Name == nil {
+			continue
+		}
+
+		// Extract context order and environment
+		if node.Name.Value == "context" && len(node.Arguments) > 0 {
+			if contextName, ok := node.Arguments[0].Value.(string); ok {
+				contextOrder = append(contextOrder, contextName)
+				// Extract environment variables from this context
+				env := extractEnvironmentFromNode(node)
+				if len(env) > 0 {
+					contextEnvs[contextName] = env
+				}
+			}
+		}
+
+		// Extract location environment
+		if node.Name.Value == "location" && len(node.Arguments) > 0 {
+			if locationName, ok := node.Arguments[0].Value.(string); ok {
+				// Extract environment variables from this location
+				env := extractEnvironmentFromNode(node)
+				if len(env) > 0 {
+					locationEnvs[locationName] = env
+				}
+			}
+		}
 	}
 
 	// Unmarshal KDL into internal struct
@@ -113,11 +200,27 @@ func LoadConfig(filename string) (*Configuration, error) {
 	// Convert to our clean Configuration struct
 	cfg := &Configuration{
 		Verbose:              kdlCfg.Verbose,
-		ContextOutputFile:    kdlCfg.ContextOutputFile,
 		CheckOnStartup:       true,  // Default
 		CheckOnNetworkChange: true,  // Default
 		Locations:            make(map[string]*Location),
-		Contexts:             make(map[string]*ContextRule),
+		Contexts:             make([]*ContextRule, 0),
+		Exports:              make([]ExportConfig, 0),
+	}
+
+	// Convert exports
+	if kdlCfg.Exports != nil {
+		if kdlCfg.Exports.Dotenv != "" {
+			cfg.Exports = append(cfg.Exports, ExportConfig{Type: "dotenv", Path: kdlCfg.Exports.Dotenv})
+		}
+		if kdlCfg.Exports.Context != "" {
+			cfg.Exports = append(cfg.Exports, ExportConfig{Type: "context", Path: kdlCfg.Exports.Context})
+		}
+		if kdlCfg.Exports.Location != "" {
+			cfg.Exports = append(cfg.Exports, ExportConfig{Type: "location", Path: kdlCfg.Exports.Location})
+		}
+		if kdlCfg.Exports.PublicIP != "" {
+			cfg.Exports = append(cfg.Exports, ExportConfig{Type: "public_ip", Path: kdlCfg.Exports.PublicIP})
+		}
 	}
 
 	// Convert SSH settings (including reconnect settings)
@@ -150,6 +253,7 @@ func LoadConfig(filename string) (*Configuration, error) {
 			Name:        name,
 			DisplayName: kdlLoc.DisplayName,
 			Conditions:  make(map[string][]string),
+			Environment: make(map[string]string),
 		}
 
 		// Convert conditions
@@ -159,16 +263,27 @@ func LoadConfig(filename string) (*Configuration, error) {
 			}
 		}
 
+		// Add environment variables from manually parsed data
+		if env, exists := locationEnvs[name]; exists {
+			loc.Environment = env
+		}
+
 		cfg.Locations[name] = loc
 	}
 
-	// Convert context rules
-	for name, kdlCtx := range kdlCfg.Contexts {
+	// Convert context rules in the order they appear in the file
+	for _, name := range contextOrder {
+		kdlCtx, exists := kdlCfg.Contexts[name]
+		if !exists {
+			continue // Skip if context wasn't properly parsed
+		}
+
 		rule := &ContextRule{
 			Name:        name,
 			DisplayName: kdlCtx.DisplayName,
 			Locations:   kdlCtx.Locations,
 			Conditions:  make(map[string][]string),
+			Environment: make(map[string]string),
 		}
 
 		// Convert conditions
@@ -186,7 +301,12 @@ func LoadConfig(filename string) (*Configuration, error) {
 			}
 		}
 
-		cfg.Contexts[name] = rule
+		// Add environment variables from manually parsed data
+		if env, exists := contextEnvs[name]; exists {
+			rule.Environment = env
+		}
+
+		cfg.Contexts = append(cfg.Contexts, rule)
 	}
 
 	return cfg, nil
@@ -208,6 +328,6 @@ func GetDefaultConfig() *Configuration {
 			MaxRetries:          10,
 		},
 		Locations: make(map[string]*Location),
-		Contexts:  make(map[string]*ContextRule),
+		Contexts:  make([]*ContextRule, 0),
 	}
 }

@@ -142,7 +142,7 @@ func TestRuleEngine_EvaluateWithMultipleIPs(t *testing.T) {
 		},
 	}
 
-	re := NewRuleEngine(rules)
+	re := NewRuleEngine(rules, map[string]Location{})
 
 	tests := []struct {
 		name         string
@@ -176,9 +176,9 @@ func TestRuleEngine_EvaluateWithMultipleIPs(t *testing.T) {
 			sensors := map[string]SensorValue{
 				"public_ip": NewSensorValue("public_ip", tt.sensorIP),
 			}
-			gotContext, _ := re.Evaluate(sensors)
-			if gotContext != tt.wantContext {
-				t.Errorf("Evaluate() context = %v, want %v", gotContext, tt.wantContext)
+			result := re.Evaluate(sensors)
+			if result.Context != tt.wantContext {
+				t.Errorf("Evaluate() context = %v, want %v", result.Context, tt.wantContext)
 			}
 		})
 	}

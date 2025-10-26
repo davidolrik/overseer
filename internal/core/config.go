@@ -94,8 +94,21 @@ func writeDefaultKDLConfig(path string) error {
 // Global settings
 verbose 0
 
-// Optional: Write current context to a file for external integration
-// context_output_file "/path/to/context.txt"
+// Optional: Export context data to files for external integration
+// All export paths support ~ for home directory
+// exports {
+//   dotenv "/path/to/overseer.env"      // Env file with OVERSEER_* variables (see below)
+//   context "/path/to/context.txt"      // Context name only
+//   location "/path/to/location.txt"    // Location name only
+//   public_ip "/path/to/public_ip.txt"  // Public IP only
+// }
+//
+// Dotenv format exports these variables:
+//   OVERSEER_CONTEXT=home
+//   OVERSEER_CONTEXT_DISPLAY_NAME=Home Network
+//   OVERSEER_LOCATION=hq
+//   OVERSEER_LOCATION_DISPLAY_NAME=Headquarters
+//   OVERSEER_PUBLIC_IP=123.45.67.89
 
 // SSH connection settings
 ssh {
@@ -120,6 +133,11 @@ ssh {
 //     public_ip "203.0.113.42"      // Your home IP
 //     public_ip "198.51.100.0/24"   // CIDR ranges supported
 //   }
+//
+//   environment {
+//     LOCATION_TYPE "residential"
+//     NETWORK_SPEED "1000"
+//   }
 // }
 //
 // location "office" {
@@ -127,6 +145,11 @@ ssh {
 //
 //   conditions {
 //     public_ip "192.0.2.0/24"
+//   }
+//
+//   environment {
+//     LOCATION_TYPE "corporate"
+//     NETWORK_SPEED "10000"
 //   }
 // }
 
@@ -137,6 +160,11 @@ ssh {
 //   display_name "Trusted Network"
 //   location "home"        // Reference a location
 //   location "office"      // Multiple locations supported
+//
+//   environment {
+//     TRUST_LEVEL "high"
+//     ALLOW_SSH "true"
+//   }
 //
 //   actions {
 //     connect "home-lab"   // Connect these tunnels
@@ -149,6 +177,12 @@ ssh {
 //
 //   conditions {
 //     public_ip "109.58.0.0/16"    // Direct conditions also supported
+//   }
+//
+//   environment {
+//     TRUST_LEVEL "low"
+//     ALLOW_SSH "false"
+//     REQUIRE_VPN "true"
 //   }
 //
 //   actions {

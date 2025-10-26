@@ -8,16 +8,20 @@ import (
 
 // Location represents a physical or network location
 type Location struct {
-	Name       string              // Location name (e.g., "hq", "home")
-	Conditions map[string][]string // Sensor conditions (e.g., "public_ip": ["192.168.1.1", "10.0.0.0/24"])
+	Name        string              // Location name (e.g., "hq", "home")
+	DisplayName string              // Human-friendly display name
+	Conditions  map[string][]string // Sensor conditions (e.g., "public_ip": ["192.168.1.1", "10.0.0.0/24"])
+	Environment map[string]string   // Custom environment variables to export
 }
 
 // Rule represents a context rule that maps sensor conditions to actions
 type Rule struct {
-	Name       string              // Context name (e.g., "home", "office")
-	Locations  []string            // Location names this context can match
-	Conditions map[string][]string // Sensor conditions (e.g., "public_ip": ["192.168.1.1", "10.0.0.0/24"])
-	Actions    RuleActions         // Actions to take when this rule matches
+	Name        string              // Context name (e.g., "home", "office")
+	DisplayName string              // Human-friendly display name
+	Locations   []string            // Location names this context can match
+	Conditions  map[string][]string // Sensor conditions (e.g., "public_ip": ["192.168.1.1", "10.0.0.0/24"])
+	Actions     RuleActions         // Actions to take when this rule matches
+	Environment map[string]string   // Custom environment variables to export
 }
 
 // RuleActions defines what to do when a rule matches
@@ -210,6 +214,14 @@ func (re *RuleEngine) GetRuleByName(name string) (*Rule, error) {
 		}
 	}
 	return nil, fmt.Errorf("rule not found: %s", name)
+}
+
+// GetLocation returns a location by its name
+func (re *RuleEngine) GetLocation(name string) *Location {
+	if loc, exists := re.locations[name]; exists {
+		return &loc
+	}
+	return nil
 }
 
 // GetAllRules returns all configured rules

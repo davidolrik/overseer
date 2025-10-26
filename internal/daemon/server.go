@@ -841,8 +841,10 @@ func (d *Daemon) initSecurityManagerInternal(checkOnStartup bool) error {
 	locations := make(map[string]security.Location)
 	for name, loc := range core.Config.Locations {
 		locations[name] = security.Location{
-			Name:       loc.Name,
-			Conditions: loc.Conditions,
+			Name:        loc.Name,
+			DisplayName: loc.DisplayName,
+			Conditions:  loc.Conditions,
+			Environment: loc.Environment,
 		}
 	}
 
@@ -851,9 +853,11 @@ func (d *Daemon) initSecurityManagerInternal(checkOnStartup bool) error {
 
 	for _, contextRule := range core.Config.Contexts {
 		rules = append(rules, security.Rule{
-			Name:       contextRule.Name,
-			Locations:  contextRule.Locations,
-			Conditions: contextRule.Conditions,
+			Name:        contextRule.Name,
+			DisplayName: contextRule.DisplayName,
+			Locations:   contextRule.Locations,
+			Conditions:  contextRule.Conditions,
+			Environment: contextRule.Environment,
 			Actions: security.RuleActions{
 				Connect:    contextRule.Actions.Connect,
 				Disconnect: contextRule.Actions.Disconnect,
@@ -871,19 +875,29 @@ func (d *Daemon) initSecurityManagerInternal(checkOnStartup bool) error {
 	}
 	if !hasUntrusted {
 		rules = append(rules, security.Rule{
-			Name:       "untrusted",
-			Conditions: map[string][]string{}, // Empty conditions = fallback/default
+			Name:        "untrusted",
+			DisplayName: "Untrusted",
+			Conditions:  map[string][]string{}, // Empty conditions = fallback/default
 			Actions: security.RuleActions{
 				Disconnect: []string{}, // By default, disconnect nothing
 			},
 		})
 	}
 
+	// Convert export configs to security.ExportConfig format
+	exports := make([]security.ExportConfig, len(core.Config.Exports))
+	for i, exportCfg := range core.Config.Exports {
+		exports[i] = security.ExportConfig{
+			Type: exportCfg.Type,
+			Path: exportCfg.Path,
+		}
+	}
+
 	// Create security manager
 	config := security.ManagerConfig{
 		Rules:           rules,
 		Locations:       locations,
-		OutputFile:      core.Config.ContextOutputFile,
+		Exports:         exports,
 		CheckOnStartup:  checkOnStartup,
 		OnContextChange: d.handleContextChange,
 		Logger:          slog.Default(),
@@ -1089,8 +1103,10 @@ func (d *Daemon) reloadConfig() error {
 		locations := make(map[string]security.Location)
 		for name, loc := range newConfig.Locations {
 			locations[name] = security.Location{
-				Name:       loc.Name,
-				Conditions: loc.Conditions,
+				Name:        loc.Name,
+				DisplayName: loc.DisplayName,
+				Conditions:  loc.Conditions,
+				Environment: loc.Environment,
 			}
 		}
 
@@ -1098,9 +1114,11 @@ func (d *Daemon) reloadConfig() error {
 		rules := make([]security.Rule, 0, len(newConfig.Contexts))
 		for _, contextRule := range newConfig.Contexts {
 			rules = append(rules, security.Rule{
-				Name:       contextRule.Name,
-				Locations:  contextRule.Locations,
-				Conditions: contextRule.Conditions,
+				Name:        contextRule.Name,
+				DisplayName: contextRule.DisplayName,
+				Locations:   contextRule.Locations,
+				Conditions:  contextRule.Conditions,
+				Environment: contextRule.Environment,
 				Actions: security.RuleActions{
 					Connect:    contextRule.Actions.Connect,
 					Disconnect: contextRule.Actions.Disconnect,
@@ -1118,18 +1136,28 @@ func (d *Daemon) reloadConfig() error {
 		}
 		if !hasUntrusted {
 			rules = append(rules, security.Rule{
-				Name:       "untrusted",
-				Conditions: map[string][]string{},
+				Name:        "untrusted",
+				DisplayName: "Untrusted",
+				Conditions:  map[string][]string{},
 				Actions: security.RuleActions{
 					Disconnect: []string{},
 				},
 			})
 		}
 
+		// Convert export configs to security.ExportConfig format
+		exports := make([]security.ExportConfig, len(newConfig.Exports))
+		for i, exportCfg := range newConfig.Exports {
+			exports[i] = security.ExportConfig{
+				Type: exportCfg.Type,
+				Path: exportCfg.Path,
+			}
+		}
+
 		config := security.ManagerConfig{
 			Rules:           rules,
 			Locations:       locations,
-			OutputFile:      newConfig.ContextOutputFile,
+			Exports:         exports,
 			CheckOnStartup:  false,
 			OnContextChange: d.handleContextChange,
 			Logger:          slog.Default(),
@@ -1160,14 +1188,7 @@ func (d *Daemon) reloadConfig() error {
 	}
 	d.securityManager = newManager
 
-	// Restore the previous context if we had one
-	if oldContext != "" && oldContext != "unknown" && d.securityManager != nil {
-		newCtx := d.securityManager.GetContext()
-		newCtx.SetContext(oldContext, "config_reload_restore")
-		slog.Debug("Restored previous context", "context", oldContext)
-	}
-
-	// Force an immediate context check after reload to apply new rules
+	// Force an immediate context check after reload to apply new rules and update exports
 	if d.securityManager != nil {
 		if err := d.securityManager.TriggerCheckWithReason("config_reload"); err != nil {
 			slog.Warn("Failed to check context after config reload", "error", err)

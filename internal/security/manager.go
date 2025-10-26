@@ -13,7 +13,7 @@ type Manager struct {
 	ruleEngine     *RuleEngine
 	sensors        []Sensor
 	networkMonitor *NetworkMonitor
-	fileWriter     *FileWriter
+	exportWriters  []*ExportWriter
 	logger         *slog.Logger
 	mu             sync.RWMutex
 	stopChan       chan struct{}
@@ -23,11 +23,17 @@ type Manager struct {
 	onContextChange func(from, to string, rule *Rule)
 }
 
+// ExportConfig represents a single export configuration
+type ExportConfig struct {
+	Type string // Export type: "dotenv", "context", "location", "public_ip"
+	Path string // File path to write to
+}
+
 // ManagerConfig holds configuration for the security manager
 type ManagerConfig struct {
 	Rules           []Rule
 	Locations       map[string]Location
-	OutputFile      string
+	Exports         []ExportConfig
 	CheckOnStartup  bool
 	OnContextChange func(from, to string, rule *Rule)
 	Logger          *slog.Logger
@@ -47,16 +53,17 @@ func NewManager(config ManagerConfig) (*Manager, error) {
 		logger:          config.Logger,
 		stopChan:        make(chan struct{}),
 		onContextChange: config.OnContextChange,
+		exportWriters:   make([]*ExportWriter, 0),
 	}
 
-	// Setup file writer if output file is specified
-	if config.OutputFile != "" {
-		fw, err := NewFileWriter(config.OutputFile)
+	// Setup export writers
+	for _, exportCfg := range config.Exports {
+		ew, err := NewExportWriter(exportCfg.Type, exportCfg.Path)
 		if err != nil {
-			return nil, fmt.Errorf("failed to create file writer: %w", err)
+			return nil, fmt.Errorf("failed to create export writer for %s: %w", exportCfg.Type, err)
 		}
-		m.fileWriter = fw
-		m.logger.Info("Context file writer enabled", "path", fw.GetPath())
+		m.exportWriters = append(m.exportWriters, ew)
+		m.logger.Info("Export writer enabled", "type", exportCfg.Type, "path", ew.GetPath())
 	}
 
 	return m, nil
@@ -142,6 +149,10 @@ func (m *Manager) checkContext(trigger string) error {
 	// Update context and location if changed
 	changed := m.context.SetContextAndLocation(result.Context, result.Location, trigger)
 
+	// During config reload, always update exports even if context name didn't change
+	// (rule properties like environment variables may have changed)
+	forceExport := trigger == "config_reload"
+
 	if changed {
 		m.logger.Debug("Security context changed",
 			"from", oldContext,
@@ -150,21 +161,84 @@ func (m *Manager) checkContext(trigger string) error {
 			"to_location", result.Location,
 			"matched_by", result.MatchedBy,
 			"trigger", trigger)
+	} else if forceExport {
+		m.logger.Debug("Context unchanged but updating exports due to config reload",
+			"context", result.Context,
+			"location", result.Location)
+	}
 
-		// Write to file if enabled
-		if m.fileWriter != nil {
-			if err := m.fileWriter.Write(result.Context); err != nil {
-				m.logger.Error("Failed to write context file", "error", err)
-			} else {
-				m.logger.Debug("Context written to file", "path", m.fileWriter.GetPath())
+	// Write exports if context changed OR if this is a config reload
+	if changed || forceExport {
+		// Write to all export files
+		if len(m.exportWriters) > 0 {
+			// Get public IP sensor value for exports
+			publicIP := ""
+			if ipSensor, exists := sensors["public_ip"]; exists {
+				publicIP = ipSensor.String()
+			}
+
+			// Get display names and environment variables
+			contextDisplayName := ""
+			customEnv := make(map[string]string)
+
+			if result.Rule != nil {
+				contextDisplayName = result.Rule.DisplayName
+				// Start with context environment variables
+				if result.Rule.Environment != nil {
+					for k, v := range result.Rule.Environment {
+						customEnv[k] = v
+					}
+				}
+			}
+
+			locationDisplayName := ""
+			if result.Location != "" {
+				if loc := m.ruleEngine.GetLocation(result.Location); loc != nil {
+					locationDisplayName = loc.DisplayName
+					// Add location environment variables (context vars take precedence)
+					if loc.Environment != nil {
+						for k, v := range loc.Environment {
+							// Only add if not already set by context
+							if _, exists := customEnv[k]; !exists {
+								customEnv[k] = v
+							}
+						}
+					}
+				}
+			}
+
+			// Prepare export data
+			exportData := ExportData{
+				Context:             result.Context,
+				ContextDisplayName:  contextDisplayName,
+				Location:            result.Location,
+				LocationDisplayName: locationDisplayName,
+				PublicIP:            publicIP,
+				CustomEnvironment:   customEnv,
+			}
+
+			// Write to each export writer
+			for _, ew := range m.exportWriters {
+				if err := ew.Write(exportData); err != nil {
+					m.logger.Error("Failed to write export file",
+						"type", ew.GetType(),
+						"path", ew.GetPath(),
+						"error", err)
+				} else {
+					m.logger.Debug("Export written",
+						"type", ew.GetType(),
+						"path", ew.GetPath())
+				}
 			}
 		}
+	}
 
-		// Call callback if registered
-		if m.onContextChange != nil {
-			m.onContextChange(oldContext, result.Context, result.Rule)
-		}
-	} else {
+	// Call callback only if context actually changed (not just forced export)
+	if changed && m.onContextChange != nil {
+		m.onContextChange(oldContext, result.Context, result.Rule)
+	}
+
+	if !changed && !forceExport {
 		m.logger.Debug("Context unchanged", "context", result.Context, "location", result.Location)
 	}
 

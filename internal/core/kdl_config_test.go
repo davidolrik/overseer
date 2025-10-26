@@ -14,7 +14,11 @@ func TestLoadConfig(t *testing.T) {
 	// Write a test KDL config
 	kdlConfig := `// Test configuration
 verbose 0
-context_output_file "/tmp/test-context.txt"
+
+exports {
+  context "/tmp/test-context.txt"
+  dotenv "/tmp/overseer.env"
+}
 
 ssh {
   server_alive_interval 15
@@ -73,8 +77,31 @@ context "office" {
 		t.Errorf("Expected verbose=0, got %v", config.Verbose)
 	}
 
-	if config.ContextOutputFile != "/tmp/test-context.txt" {
-		t.Errorf("Expected output_file='/tmp/test-context.txt', got '%v'", config.ContextOutputFile)
+	// Verify exports
+	if len(config.Exports) != 2 {
+		t.Fatalf("Expected 2 exports, got %d", len(config.Exports))
+	}
+
+	// Find context export
+	var contextExport, dotenvExport *ExportConfig
+	for i := range config.Exports {
+		if config.Exports[i].Type == "context" {
+			contextExport = &config.Exports[i]
+		} else if config.Exports[i].Type == "dotenv" {
+			dotenvExport = &config.Exports[i]
+		}
+	}
+
+	if contextExport == nil {
+		t.Error("Expected to find context export")
+	} else if contextExport.Path != "/tmp/test-context.txt" {
+		t.Errorf("Expected context export path='/tmp/test-context.txt', got '%v'", contextExport.Path)
+	}
+
+	if dotenvExport == nil {
+		t.Error("Expected to find dotenv export")
+	} else if dotenvExport.Path != "/tmp/overseer.env" {
+		t.Errorf("Expected dotenv export path='/tmp/overseer.env', got '%v'", dotenvExport.Path)
 	}
 
 	// Verify SSH settings (including reconnect)
@@ -111,9 +138,15 @@ context "office" {
 		t.Fatalf("Expected 2 context rules, got %d", len(config.Contexts))
 	}
 
-	// Check home context
-	homeRule, ok := config.Contexts["home"]
-	if !ok {
+	// Check home context (should be first in order)
+	var homeRule *ContextRule
+	for _, rule := range config.Contexts {
+		if rule.Name == "home" {
+			homeRule = rule
+			break
+		}
+	}
+	if homeRule == nil {
 		t.Fatal("Could not find home context rule")
 	}
 
@@ -160,8 +193,14 @@ context "office" {
 	}
 
 	// Check office context
-	officeRule, ok := config.Contexts["office"]
-	if !ok {
+	var officeRule *ContextRule
+	for _, rule := range config.Contexts {
+		if rule.Name == "office" {
+			officeRule = rule
+			break
+		}
+	}
+	if officeRule == nil {
 		t.Fatal("Could not find office context rule")
 	}
 
