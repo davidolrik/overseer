@@ -30,7 +30,7 @@ builds:
     flags:
       - -mod=readonly
     ldflags:
-      - -s -w -X main.version={{.Version}} -X main.commit={{.Commit}} -X main.date={{.Date}}
+      - -X main.version={{.Version}} -X main.commit={{.Commit}} -X main.date={{.Date}}
     hooks:
       post:
         - sh -c 'if [ -n "$CODESIGN_IDENTITY" ]; then codesign --sign "$CODESIGN_IDENTITY" --options runtime --entitlements entitlements.plist --timestamp --force --verbose "{{ .Path }}"; else echo "Skipping code signing (CODESIGN_IDENTITY not set)"; fi'
@@ -46,7 +46,7 @@ builds:
     flags:
       - -mod=readonly
     ldflags:
-      - -s -w -X main.version={{.Version}} -X main.commit={{.Commit}} -X main.date={{.Date}}
+      - -X main.version={{.Version}} -X main.commit={{.Commit}} -X main.date={{.Date}}
     hooks:
       post:
         - sh -c 'if [ -n "$CODESIGN_IDENTITY" ]; then codesign --sign "$CODESIGN_IDENTITY" --options runtime --entitlements entitlements.plist --timestamp --force --verbose "{{ .Path }}"; else echo "Skipping code signing (CODESIGN_IDENTITY not set)"; fi'
