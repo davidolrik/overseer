@@ -107,7 +107,8 @@ type kdlContext struct {
 }
 
 type kdlConditions struct {
-	PublicIP []string `kdl:"public_ip"`
+	PublicIP []string          `kdl:"public_ip"`
+	Env      map[string]string `kdl:"env,multiple"`
 }
 
 type kdlActions struct {
@@ -143,6 +144,40 @@ func extractEnvironmentFromNode(node *document.Node) map[string]string {
 	return env
 }
 
+// extractEnvConditionsFromNode extracts env conditions from a conditions node
+// Returns a map where keys are "env:VAR_NAME" and values are slices of patterns
+func extractEnvConditionsFromNode(node *document.Node) map[string][]string {
+	envConditions := make(map[string][]string)
+	if node.Children == nil {
+		return envConditions
+	}
+
+	// Look for a "conditions" child node
+	for _, child := range node.Children {
+		if child.Name != nil && child.Name.Value == "conditions" {
+			// Extract all env entries from the conditions node
+			if child.Children != nil {
+				for _, condNode := range child.Children {
+					if condNode.Name != nil && condNode.Name.Value == "env" {
+						// env nodes have format: env "VAR_NAME" "pattern"
+						if len(condNode.Arguments) >= 2 {
+							varName, ok1 := condNode.Arguments[0].Value.(string)
+							pattern, ok2 := condNode.Arguments[1].Value.(string)
+							if ok1 && ok2 {
+								key := "env:" + varName
+								envConditions[key] = append(envConditions[key], pattern)
+							}
+						}
+					}
+				}
+			}
+			break
+		}
+	}
+
+	return envConditions
+}
+
 // LoadConfig loads the KDL configuration file and returns a Configuration struct
 func LoadConfig(filename string) (*Configuration, error) {
 	// Read the KDL file
@@ -157,17 +192,19 @@ func LoadConfig(filename string) (*Configuration, error) {
 		return nil, fmt.Errorf("failed to parse KDL: %w", err)
 	}
 
-	// Extract context order and environment variables from the document
+	// Extract context order, environment variables, and env conditions from the document
 	contextOrder := make([]string, 0)
 	contextEnvs := make(map[string]map[string]string)
+	contextEnvConditions := make(map[string]map[string][]string)
 	locationEnvs := make(map[string]map[string]string)
+	locationEnvConditions := make(map[string]map[string][]string)
 
 	for _, node := range doc.Nodes {
 		if node.Name == nil {
 			continue
 		}
 
-		// Extract context order and environment
+		// Extract context order, environment, and env conditions
 		if node.Name.Value == "context" && len(node.Arguments) > 0 {
 			if contextName, ok := node.Arguments[0].Value.(string); ok {
 				contextOrder = append(contextOrder, contextName)
@@ -176,16 +213,26 @@ func LoadConfig(filename string) (*Configuration, error) {
 				if len(env) > 0 {
 					contextEnvs[contextName] = env
 				}
+				// Extract env conditions from this context
+				envConds := extractEnvConditionsFromNode(node)
+				if len(envConds) > 0 {
+					contextEnvConditions[contextName] = envConds
+				}
 			}
 		}
 
-		// Extract location environment
+		// Extract location environment and env conditions
 		if node.Name.Value == "location" && len(node.Arguments) > 0 {
 			if locationName, ok := node.Arguments[0].Value.(string); ok {
 				// Extract environment variables from this location
 				env := extractEnvironmentFromNode(node)
 				if len(env) > 0 {
 					locationEnvs[locationName] = env
+				}
+				// Extract env conditions from this location
+				envConds := extractEnvConditionsFromNode(node)
+				if len(envConds) > 0 {
+					locationEnvConditions[locationName] = envConds
 				}
 			}
 		}
@@ -263,6 +310,13 @@ func LoadConfig(filename string) (*Configuration, error) {
 			}
 		}
 
+		// Add env conditions from manually parsed data
+		if envConds, exists := locationEnvConditions[name]; exists {
+			for key, patterns := range envConds {
+				loc.Conditions[key] = patterns
+			}
+		}
+
 		// Add environment variables from manually parsed data
 		if env, exists := locationEnvs[name]; exists {
 			loc.Environment = env
@@ -290,6 +344,13 @@ func LoadConfig(filename string) (*Configuration, error) {
 		if kdlCtx.Conditions != nil {
 			if len(kdlCtx.Conditions.PublicIP) > 0 {
 				rule.Conditions["public_ip"] = kdlCtx.Conditions.PublicIP
+			}
+		}
+
+		// Add env conditions from manually parsed data
+		if envConds, exists := contextEnvConditions[name]; exists {
+			for key, patterns := range envConds {
+				rule.Conditions[key] = patterns
 			}
 		}
 

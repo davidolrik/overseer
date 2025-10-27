@@ -132,6 +132,8 @@ ssh {
 //   conditions {
 //     public_ip "203.0.113.42"      // Your home IP
 //     public_ip "198.51.100.0/24"   // CIDR ranges supported
+//     env "HOSTNAME" "my-laptop"    // Match environment variables
+//     env "USER" "myusername"       // Multiple env conditions supported
 //   }
 //
 //   environment {
@@ -145,6 +147,7 @@ ssh {
 //
 //   conditions {
 //     public_ip "192.0.2.0/24"
+//     env "COMPANY_NETWORK" "true"
 //   }
 //
 //   environment {
@@ -172,11 +175,32 @@ ssh {
 //   }
 // }
 //
+// context "development" {
+//   display_name "Development Environment"
+//
+//   conditions {
+//     env "ENVIRONMENT" "dev"        // Match environment variables
+//     env "ENVIRONMENT" "development" // Multiple patterns for same var (OR logic)
+//     env "DEPLOYMENT_TYPE" "local"  // Multiple env vars (AND logic)
+//   }
+//
+//   environment {
+//     TRUST_LEVEL "medium"
+//     ENABLE_DEBUG "true"
+//   }
+//
+//   actions {
+//     connect "dev-tunnel"
+//     connect "local-db"
+//   }
+// }
+//
 // context "mobile" {
 //   display_name "Mobile Network"
 //
 //   conditions {
 //     public_ip "109.58.0.0/16"    // Direct conditions also supported
+//     env "NETWORK_TYPE" "cellular" // Can mix public_ip and env conditions
 //   }
 //
 //   environment {

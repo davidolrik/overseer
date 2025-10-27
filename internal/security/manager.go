@@ -45,10 +45,42 @@ func NewManager(config ManagerConfig) (*Manager, error) {
 		config.Logger = slog.Default()
 	}
 
+	// Start with the IP sensor
+	sensors := []Sensor{NewIPSensor()}
+
+	// Extract all unique environment variable names from rules and locations
+	envVars := make(map[string]bool)
+
+	// Check all rules for env conditions
+	for _, rule := range config.Rules {
+		for key := range rule.Conditions {
+			if len(key) > 4 && key[:4] == "env:" {
+				varName := key[4:]
+				envVars[varName] = true
+			}
+		}
+	}
+
+	// Check all locations for env conditions
+	for _, location := range config.Locations {
+		for key := range location.Conditions {
+			if len(key) > 4 && key[:4] == "env:" {
+				varName := key[4:]
+				envVars[varName] = true
+			}
+		}
+	}
+
+	// Create an EnvSensor for each unique environment variable
+	for varName := range envVars {
+		sensors = append(sensors, NewEnvSensor(varName))
+		config.Logger.Debug("Environment sensor created", "var", varName)
+	}
+
 	m := &Manager{
 		context:         NewSecurityContext(),
 		ruleEngine:      NewRuleEngine(config.Rules, config.Locations),
-		sensors:         []Sensor{NewIPSensor()},
+		sensors:         sensors,
 		networkMonitor:  NewNetworkMonitor(config.Logger),
 		logger:          config.Logger,
 		stopChan:        make(chan struct{}),
