@@ -946,13 +946,27 @@ func (d *Daemon) handleContextChange(from, to string, rule *security.Rule) {
 	// Then execute connect actions
 	for _, alias := range rule.Actions.Connect {
 		d.mu.Lock()
-		_, exists := d.tunnels[alias]
+		tunnel, exists := d.tunnels[alias]
 		d.mu.Unlock()
 
+		// Connect tunnel if it doesn't exist OR if it's in a disconnected/reconnecting state
+		shouldConnect := false
 		if !exists {
+			shouldConnect = true
 			slog.Info("Auto-connecting tunnel due to context change",
 				"tunnel", alias,
 				"context", to)
+		} else if tunnel.State == StateDisconnected || tunnel.State == StateReconnecting {
+			shouldConnect = true
+			slog.Info("Reconnecting tunnel due to context change",
+				"tunnel", alias,
+				"context", to,
+				"previous_state", tunnel.State)
+			// Stop existing tunnel first (cleans up processes and timers)
+			d.stopTunnel(alias)
+		}
+
+		if shouldConnect {
 			d.startTunnel(alias)
 		}
 	}
