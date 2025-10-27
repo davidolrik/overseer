@@ -23,8 +23,6 @@ builds:
   - id: darwin-amd64
     env:
       - CGO_ENABLED=1
-      - CC=o64-clang
-      - CXX=o64-clang++
     goos:
       - darwin
     goarch:
@@ -33,12 +31,13 @@ builds:
       - -mod=readonly
     ldflags:
       - -s -w -X main.version={{.Version}} -X main.commit={{.Commit}} -X main.date={{.Date}}
+    hooks:
+      post:
+        - sh -c 'if [ -n "$CODESIGN_IDENTITY" ]; then codesign --sign "$CODESIGN_IDENTITY" --options runtime --entitlements entitlements.plist --timestamp --force --verbose "{{ .Path }}"; else echo "Skipping code signing (CODESIGN_IDENTITY not set)"; fi'
 
   - id: darwin-arm64
     env:
       - CGO_ENABLED=1
-      - CC=oa64-clang
-      - CXX=oa64-clang++
     goos:
       - darwin
     goarch:
@@ -47,24 +46,9 @@ builds:
       - -mod=readonly
     ldflags:
       - -s -w -X main.version={{.Version}} -X main.commit={{.Commit}} -X main.date={{.Date}}
-
-signs:
-  - cmd: sh
-    args:
-      - -c
-      - |
-        if [[ "${artifact}" == *"Darwin"* ]]; then
-          quill sign --p12 "${QUILL_P12_PATH}" --password "${QUILL_P12_PASSWORD}" --entitlements entitlements.plist --timestamp "${artifact}"
-        else
-          echo "Skipping signing for non-macOS binary: ${artifact}"
-        fi
-    artifacts: binary
-    signature: ""
-    ids:
-      - linux
-      - darwin-amd64
-      - darwin-arm64
-    output: true
+    hooks:
+      post:
+        - sh -c 'if [ -n "$CODESIGN_IDENTITY" ]; then codesign --sign "$CODESIGN_IDENTITY" --options runtime --entitlements entitlements.plist --timestamp --force --verbose "{{ .Path }}"; else echo "Skipping code signing (CODESIGN_IDENTITY not set)"; fi'
 
 archives:
   - formats: [tar.gz]

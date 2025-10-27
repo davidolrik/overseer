@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   goreleaser:
-    runs-on: ubuntu-latest
+    runs-on: macos-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -23,41 +23,40 @@ jobs:
         with:
          go-version-file: 'go.mod'
 
-      - name: Install osxcross for CGO cross-compilation
-        run: |
-          # Install dependencies
-          sudo apt-get update
-          sudo apt-get install -y clang llvm-dev libxml2-dev uuid-dev libssl-dev bash patch make tar xz-utils bzip2 gzip sed cpio libbz2-dev
-
-          # Clone osxcross
-          git clone https://github.com/tpoechtrager/osxcross /tmp/osxcross
-          cd /tmp/osxcross
-
-          # Download macOS SDK (using the publicly available SDK)
-          wget -q https://github.com/joseluisq/macosx-sdks/releases/download/14.5/MacOSX14.5.sdk.tar.xz -O tarballs/MacOSX14.5.sdk.tar.xz
-
-          # Build osxcross
-          UNATTENDED=1 OSX_VERSION_MIN=11.0 ./build.sh
-
-          # Add to PATH for subsequent steps
-          echo "/tmp/osxcross/target/bin" >> $GITHUB_PATH
-
-      - name: Install Quill
-        run: |
-          curl -sSfL https://raw.githubusercontent.com/anchore/quill/main/install.sh | sh -s -- -b /usr/local/bin
-
       - name: Import Code Signing Certificates
         if: startsWith(github.ref, 'refs/tags/')
         run: |
-          # Create temporary directory for certificates
-          CERT_DIR=$(mktemp -d)
+          # Create temporary keychain
+          KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
+          KEYCHAIN_PASSWORD=$(openssl rand -base64 32)
 
-          # Decode and save the P12 certificate
-          echo "${{ secrets.APPLE_CERTIFICATE_P12_BASE64 }}" | base64 --decode > "$CERT_DIR/certificate.p12"
+          # Create keychain
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
 
-          # Export path for goreleaser to use
-          echo "QUILL_P12_PATH=$CERT_DIR/certificate.p12" >> $GITHUB_ENV
-          echo "QUILL_P12_PASSWORD=${{ secrets.APPLE_CERTIFICATE_PASSWORD }}" >> $GITHUB_ENV
+          # Decode and import certificate
+          CERT_PATH=$RUNNER_TEMP/certificate.p12
+          echo "${{ secrets.APPLE_CERTIFICATE_P12_BASE64 }}" | base64 --decode -o "$CERT_PATH"
+
+          # Import certificate to keychain
+          security import "$CERT_PATH" \
+            -k "$KEYCHAIN_PATH" \
+            -P "${{ secrets.APPLE_CERTIFICATE_PASSWORD }}" \
+            -T /usr/bin/codesign \
+            -T /usr/bin/security
+
+          # Set keychain as default
+          security list-keychain -d user -s "$KEYCHAIN_PATH"
+          security default-keychain -s "$KEYCHAIN_PATH"
+
+          # Allow codesign to access keychain without prompting
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+          # Export identity for use in signing
+          IDENTITY=$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" | grep "Developer ID Application" | head -1 | awk '{print $2}')
+          echo "CODESIGN_IDENTITY=$IDENTITY" >> $GITHUB_ENV
+          echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> $GITHUB_ENV
 
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v6
@@ -68,14 +67,13 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          QUILL_P12_PATH: ${{ env.QUILL_P12_PATH }}
-          QUILL_P12_PASSWORD: ${{ env.QUILL_P12_PASSWORD }}
+          CODESIGN_IDENTITY: ${{ env.CODESIGN_IDENTITY }}
 
       - name: Cleanup Certificates
         if: always() && startsWith(github.ref, 'refs/tags/')
         run: |
-          # Clean up temporary certificate files
-          if [ -f "$QUILL_P12_PATH" ]; then
-            rm -f "$QUILL_P12_PATH"
-            rm -rf "$(dirname "$QUILL_P12_PATH")"
+          # Clean up keychain and certificates
+          if [ -n "$KEYCHAIN_PATH" ] && [ -f "$KEYCHAIN_PATH" ]; then
+            security delete-keychain "$KEYCHAIN_PATH"
           fi
+          rm -f "$RUNNER_TEMP/certificate.p12"
