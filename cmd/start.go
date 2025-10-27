@@ -9,7 +9,9 @@ import (
 )
 
 func NewStartCommand() *cobra.Command {
-	return &cobra.Command{
+	var quiet bool
+
+	cmd := &cobra.Command{
 		Use:   "start",
 		Short: "Start the overseer daemon",
 		Long: `Start the overseer daemon in the background.
@@ -24,34 +26,49 @@ If the daemon is already running, this command will report its status.`,
 			// Check if daemon is already running
 			_, err := daemon.SendCommand("STATUS")
 			if err == nil {
-				// Daemon is running, get version
-				response, _ := daemon.SendCommand("VERSION")
-				if response.Data != nil {
-					if versionData, ok := response.Data.(map[string]interface{}); ok {
-						if version, ok := versionData["version"].(string); ok {
-							slog.Info(fmt.Sprintf("Daemon is already running (version %s)", version))
-							return
+				// Daemon is running - exit silently with code 0 (success)
+				if !quiet {
+					// Get version if not in quiet mode
+					response, _ := daemon.SendCommand("VERSION")
+					if response.Data != nil {
+						if versionData, ok := response.Data.(map[string]interface{}); ok {
+							if version, ok := versionData["version"].(string); ok {
+								slog.Info(fmt.Sprintf("Daemon is already running (version %s)", version))
+								return
+							}
 						}
 					}
+					slog.Info("Daemon is already running")
 				}
-				slog.Info("Daemon is already running")
 				return
 			}
 
 			// Start the daemon
-			slog.Info("Starting overseer daemon...")
+			if !quiet {
+				slog.Info("Starting overseer daemon...")
+			}
 			if err := daemon.StartDaemon(); err != nil {
-				slog.Error(fmt.Sprintf("Failed to start daemon: %v", err))
+				if !quiet {
+					slog.Error(fmt.Sprintf("Failed to start daemon: %v", err))
+				}
 				return
 			}
 
 			// Wait for daemon to be ready
 			if err := daemon.WaitForDaemon(); err != nil {
-				slog.Error(fmt.Sprintf("Daemon failed to start: %v", err))
+				if !quiet {
+					slog.Error(fmt.Sprintf("Daemon failed to start: %v", err))
+				}
 				return
 			}
 
-			slog.Info("Daemon started successfully")
+			if !quiet {
+				slog.Info("Daemon started successfully")
+			}
 		},
 	}
+
+	cmd.Flags().BoolVarP(&quiet, "quiet", "q", false, "Suppress output (useful for shell initialization)")
+
+	return cmd
 }
