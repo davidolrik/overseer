@@ -3,16 +3,17 @@
 # Overseer - Contextual Computing
 
 Detect Security Context based upon sensors & manage SSH tunnels,
-uses your existing OpenSSH config.
+using your existing OpenSSH config.
 
-Configure connection reuse, socks proxies, port forwarding and jump hosts in `~/.ssh/config` and use `overseer` to manage your tunnels.
+Configure connection reuse, socks proxies, port forwarding and jump hosts in
+`~/.ssh/config` and use `overseer` to manage your SSH tunnels.
 
 ## Features
 
 * **Full OpenSSH Integration**: Supports everything OpenSSH can do (connection reuse, SOCKS proxies, port forwarding, jump hosts)
-* **Security Context Awareness**: Automatically detect your logical location and connect/disconnect tunnels based on your context
+* **Security Context Awareness**: Automatically detect your logical location and connect/disconnect SSH tunnels based on your context
 * **Automatic Reconnection**: Tunnels automatically reconnect with exponential backoff when connections fail
-* **Secure Password Storage**: Store passwords in system keyring (Keychain/Secret Service/Credential Manager)
+* **Secure Password Storage**: Store passwords in your system keyring (Keychain/Secret Service)
 * **Shell Completion**: Dynamic completion commands and SSH host aliases (bash, zsh, fish)
 * **Multiple Output Formats**: Status available in plaintext (with colors) and JSON for easy automation
 
@@ -139,9 +140,6 @@ This enables true contextual computing - your tunnels adapt to your environment.
 **Example configuration** (`~/.config/overseer/config.kdl`):
 
 ```kdl
-// Optional: Write current context to file for external integrations
-context_output_file "/tmp/overseer-context.txt"
-
 // Contexts are evaluated from top to bottom (first match wins)
 // Place more specific contexts first
 context "home" {
@@ -199,6 +197,341 @@ overseer status
 * CIDR range: `public_ip "192.168.1.0/24"`
 * Wildcards: `public_ip "192.168.*"`
 * Multiple values: `public_ip "123.45.67.89"` and `public_ip "123.45.67.90"` (matches any)
+
+## Context Exports & Custom Environment Variables
+
+Overseer can export your current security context to files in various formats, enabling powerful
+integrations with shell scripts, automation tools, status bars, and external systems like Home Assistant.
+
+### Export Types
+
+Configure exports in your `~/.config/overseer/config.kdl`:
+
+```kdl
+exports {
+  dotenv "/home/user/.local/var/overseer.env"
+  context "/home/user/.local/var/context.txt"
+  location "/home/user/.local/var/location.txt"
+  public_ip "/home/user/.local/var/public_ip.txt"
+}
+```
+
+**Available export types:**
+
+* **`dotenv`** - Shell-compatible environment variable file with all context data + custom variables
+* **`context`** - Simple text file with just the context name (e.g., "home")
+* **`location`** - Simple text file with just the location name (e.g., "hq")
+* **`public_ip`** - Simple text file with just your public IP address
+
+**Standard variables in dotenv exports:**
+
+The `dotenv` export always includes these standard variables (when available):
+
+* `OVERSEER_CONTEXT` - Current context name (e.g., "home", "office", "untrusted")
+* `OVERSEER_CONTEXT_DISPLAY_NAME` - Human-friendly context name (e.g., "Home", "Office")
+* `OVERSEER_LOCATION` - Current location name (e.g., "hq", "downtown")
+* `OVERSEER_LOCATION_DISPLAY_NAME` - Human-friendly location name (e.g., "HQ", "Downtown Office")
+* `OVERSEER_PUBLIC_IP` - Your current public IP address
+
+### Custom Environment Variables
+
+The most powerful feature is defining **arbitrary custom environment variables** that get included
+in your dotenv exports. This enables endless customization and integration possibilities.
+
+**Define variables in `environment {}` blocks:**
+
+```kdl
+context "home" {
+  display_name "Home"
+  location "hq"
+
+  environment {
+    TRUST_LEVEL "high"
+    ALLOW_SSH "true"
+    VPN_REQUIRED "false"
+    OVERSEER_CONTEXT_COLOR "#00aa00"
+  }
+
+  conditions {
+    public_ip "123.45.67.89"
+  }
+
+  actions {
+    connect "homelab"
+    disconnect "office-vpn"
+  }
+}
+
+context "office" {
+  display_name "Office"
+
+  environment {
+    TRUST_LEVEL "medium"
+    OVERSEER_CONTEXT_COLOR "#3a579a"
+    VPN_REQUIRED "true"
+  }
+
+  conditions {
+    public_ip "98.76.54.0/24"
+  }
+
+  actions {
+    connect "office-vpn"
+  }
+}
+
+context "untrusted" {
+  display_name "Untrusted"
+
+  environment {
+    TRUST_LEVEL "low"
+    ALLOW_SSH "false"
+    OVERSEER_CONTEXT_COLOR "#aa0000"
+  }
+
+  actions {
+    connect "vpn-tunnel"
+    disconnect "homelab"
+  }
+}
+
+location "hq" {
+  display_name "HQ"
+
+  environment {
+    BUILDING "headquarters"
+    FLOOR "3"
+    DESK "42"
+  }
+
+  conditions {
+    public_ip "192.168.1.0/24"
+  }
+}
+```
+
+**Variable merging:** When a context has a location, environment variables are merged with
+**context variables taking precedence** over location variables.
+
+### Dotenv Export Format
+
+The `dotenv` export includes both standard Overseer variables and your custom environment variables:
+
+```bash
+# Standard Overseer variables
+OVERSEER_CONTEXT="home"
+OVERSEER_CONTEXT_DISPLAY_NAME="Home"
+OVERSEER_LOCATION="hq"
+OVERSEER_LOCATION_DISPLAY_NAME="HQ"
+OVERSEER_PUBLIC_IP="185.15.72.56"
+
+# Custom variables from context and location
+TRUST_LEVEL="high"
+ALLOW_SSH="true"
+VPN_REQUIRED="false"
+OVERSEER_CONTEXT_COLOR="#00aa00"
+BUILDING="headquarters"
+FLOOR="3"
+DESK="42"
+```
+
+### Export Update Triggers
+
+Exports are automatically updated when:
+
+* **Context changes** - You move to a different location/network
+* **Config reloads** - Config file changes are detected (even if context stays the same)
+* **Network changes** - Network state changes detected by the system
+* **Daemon startup** - Initial context detection
+
+All exports use **atomic writes** (temp file + rename) to ensure readers never see partial data.
+
+### Integration Examples
+
+**Shell script integration:**
+
+```bash
+#!/bin/bash
+# Source the dotenv file to access variables
+source ~/.local/var/overseer.env
+
+if [ "$OVERSEER_CONTEXT" = "home" ]; then
+  echo "Welcome home! Trust level: $TRUST_LEVEL"
+
+  if [ "$ALLOW_SSH" = "true" ]; then
+    echo "SSH access enabled"
+  fi
+fi
+```
+
+**Shell prompt with context:**
+
+```bash
+# In your .bashrc or .zshrc
+PS1='[$(cat ~/.local/var/context.txt)] $ '
+```
+
+**Colored status bar indicator:**
+
+```bash
+#!/bin/bash
+source ~/.local/var/overseer.env
+
+# Convert hex color to RGB for terminal
+echo -e "\033[48;2;${OVERSEER_CONTEXT_COLOR}m ${OVERSEER_CONTEXT_DISPLAY_NAME} \033[0m"
+```
+
+**Home Assistant integration:**
+
+```yaml
+# Monitor context file
+sensor:
+  - platform: file
+    name: "Network Context"
+    file_path: "/home/user/.local/var/context.txt"
+
+# Monitor location
+sensor:
+  - platform: file
+    name: "Network Location"
+    file_path: "/home/user/.local/var/location.txt"
+
+# Create automations based on context changes
+automation:
+  - alias: "Arrived Home"
+    trigger:
+      platform: state
+      entity_id: sensor.network_context
+      to: "home"
+    action:
+      service: script.welcome_home
+```
+
+**Conditional execution script:**
+
+```bash
+#!/bin/bash
+CONTEXT=$(cat ~/.local/var/context.txt)
+
+case $CONTEXT in
+  home)
+    echo "Home detected - syncing files to NAS"
+    rsync -av ~/Documents/ nas:/backup/
+    ;;
+  office)
+    echo "Office detected - connecting to internal services"
+    /usr/local/bin/connect-office-services
+    ;;
+  untrusted)
+    echo "Untrusted network - enabling VPN"
+    /usr/local/bin/enable-vpn
+    ;;
+esac
+```
+
+**tmux/status bar integration:**
+
+```bash
+# In your .tmux.conf
+set -g status-right '#[fg=white,bg=blue] #(cat ~/.local/var/context.txt) #[default]'
+```
+
+### Complete Configuration Example
+
+```kdl
+# Export configuration
+exports {
+  dotenv "~/.local/var/overseer.env"
+  context "~/.local/var/context.txt"
+  location "~/.local/var/location.txt"
+}
+
+# Location definitions (shared conditions)
+location "hq" {
+  display_name "HQ"
+
+  environment {
+    BUILDING "headquarters"
+    FLOOR "3"
+  }
+
+  conditions {
+    public_ip "192.168.1.0/24"
+  }
+}
+
+location "home-network" {
+  display_name "Home Network"
+
+  environment {
+    NETWORK_TYPE "residential"
+  }
+
+  conditions {
+    public_ip "10.0.0.0/8"
+  }
+}
+
+# Context definitions (evaluated in order)
+context "home" {
+  display_name "Home"
+  location "home-network"
+
+  environment {
+    TRUST_LEVEL "high"
+    ALLOW_SSH "true"
+    VPN_REQUIRED "false"
+    OVERSEER_CONTEXT_COLOR "#00aa00"
+  }
+
+  conditions {
+    public_ip "123.45.67.89"
+  }
+
+  actions {
+    connect "homelab"
+    disconnect "office-vpn"
+  }
+}
+
+context "office" {
+  display_name "Office"
+  location "hq"
+
+  environment {
+    TRUST_LEVEL "high"
+    ALLOW_SSH "true"
+    VPN_REQUIRED "false"
+    OVERSEER_CONTEXT_COLOR "#3a579a"
+  }
+
+  conditions {
+    public_ip "98.76.54.0/24"
+  }
+
+  actions {
+    connect "office-vpn"
+    disconnect "homelab"
+  }
+}
+
+context "untrusted" {
+  display_name "Untrusted Network"
+
+  environment {
+    TRUST_LEVEL "low"
+    ALLOW_SSH "false"
+    VPN_REQUIRED "true"
+    OVERSEER_CONTEXT_COLOR "#aa0000"
+  }
+
+  actions {
+    connect "secure-vpn"
+    disconnect "homelab"
+    disconnect "office-vpn"
+  }
+}
+```
 
 ## Commands
 
