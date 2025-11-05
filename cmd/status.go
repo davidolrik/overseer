@@ -15,11 +15,17 @@ import (
 func NewStatusCommand() *cobra.Command {
 	statusCmd := &cobra.Command{
 		Use:     "status",
-		Aliases: []string{"list", "ls"},
-		Short:   "Shows a list of all currently active tunnels",
+		Aliases: []string{"list", "ls", "context", "ctx"},
+		Short:   "Shows current security context, sensors, and active tunnels",
+		Long: `Display comprehensive status including security context, sensor values, and active SSH tunnels.
+
+The security context is determined by sensors (public IP, environment variables, online status, etc.)
+and rules defined in your configuration. Context changes automatically connect or disconnect tunnels.`,
 		Args:    cobra.NoArgs,
 		Run: func(cmd *cobra.Command, args []string) {
 			daemon.CheckVersionMismatch()
+
+			// Get tunnel status
 			response, err := daemon.SendCommand("STATUS")
 			if err != nil {
 				slog.Warn("No active tunnels (daemon is not running).")
@@ -35,17 +41,26 @@ func NewStatusCommand() *cobra.Command {
 				return statuses[i].Hostname < statuses[j].Hostname
 			})
 
+			// Get context status
+			contextResponse, err := daemon.SendCommand("CONTEXT_STATUS")
+
 			format, _ := cmd.Flags().GetString("format")
+			verbose, _ := cmd.Flags().GetBool("verbose")
+
 			switch format {
 			case "text":
-				// Show security context if enabled
-				// Show security context (always active)
-				contextResponse, err := daemon.SendCommand("CONTEXT_STATUS")
+				// Show comprehensive context information
 				if err == nil && contextResponse.Data != nil {
 					displayContextBanner(contextResponse.Data)
+					if verbose {
+						displayDetailedContext(contextResponse.Data)
+					}
 				}
 
 				fmt.Println("Active Tunnels:")
+				if len(statuses) == 0 {
+					fmt.Println("  (none)")
+				}
 				for _, status := range statuses {
 					// Use LastConnectedTime for age (resets to 0 on reconnection)
 					lastConnected, _ := time.Parse(time.RFC3339, status.LastConnectedTime)
@@ -103,7 +118,14 @@ func NewStatusCommand() *cobra.Command {
 					)
 				}
 			case "json":
-				fmt.Println(string(jsonBytes))
+				// Combine tunnel and context status for JSON output
+				output := make(map[string]interface{})
+				output["tunnels"] = statuses
+				if err == nil && contextResponse.Data != nil {
+					output["context"] = contextResponse.Data
+				}
+				jsonOutput, _ := json.MarshalIndent(output, "", "  ")
+				fmt.Println(string(jsonOutput))
 			default:
 				slog.Error("unknown format")
 				os.Exit(1)
@@ -111,6 +133,7 @@ func NewStatusCommand() *cobra.Command {
 		},
 	}
 	statusCmd.Flags().StringP("format", "F", "text", "Format to use (text/json)")
+	statusCmd.Flags().BoolP("verbose", "v", false, "Show detailed sensor information and change history")
 
 	return statusCmd
 }
@@ -156,5 +179,90 @@ func displayContextBanner(data interface{}) {
 	}
 
 	fmt.Println()
+	fmt.Println()
+}
+
+// displayDetailedContext shows detailed sensor values and change history
+func displayDetailedContext(data interface{}) {
+	jsonData, err := json.Marshal(data)
+	if err != nil {
+		return
+	}
+
+	var status struct {
+		Context       string            `json:"context"`
+		Location      string            `json:"location,omitempty"`
+		LastChange    string            `json:"last_change"`
+		Uptime        string            `json:"uptime"`
+		Sensors       map[string]string `json:"sensors"`
+		ChangeHistory []struct {
+			From         string `json:"from"`
+			To           string `json:"to"`
+			FromLocation string `json:"from_location,omitempty"`
+			ToLocation   string `json:"to_location,omitempty"`
+			Timestamp    string `json:"timestamp"`
+			Trigger      string `json:"trigger"`
+		} `json:"change_history"`
+	}
+
+	if err := json.Unmarshal(jsonData, &status); err != nil {
+		return
+	}
+
+	// ANSI color codes
+	const (
+		colorCyan    = "\033[36m"
+		colorGray    = "\033[90m"
+		colorReset   = "\033[0m"
+		colorBold    = "\033[1m"
+	)
+
+	// Display context age
+	if status.Uptime != "" {
+		fmt.Printf("%sContext Age:%s %s\n", colorGray, colorReset, status.Uptime)
+	}
+
+	// Display all sensors
+	if len(status.Sensors) > 0 {
+		fmt.Printf("\n%sSensors:%s\n", colorBold, colorReset)
+		for key, value := range status.Sensors {
+			// Highlight specific sensors
+			displayValue := value
+			if value == "" {
+				displayValue = colorGray + "(empty)" + colorReset
+			}
+			fmt.Printf("  %s%s:%s %s\n", colorCyan, key, colorReset, displayValue)
+		}
+	}
+
+	// Display recent changes
+	if len(status.ChangeHistory) > 0 {
+		fmt.Printf("\n%sRecent Changes:%s\n", colorBold, colorReset)
+		for _, change := range status.ChangeHistory {
+			// Build the change display string
+			changeStr := fmt.Sprintf("%s → %s", change.From, change.To)
+
+			// Add location information if available
+			if change.FromLocation != "" || change.ToLocation != "" {
+				changeStr += " ("
+				if change.FromLocation != "" {
+					changeStr += change.FromLocation
+				} else {
+					changeStr += "no location"
+				}
+				changeStr += " → "
+				if change.ToLocation != "" {
+					changeStr += change.ToLocation
+				} else {
+					changeStr += "no location"
+				}
+				changeStr += ")"
+			}
+
+			changeStr += fmt.Sprintf(" %s[%s]%s", colorGray, change.Trigger, colorReset)
+			fmt.Printf("  %s\n", changeStr)
+		}
+	}
+
 	fmt.Println()
 }

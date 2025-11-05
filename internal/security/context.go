@@ -9,7 +9,7 @@ import (
 type SecurityContext struct {
 	mu              sync.RWMutex
 	currentContext  string                 // Current context name (e.g., "home", "office", "unknown")
-	currentLocation string                 // Current location name (e.g., "hq", "home", "")
+	currentLocation string                 // Current location name (e.g., "hq", "home", "unknown")
 	sensors         map[string]SensorValue // Current sensor readings
 	lastChange      time.Time              // When the context last changed
 	changeHistory   []ContextChange        // History of context changes
@@ -29,11 +29,12 @@ type ContextChange struct {
 // NewSecurityContext creates a new security context tracker
 func NewSecurityContext() *SecurityContext {
 	return &SecurityContext{
-		currentContext: "unknown",
-		sensors:        make(map[string]SensorValue),
-		changeHistory:  make([]ContextChange, 0, 10),
-		maxHistory:     100, // Keep last 100 changes
-		lastChange:     time.Now(),
+		currentContext:  "unknown",
+		currentLocation: "unknown",
+		sensors:         make(map[string]SensorValue),
+		changeHistory:   make([]ContextChange, 0, 10),
+		maxHistory:      100, // Keep last 100 changes
+		lastChange:      time.Now(),
 	}
 }
 
@@ -98,7 +99,7 @@ func (sc *SecurityContext) UpdateSensor(value SensorValue) {
 
 // SetContext updates the current context and records the change
 func (sc *SecurityContext) SetContext(newContext string, trigger string) bool {
-	return sc.SetContextAndLocation(newContext, "", trigger)
+	return sc.SetContextAndLocation(newContext, "unknown", trigger)
 }
 
 // SetContextAndLocation updates the current context and location, recording the change

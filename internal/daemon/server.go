@@ -19,6 +19,7 @@ import (
 
 	"github.com/fsnotify/fsnotify"
 	"olrik.dev/davidolrik/overseer/internal/core"
+	"olrik.dev/davidolrik/overseer/internal/db"
 	"olrik.dev/davidolrik/overseer/internal/keyring"
 	"olrik.dev/davidolrik/overseer/internal/security"
 )
@@ -32,6 +33,8 @@ type Daemon struct {
 	shutdownOnce    sync.Once
 	logBroadcast    *LogBroadcaster    // For streaming logs to clients
 	securityManager *security.Manager  // Security context manager
+	database        *db.DB             // Database for logging
+	isRemote        bool               // Running on remote server (via SSH)
 	ctx             context.Context    // Context for lifecycle management
 	cancelFunc      context.CancelFunc // Cancel function for context
 }
@@ -68,6 +71,70 @@ func New() *Daemon {
 		ctx:           ctx,
 		cancelFunc:    cancel,
 	}
+}
+
+// mergeEnvironment merges user environment variables into default environment
+// User variables take precedence over defaults
+func mergeEnvironment(defaultEnv, userEnv map[string]string) map[string]string {
+	merged := make(map[string]string)
+
+	// Copy defaults
+	for k, v := range defaultEnv {
+		merged[k] = v
+	}
+
+	// Override/add user values
+	for k, v := range userEnv {
+		merged[k] = v
+	}
+
+	return merged
+}
+
+// mergeLocation merges a user-defined location with default location settings
+// Preserves user customizations while applying defaults for missing fields
+func mergeLocation(defaultLoc, userLoc security.Location) security.Location {
+	merged := defaultLoc
+
+	// User can override display name
+	if userLoc.DisplayName != "" {
+		merged.DisplayName = userLoc.DisplayName
+	}
+
+	// Merge environment variables (user vars override/extend defaults)
+	if len(userLoc.Environment) > 0 {
+		merged.Environment = mergeEnvironment(defaultLoc.Environment, userLoc.Environment)
+	}
+
+	// Note: We keep the default Conditions/Condition to ensure core matching logic stays correct
+	// If user really wants to override, they can define a completely different location
+
+	return merged
+}
+
+// mergeRule merges a user-defined context rule with default rule settings
+// Preserves user customizations while applying defaults for missing fields
+func mergeRule(defaultRule, userRule security.Rule) security.Rule {
+	merged := defaultRule
+
+	// User can override display name
+	if userRule.DisplayName != "" {
+		merged.DisplayName = userRule.DisplayName
+	}
+
+	// Merge environment variables (user vars override/extend defaults)
+	if len(userRule.Environment) > 0 {
+		merged.Environment = mergeEnvironment(defaultRule.Environment, userRule.Environment)
+	}
+
+	// User can override actions
+	if len(userRule.Actions.Connect) > 0 || len(userRule.Actions.Disconnect) > 0 {
+		merged.Actions = userRule.Actions
+	}
+
+	// Note: We keep the default Conditions/Condition to ensure core matching logic stays correct
+
+	return merged
 }
 
 // calculateBackoff calculates the exponential backoff duration
@@ -112,6 +179,28 @@ func (d *Daemon) Run() {
 	// Setup custom logger that broadcasts to connected clients
 	d.setupLogging()
 
+	// Check if running in remote mode (via SSH)
+	d.isRemote = os.Getenv("SSH_CONNECTION") != ""
+	if d.isRemote {
+		slog.Info("Running in remote mode - will exit on SSH disconnect")
+	}
+
+	// Initialize database
+	dbPath := filepath.Join(core.Config.ConfigPath, "overseer.db")
+	database, err := db.Open(dbPath)
+	if err != nil {
+		slog.Error("Failed to open database", "error", err, "path", dbPath)
+	} else {
+		d.database = database
+		defer d.database.Close()
+		slog.Info("Database opened", "path", dbPath)
+
+		// Log daemon start event
+		if err := d.database.LogDaemonEvent("start", fmt.Sprintf("daemon started (PID: %d, remote: %v)", os.Getpid(), d.isRemote)); err != nil {
+			slog.Error("Failed to log daemon start", "error", err)
+		}
+	}
+
 	// Setup PID and socket files and ensure they are cleaned up on exit.
 	socketPath := core.GetSocketPath()
 	pidFilePath := core.GetPIDFilePath()
@@ -152,6 +241,7 @@ func (d *Daemon) Run() {
 	slog.Info(fmt.Sprintf("Daemon listening on %s", socketPath))
 
 	// Initialize security context manager (always active)
+	// Database logging is enabled inside initSecurityManager before starting
 	if err := d.initSecurityManager(); err != nil {
 		slog.Error("Failed to initialize security manager", "error", err)
 	} else {
@@ -163,7 +253,9 @@ func (d *Daemon) Run() {
 
 	// Handle signals
 	shutdownChan := make(chan os.Signal, 1)
+	hupChan := make(chan os.Signal, 1)
 	signal.Notify(shutdownChan, syscall.SIGTERM, syscall.SIGINT)
+	signal.Notify(hupChan, syscall.SIGHUP)
 
 	// Graceful shutdown on SIGTERM/SIGINT
 	go func() {
@@ -171,6 +263,21 @@ func (d *Daemon) Run() {
 		slog.Info("Shutdown signal received. Closing all tunnels.")
 		d.shutdown()
 		os.Exit(0)
+	}()
+
+	// Handle SIGHUP (SSH disconnect) in remote mode
+	go func() {
+		<-hupChan
+		if d.isRemote {
+			slog.Info("SIGHUP received in remote mode - SSH session disconnected. Shutting down.")
+			if d.database != nil {
+				d.database.LogDaemonEvent("ssh_disconnect", "SSH session ended, shutting down")
+			}
+			d.shutdown()
+			os.Exit(0)
+		} else {
+			slog.Info("SIGHUP received (ignored - not in remote mode)")
+		}
 	}()
 
 	// Accept connections in a loop
@@ -346,6 +453,15 @@ func (d *Daemon) startTunnel(alias string) Response {
 	err = <-connectionResult
 	if err != nil {
 		response.AddMessage(fmt.Sprintf("Tunnel '%s' failed to connect: %v", alias, err), "ERROR")
+
+		// Log to database
+		if d.database != nil {
+			details := fmt.Sprintf("Failed: %v", err)
+			if dbErr := d.database.LogTunnelEvent(alias, "connect_failed", details); dbErr != nil {
+				slog.Error("Failed to log tunnel connect failure", "error", dbErr)
+			}
+		}
+
 		// Clean up the failed tunnel
 		d.mu.Lock()
 		if tunnel, exists := d.tunnels[alias]; exists {
@@ -361,6 +477,23 @@ func (d *Daemon) startTunnel(alias string) Response {
 
 	// Log success in daemon
 	slog.Info(fmt.Sprintf("Tunnel '%s' connected successfully (PID %d)", alias, cmd.Process.Pid))
+
+	// Log to database
+	if d.database != nil {
+		details := fmt.Sprintf("PID: %d", cmd.Process.Pid)
+		if err := d.database.LogTunnelEvent(alias, "connect", details); err != nil {
+			slog.Error("Failed to log tunnel connect event", "error", err)
+		}
+	}
+
+	// Trigger context check after successful SSH connection
+	// This ensures the public_ip sensor is checked and the online sensor is updated
+	if d.securityManager != nil {
+		if err := d.securityManager.TriggerCheckWithReason("ssh_connect"); err != nil {
+			slog.Warn("Failed to trigger context check after SSH connect", "error", err)
+		}
+	}
+
 	// Send success message to client
 	response.AddMessage(fmt.Sprintf("Tunnel '%s' connected successfully.", alias), "INFO")
 
@@ -399,6 +532,17 @@ func (d *Daemon) monitorTunnel(alias string) {
 			slog.Info(fmt.Sprintf("Tunnel process for '%s' exited successfully.", alias))
 		}
 
+		// Log to database
+		exitDetails := ""
+		if waitErr != nil {
+			exitDetails = fmt.Sprintf("Error: %v", waitErr)
+		}
+		if d.database != nil {
+			if err := d.database.LogTunnelEvent(alias, "disconnect", exitDetails); err != nil {
+				slog.Error("Failed to log tunnel disconnect", "error", err)
+			}
+		}
+
 		// Update state to disconnected
 		tunnel.State = StateDisconnected
 		d.tunnels[alias] = tunnel
@@ -416,10 +560,28 @@ func (d *Daemon) monitorTunnel(alias string) {
 
 			if tunnel.RetryCount >= maxRetries {
 				slog.Info(fmt.Sprintf("Tunnel '%s' exceeded max retry attempts (%d). Giving up.", alias, maxRetries))
+
+				// Log to database
+				if d.database != nil {
+					details := fmt.Sprintf("Max retries (%d) exceeded", maxRetries)
+					if err := d.database.LogTunnelEvent(alias, "max_retries_exceeded", details); err != nil {
+						slog.Error("Failed to log max retries exceeded", "error", err)
+					}
+				}
 			} else {
 				slog.Info(fmt.Sprintf("Tunnel '%s' auto-reconnect disabled. Not reconnecting.", alias))
 			}
 
+			d.mu.Unlock()
+			return
+		}
+
+		// Check if we're online before attempting reconnection
+		// If offline, just skip reconnect but don't change tunnel state
+		// The SSH connection might still be alive despite brief offline periods
+		isOnline := d.checkOnlineStatus()
+		if !isOnline {
+			slog.Info(fmt.Sprintf("Tunnel '%s' not reconnecting - currently offline (will retry when back online)", alias))
 			d.mu.Unlock()
 			return
 		}
@@ -455,6 +617,14 @@ func (d *Daemon) monitorTunnel(alias string) {
 		// Check again if tunnel still exists (might have been manually stopped during backoff)
 		tunnel, exists = d.tunnels[alias]
 		if !exists {
+			d.mu.Unlock()
+			return
+		}
+
+		// Check again if we're still online (might have gone offline during backoff)
+		// If offline, just skip this reconnect attempt but don't change state
+		if !d.checkOnlineStatus() {
+			slog.Info(fmt.Sprintf("Tunnel '%s' reconnection cancelled - went offline during backoff", alias))
 			d.mu.Unlock()
 			return
 		}
@@ -527,6 +697,15 @@ func (d *Daemon) monitorTunnel(alias string) {
 		err = <-connectionResult
 		if err != nil {
 			slog.Warn(fmt.Sprintf("Reconnection failed for '%s': %v", alias, err))
+
+			// Log to database
+			if d.database != nil {
+				details := fmt.Sprintf("Attempt %d failed: %v", tunnel.RetryCount, err)
+				if dbErr := d.database.LogTunnelEvent(alias, "reconnect_failed", details); dbErr != nil {
+					slog.Error("Failed to log reconnection failure", "error", dbErr)
+				}
+			}
+
 			// Kill the failed process and continue the loop to retry
 			d.mu.Lock()
 			if tunnel, exists := d.tunnels[alias]; exists {
@@ -540,7 +719,17 @@ func (d *Daemon) monitorTunnel(alias string) {
 
 		// Success! Reset retry count, update state, reset connection time, and increment total reconnects
 		slog.Info(fmt.Sprintf("Tunnel '%s' reconnected successfully.", alias))
+
+		// Log to database
 		d.mu.Lock()
+		currentTunnel := d.tunnels[alias]
+		if d.database != nil {
+			details := fmt.Sprintf("PID: %d, Total reconnects: %d", newCmd.Process.Pid, currentTunnel.TotalReconnects+1)
+			if err := d.database.LogTunnelEvent(alias, "reconnect", details); err != nil {
+				slog.Error("Failed to log tunnel reconnect event", "error", err)
+			}
+		}
+
 		if tunnel, exists := d.tunnels[alias]; exists {
 			tunnel.RetryCount = 0
 			tunnel.State = StateConnected
@@ -550,6 +739,14 @@ func (d *Daemon) monitorTunnel(alias string) {
 			d.tunnels[alias] = tunnel
 		}
 		d.mu.Unlock()
+
+		// Trigger context check after successful SSH reconnection
+		// This ensures the public_ip sensor is checked and the online sensor is updated
+		if d.securityManager != nil {
+			if err := d.securityManager.TriggerCheckWithReason("ssh_reconnect"); err != nil {
+				slog.Warn("Failed to trigger context check after SSH reconnect", "error", err)
+			}
+		}
 
 		// Continue monitoring this tunnel (loop back to Wait())
 	}
@@ -654,6 +851,13 @@ func (d *Daemon) stopTunnel(alias string) Response {
 	}
 	delete(d.tunnels, alias)
 	slog.Info(fmt.Sprintf("Stopped tunnel for '%s'.", alias))
+
+	// Log to database
+	if d.database != nil {
+		if err := d.database.LogTunnelEvent(alias, "manual_stop", ""); err != nil {
+			slog.Error("Failed to log tunnel manual stop", "error", err)
+		}
+	}
 
 	response.AddMessage(fmt.Sprintf("Tunnel process for '%s' stopped.", alias), "INFO")
 	return response
@@ -840,19 +1044,68 @@ func (d *Daemon) initSecurityManagerInternal(checkOnStartup bool) error {
 	// Convert location definitions from config
 	locations := make(map[string]security.Location)
 	for name, loc := range core.Config.Locations {
-		locations[name] = security.Location{
+		secLoc := security.Location{
 			Name:        loc.Name,
 			DisplayName: loc.DisplayName,
 			Conditions:  loc.Conditions,
 			Environment: loc.Environment,
 		}
+		// Convert structured condition if present
+		if loc.Condition != nil {
+			if cond, ok := loc.Condition.(security.Condition); ok {
+				secLoc.Condition = cond
+			}
+		}
+		locations[name] = secLoc
+	}
+
+	// Define default locations that should always exist
+	defaultOffline := security.Location{
+		Name:        "offline",
+		DisplayName: "Offline",
+		Condition:   security.NewBooleanCondition("online", false),
+		Environment: make(map[string]string),
+	}
+
+	defaultUnknown := security.Location{
+		Name:        "unknown",
+		DisplayName: "Unknown",
+		Conditions:  map[string][]string{}, // No conditions - this is a fallback
+		Environment: make(map[string]string),
+	}
+
+	// Merge with user-defined defaults if they exist
+	if userOffline, exists := locations["offline"]; exists {
+		locations["offline"] = mergeLocation(defaultOffline, userOffline)
+	} else {
+		locations["offline"] = defaultOffline
+	}
+
+	if userUnknown, exists := locations["unknown"]; exists {
+		locations["unknown"] = mergeLocation(defaultUnknown, userUnknown)
+	} else {
+		locations["unknown"] = defaultUnknown
+	}
+
+	// Define default contexts that should always exist
+	defaultUntrusted := security.Rule{
+		Name:        "untrusted",
+		DisplayName: "Untrusted",
+		Conditions:  map[string][]string{}, // Empty conditions = fallback/default
+		Environment: make(map[string]string),
+		Actions: security.RuleActions{
+			Connect:    []string{},
+			Disconnect: []string{}, // By default, disconnect nothing
+		},
 	}
 
 	// Convert context rules from config to security rules
-	rules := make([]security.Rule, 0, len(core.Config.Contexts))
+	// Extract user customizations for defaults but don't add them yet
+	rules := make([]security.Rule, 0, len(core.Config.Contexts)+1)
+	var userUntrusted *security.Rule
 
 	for _, contextRule := range core.Config.Contexts {
-		rules = append(rules, security.Rule{
+		secRule := security.Rule{
 			Name:        contextRule.Name,
 			DisplayName: contextRule.DisplayName,
 			Locations:   contextRule.Locations,
@@ -862,26 +1115,31 @@ func (d *Daemon) initSecurityManagerInternal(checkOnStartup bool) error {
 				Connect:    contextRule.Actions.Connect,
 				Disconnect: contextRule.Actions.Disconnect,
 			},
-		})
+		}
+		// Convert structured condition if present
+		if contextRule.Condition != nil {
+			if cond, ok := contextRule.Condition.(security.Condition); ok {
+				secRule.Condition = cond
+			}
+		}
+
+		// If this is a default context, save it for merging but DON'T add it to rules yet
+		// This ensures defaults appear in the correct order regardless of config position
+		if secRule.Name == "untrusted" {
+			userUntrusted = &secRule
+			continue // Skip adding to rules
+		}
+
+		// Add non-default contexts
+		rules = append(rules, secRule)
 	}
 
-	// Ensure there's always an "untrusted" fallback rule at the end
-	hasUntrusted := false
-	for _, rule := range rules {
-		if rule.Name == "untrusted" {
-			hasUntrusted = true
-			break
-		}
-	}
-	if !hasUntrusted {
-		rules = append(rules, security.Rule{
-			Name:        "untrusted",
-			DisplayName: "Untrusted",
-			Conditions:  map[string][]string{}, // Empty conditions = fallback/default
-			Actions: security.RuleActions{
-				Disconnect: []string{}, // By default, disconnect nothing
-			},
-		})
+	// Now add default "untrusted" fallback at the end
+	// Merge with user customizations if provided
+	if userUntrusted != nil {
+		rules = append(rules, mergeRule(defaultUntrusted, *userUntrusted))
+	} else {
+		rules = append(rules, defaultUntrusted)
 	}
 
 	// Convert export configs to security.ExportConfig format
@@ -910,12 +1168,30 @@ func (d *Daemon) initSecurityManagerInternal(checkOnStartup bool) error {
 
 	d.securityManager = manager
 
+	// Enable database logging BEFORE starting the manager
+	// This ensures initial sensor readings on startup are logged
+	if d.database != nil {
+		manager.SetDatabase(d.database)
+	}
+
 	// Start the manager
 	if err := manager.Start(d.ctx, checkOnStartup); err != nil {
 		return fmt.Errorf("failed to start security manager: %w", err)
 	}
 
 	return nil
+}
+
+// checkOnlineStatus checks if we're currently online
+func (d *Daemon) checkOnlineStatus() bool {
+	if d.securityManager != nil {
+		if onlineSensor := d.securityManager.GetSensor("online"); onlineSensor != nil {
+			if value, err := onlineSensor.Check(context.Background()); err == nil {
+				return value.Bool()
+			}
+		}
+	}
+	return false
 }
 
 // handleContextChange is called when the security context changes
@@ -926,10 +1202,25 @@ func (d *Daemon) handleContextChange(from, to string, rule *security.Rule) {
 
 	// If no rule matched, nothing to do
 	if rule == nil {
+		slog.Debug("No rule matched, skipping context change actions")
 		return
 	}
 
-	// Execute disconnect actions first
+	slog.Debug("Context change with rule",
+		"rule_name", rule.Name,
+		"connect_count", len(rule.Actions.Connect),
+		"disconnect_count", len(rule.Actions.Disconnect))
+
+	// Check if we're online before attempting connections
+	isOnline := d.checkOnlineStatus()
+
+	if !isOnline && len(rule.Actions.Connect) > 0 {
+		slog.Info("Skipping tunnel connections - currently offline",
+			"context", to,
+			"tunnel_count", len(rule.Actions.Connect))
+	}
+
+	// Execute disconnect actions first (always, even when offline)
 	for _, alias := range rule.Actions.Disconnect {
 		d.mu.Lock()
 		_, exists := d.tunnels[alias]
@@ -943,31 +1234,42 @@ func (d *Daemon) handleContextChange(from, to string, rule *security.Rule) {
 		}
 	}
 
-	// Then execute connect actions
-	for _, alias := range rule.Actions.Connect {
-		d.mu.Lock()
-		tunnel, exists := d.tunnels[alias]
-		d.mu.Unlock()
+	// Only execute connect actions if we're online
+	if isOnline {
+		for _, alias := range rule.Actions.Connect {
+			d.mu.Lock()
+			tunnel, exists := d.tunnels[alias]
+			d.mu.Unlock()
 
-		// Connect tunnel if it doesn't exist OR if it's in a disconnected/reconnecting state
-		shouldConnect := false
-		if !exists {
-			shouldConnect = true
-			slog.Info("Auto-connecting tunnel due to context change",
-				"tunnel", alias,
-				"context", to)
-		} else if tunnel.State == StateDisconnected || tunnel.State == StateReconnecting {
-			shouldConnect = true
-			slog.Info("Reconnecting tunnel due to context change",
-				"tunnel", alias,
-				"context", to,
-				"previous_state", tunnel.State)
-			// Stop existing tunnel first (cleans up processes and timers)
-			d.stopTunnel(alias)
-		}
+			// Connect tunnel if it doesn't exist OR if it's in a disconnected/reconnecting state
+			shouldConnect := false
+			if !exists {
+				shouldConnect = true
+				slog.Info("Auto-connecting tunnel due to context change",
+					"tunnel", alias,
+					"context", to)
+			} else if tunnel.State == StateDisconnected || tunnel.State == StateReconnecting {
+				shouldConnect = true
+				slog.Info("Reconnecting tunnel due to context change",
+					"tunnel", alias,
+					"context", to,
+					"previous_state", tunnel.State)
+				// Stop existing tunnel first (cleans up processes and timers)
+				d.stopTunnel(alias)
+			}
 
-		if shouldConnect {
-			d.startTunnel(alias)
+			if shouldConnect {
+				resp := d.startTunnel(alias)
+				// Check if any response messages indicate an error
+				for _, msg := range resp.Messages {
+					if msg.Status == "ERROR" {
+						slog.Error("Failed to start tunnel during context change",
+							"tunnel", alias,
+							"context", to,
+							"error", msg.Message)
+					}
+				}
+			}
 		}
 	}
 }
@@ -1096,14 +1398,10 @@ func (d *Daemon) reloadConfig() error {
 	// Preserve the config path
 	newConfig.ConfigPath = oldConfig.ConfigPath
 
-	// Preserve the current context before stopping the manager
-	var oldContext string
+	// Save reference to old manager for cleanup
 	var oldManager *security.Manager
 	if d.securityManager != nil {
-		ctx := d.securityManager.GetContext()
-		oldContext = ctx.GetContext()
 		oldManager = d.securityManager
-		slog.Debug("Preserving context during reload", "context", oldContext)
 	}
 
 	// Temporarily update the global config for initialization
@@ -1116,18 +1414,68 @@ func (d *Daemon) reloadConfig() error {
 		// Convert location definitions from new config
 		locations := make(map[string]security.Location)
 		for name, loc := range newConfig.Locations {
-			locations[name] = security.Location{
+			secLoc := security.Location{
 				Name:        loc.Name,
 				DisplayName: loc.DisplayName,
 				Conditions:  loc.Conditions,
 				Environment: loc.Environment,
 			}
+			// Convert structured condition if present
+			if loc.Condition != nil {
+				if cond, ok := loc.Condition.(security.Condition); ok {
+					secLoc.Condition = cond
+				}
+			}
+			locations[name] = secLoc
+		}
+
+		// Define default locations that should always exist
+		defaultOffline := security.Location{
+			Name:        "offline",
+			DisplayName: "Offline",
+			Condition:   security.NewBooleanCondition("online", false),
+			Environment: make(map[string]string),
+		}
+
+		defaultUnknown := security.Location{
+			Name:        "unknown",
+			DisplayName: "Unknown",
+			Conditions:  map[string][]string{}, // No conditions - this is a fallback
+			Environment: make(map[string]string),
+		}
+
+		// Merge with user-defined defaults if they exist
+		if userOffline, exists := locations["offline"]; exists {
+			locations["offline"] = mergeLocation(defaultOffline, userOffline)
+		} else {
+			locations["offline"] = defaultOffline
+		}
+
+		if userUnknown, exists := locations["unknown"]; exists {
+			locations["unknown"] = mergeLocation(defaultUnknown, userUnknown)
+		} else {
+			locations["unknown"] = defaultUnknown
+		}
+
+		// Define default contexts that should always exist
+		defaultUntrusted := security.Rule{
+			Name:        "untrusted",
+			DisplayName: "Untrusted",
+			Conditions:  map[string][]string{},
+			Environment: make(map[string]string),
+			Actions: security.RuleActions{
+				Connect:    []string{},
+				Disconnect: []string{},
+			},
 		}
 
 		// Create a temporary manager to test the new config
-		rules := make([]security.Rule, 0, len(newConfig.Contexts))
+		// Extract user customizations for defaults but don't add them yet
+		rules := make([]security.Rule, 0, len(newConfig.Contexts)+1)
+		var userUntrusted *security.Rule
+
 		for _, contextRule := range newConfig.Contexts {
-			rules = append(rules, security.Rule{
+			secRule := security.Rule{
 				Name:        contextRule.Name,
 				DisplayName: contextRule.DisplayName,
 				Locations:   contextRule.Locations,
@@ -1137,26 +1485,31 @@ func (d *Daemon) reloadConfig() error {
 					Connect:    contextRule.Actions.Connect,
 					Disconnect: contextRule.Actions.Disconnect,
 				},
-			})
+			}
+			// Convert structured condition if present
+			if contextRule.Condition != nil {
+				if cond, ok := contextRule.Condition.(security.Condition); ok {
+					secRule.Condition = cond
+				}
+			}
+
+			// If this is a default context, save it for merging but DON'T add it to rules yet
+			// This ensures defaults appear in the correct order regardless of config position
+			if secRule.Name == "untrusted" {
+				userUntrusted = &secRule
+				continue // Skip adding to rules
+			}
+
+			// Add non-default contexts
+			rules = append(rules, secRule)
 		}
 
-		// Ensure there's always an "untrusted" fallback rule
-		hasUntrusted := false
-		for _, rule := range rules {
-			if rule.Name == "untrusted" {
-				hasUntrusted = true
-				break
-			}
-		}
-		if !hasUntrusted {
-			rules = append(rules, security.Rule{
-				Name:        "untrusted",
-				DisplayName: "Untrusted",
-				Conditions:  map[string][]string{},
-				Actions: security.RuleActions{
-					Disconnect: []string{},
-				},
-			})
+		// Now add default "untrusted" fallback at the end
+		// Merge with user customizations if provided
+		if userUntrusted != nil {
+			rules = append(rules, mergeRule(defaultUntrusted, *userUntrusted))
+		} else {
+			rules = append(rules, defaultUntrusted)
 		}
 
 		// Convert export configs to security.ExportConfig format
@@ -1182,6 +1535,12 @@ func (d *Daemon) reloadConfig() error {
 			return fmt.Errorf("failed to create security manager: %w", err)
 		}
 
+		// Enable database logging BEFORE starting the manager
+		if d.database != nil {
+			manager.SetDatabase(d.database)
+		}
+
+		slog.Info("Starting new security manager with reloaded configuration")
 		if err := manager.Start(d.ctx, false); err != nil {
 			return fmt.Errorf("failed to start security manager: %w", err)
 		}
@@ -1198,11 +1557,14 @@ func (d *Daemon) reloadConfig() error {
 
 	// Success! Now we can safely stop the old manager and switch to the new one
 	if oldManager != nil {
+		slog.Info("Stopping previous security manager")
 		oldManager.Stop()
 	}
 	d.securityManager = newManager
+	slog.Info("Switched to new security manager")
 
-	// Force an immediate context check after reload to apply new rules and update exports
+	// Trigger an immediate context check to evaluate rules and update exports
+	// With the wildcard fix, rules will evaluate correctly without false triggers
 	if d.securityManager != nil {
 		if err := d.securityManager.TriggerCheckWithReason("config_reload"); err != nil {
 			slog.Warn("Failed to check context after config reload", "error", err)

@@ -11,16 +11,20 @@ import (
 type Manager struct {
 	context        *SecurityContext
 	ruleEngine     *RuleEngine
-	sensors        []Sensor
+	sensors        map[string]Sensor // Changed to map for easier lookup
 	networkMonitor *NetworkMonitor
 	exportWriters  []*ExportWriter
 	logger         *slog.Logger
 	mu             sync.RWMutex
 	stopChan       chan struct{}
 	stopped        bool
+	dbLogger       *DatabaseLogger // Database logger for sensor changes
 
 	// Callbacks
 	onContextChange func(from, to string, rule *Rule)
+
+	// Flag to prevent recursive context checks from sensor notifications
+	checkingContext bool
 }
 
 // ExportConfig represents a single export configuration
@@ -45,35 +49,74 @@ func NewManager(config ManagerConfig) (*Manager, error) {
 		config.Logger = slog.Default()
 	}
 
-	// Start with the IP sensor
-	sensors := []Sensor{NewIPSensor()}
+	// Create sensor map
+	sensors := make(map[string]Sensor)
+
+	// Add core active sensors
+	ipSensor := NewIPSensor()
+	sensors[ipSensor.Name()] = ipSensor
+
+	// Add passive sensors (Context, Location, Online)
+	contextSensor := NewContextSensor()
+	locationSensor := NewLocationSensor()
+	onlineSensor := NewOnlineSensor()
+
+	sensors[contextSensor.Name()] = contextSensor
+	sensors[locationSensor.Name()] = locationSensor
+	sensors[onlineSensor.Name()] = onlineSensor
+
+	// Wire up Online sensor to listen to public_ip changes
+	ipSensor.Subscribe(onlineSensor)
 
 	// Extract all unique environment variable names from rules and locations
 	envVars := make(map[string]bool)
 
-	// Check all rules for env conditions
+	// Check all rules for env conditions (both simple and structured)
 	for _, rule := range config.Rules {
+		// Simple format
 		for key := range rule.Conditions {
 			if len(key) > 4 && key[:4] == "env:" {
 				varName := key[4:]
 				envVars[varName] = true
 			}
 		}
+		// Structured format
+		if rule.Condition != nil {
+			sensorNames := ExtractRequiredSensors(rule.Condition)
+			for _, sensorName := range sensorNames {
+				if len(sensorName) > 4 && sensorName[:4] == "env:" {
+					varName := sensorName[4:]
+					envVars[varName] = true
+				}
+			}
+		}
 	}
 
-	// Check all locations for env conditions
+	// Check all locations for env conditions (both simple and structured)
 	for _, location := range config.Locations {
+		// Simple format
 		for key := range location.Conditions {
 			if len(key) > 4 && key[:4] == "env:" {
 				varName := key[4:]
 				envVars[varName] = true
 			}
 		}
+		// Structured format
+		if location.Condition != nil {
+			sensorNames := ExtractRequiredSensors(location.Condition)
+			for _, sensorName := range sensorNames {
+				if len(sensorName) > 4 && sensorName[:4] == "env:" {
+					varName := sensorName[4:]
+					envVars[varName] = true
+				}
+			}
+		}
 	}
 
 	// Create an EnvSensor for each unique environment variable
 	for varName := range envVars {
-		sensors = append(sensors, NewEnvSensor(varName))
+		envSensor := NewEnvSensor(varName)
+		sensors[envSensor.Name()] = envSensor
 		config.Logger.Debug("Environment sensor created", "var", varName)
 	}
 
@@ -86,6 +129,18 @@ func NewManager(config ManagerConfig) (*Manager, error) {
 		stopChan:        make(chan struct{}),
 		onContextChange: config.OnContextChange,
 		exportWriters:   make([]*ExportWriter, 0),
+		checkingContext: false,
+	}
+
+	// Subscribe to sensors that should trigger context re-evaluation
+	// We subscribe to active sensors (public_ip, env:*) and the online sensor
+	for name, sensor := range sensors {
+		// Skip passive sensors that are SET by rule evaluation (context, location)
+		if name == "context" || name == "location" {
+			continue
+		}
+		// Subscribe to all other sensors (public_ip, online, env:*)
+		sensor.Subscribe(m)
 	}
 
 	// Setup export writers
@@ -150,10 +205,27 @@ func (m *Manager) monitorLoop(ctx context.Context) {
 
 // checkContext performs a full context check with all sensors
 func (m *Manager) checkContext(trigger string) error {
+	m.mu.Lock()
+	m.checkingContext = true
+	m.mu.Unlock()
+
+	defer func() {
+		m.mu.Lock()
+		m.checkingContext = false
+		m.mu.Unlock()
+	}()
+
 	ctx := context.Background()
 
-	// Check all sensors
+	// Check all active sensors (skip passive sensors like context/location/online)
 	for _, sensor := range m.sensors {
+		// Skip passive sensors - they are set by rule evaluation or other sensors
+		// - context/location: set by rule evaluation
+		// - online: set by public_ip sensor notifications
+		if sensor.Name() == "context" || sensor.Name() == "location" || sensor.Name() == "online" {
+			continue
+		}
+
 		value, err := sensor.Check(ctx)
 		if err != nil {
 			m.logger.Warn("Sensor check failed",
@@ -164,19 +236,39 @@ func (m *Manager) checkContext(trigger string) error {
 
 		m.logger.Debug("Sensor reading",
 			"sensor", sensor.Name(),
+			"type", value.Type,
 			"value", value.String())
 
-		// Update sensor value
+		// Update sensor value in legacy context
 		m.context.UpdateSensor(value)
 	}
 
-	// Evaluate rules to determine context
-	sensors := m.context.GetAllSensors()
-	result := m.ruleEngine.Evaluate(sensors)
+	// Evaluate rules to determine context (pass sensor map directly)
+	result := m.ruleEngine.Evaluate(ctx, m.sensors)
 
 	// Get current context and location
 	oldContext := m.context.GetContext()
 	oldLocation := m.context.GetLocation()
+
+	// Update context and location sensors
+	if contextSensor, ok := m.sensors["context"]; ok {
+		contextSensor.SetValue(result.Context)
+		// Also update legacy context with context sensor value
+		value, _ := contextSensor.Check(ctx)
+		m.context.UpdateSensor(value)
+	}
+	if locationSensor, ok := m.sensors["location"]; ok {
+		locationSensor.SetValue(result.Location)
+		// Also update legacy context with location sensor value
+		value, _ := locationSensor.Check(ctx)
+		m.context.UpdateSensor(value)
+	}
+
+	// Update legacy context with online sensor value (it's reactive, not polled)
+	if onlineSensor, ok := m.sensors["online"]; ok {
+		value, _ := onlineSensor.Check(ctx)
+		m.context.UpdateSensor(value)
+	}
 
 	// Update context and location if changed
 	changed := m.context.SetContextAndLocation(result.Context, result.Location, trigger)
@@ -205,8 +297,9 @@ func (m *Manager) checkContext(trigger string) error {
 		if len(m.exportWriters) > 0 {
 			// Get public IP sensor value for exports
 			publicIP := ""
-			if ipSensor, exists := sensors["public_ip"]; exists {
-				publicIP = ipSensor.String()
+			if ipSensor, exists := m.sensors["public_ip"]; exists {
+				value, _ := ipSensor.Check(ctx)
+				publicIP = value.String()
 			}
 
 			// Get display names and environment variables
@@ -265,12 +358,19 @@ func (m *Manager) checkContext(trigger string) error {
 		}
 	}
 
-	// Call callback only if context actually changed (not just forced export)
-	if changed && m.onContextChange != nil {
+	// Call callback if context changed OR on startup (to initialize tunnel state)
+	// On startup, we always need to apply the context actions even if starting from "unknown"
+	isStartup := trigger == "startup"
+	if (changed || isStartup) && m.onContextChange != nil {
+		if isStartup && !changed {
+			m.logger.Debug("Applying context actions on startup",
+				"context", result.Context,
+				"location", result.Location)
+		}
 		m.onContextChange(oldContext, result.Context, result.Rule)
 	}
 
-	if !changed && !forceExport {
+	if !changed && !forceExport && !isStartup {
 		m.logger.Debug("Context unchanged", "context", result.Context, "location", result.Location)
 	}
 
@@ -294,6 +394,13 @@ func (m *Manager) Stop() {
 // GetContext returns the current security context
 func (m *Manager) GetContext() *SecurityContext {
 	return m.context
+}
+
+// GetSensor returns a sensor by name
+func (m *Manager) GetSensor(name string) Sensor {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.sensors[name]
 }
 
 // TriggerCheck manually triggers a context check
@@ -324,6 +431,54 @@ func (m *Manager) TriggerCheckWithReason(trigger string) error {
 func (m *Manager) AddSensor(sensor Sensor) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.sensors = append(m.sensors, sensor)
+	m.sensors[sensor.Name()] = sensor
+
+	// If database logger is active, subscribe to this sensor
+	if m.dbLogger != nil {
+		sensor.Subscribe(m.dbLogger)
+	}
+
 	m.logger.Info("Sensor added", "sensor", sensor.Name())
+}
+
+// SetDatabase sets the database connection and enables database logging
+func (m *Manager) SetDatabase(db DatabaseInterface) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	// Create database logger
+	m.dbLogger = NewDatabaseLogger(db, m.logger)
+
+	// Subscribe to all existing sensors
+	for _, sensor := range m.sensors {
+		sensor.Subscribe(m.dbLogger)
+	}
+
+	m.logger.Info("Database logging enabled for security manager")
+}
+
+// OnSensorChange implements SensorListener to trigger context re-evaluation
+// when sensors change (public_ip, online, env:*)
+func (m *Manager) OnSensorChange(sensor Sensor, oldValue, newValue SensorValue) {
+	m.mu.Lock()
+	// Prevent recursive checks - if we're already checking context, don't trigger another check
+	if m.checkingContext {
+		m.mu.Unlock()
+		return
+	}
+	m.mu.Unlock()
+
+	m.logger.Debug("Sensor change detected, triggering context check",
+		"sensor", sensor.Name(),
+		"old_value", oldValue.String(),
+		"new_value", newValue.String())
+
+	// Trigger a context check asynchronously to avoid blocking the sensor update
+	go func() {
+		if err := m.checkContext("sensor_change:" + sensor.Name()); err != nil {
+			m.logger.Error("Context check failed after sensor change",
+				"sensor", sensor.Name(),
+				"error", err)
+		}
+	}()
 }

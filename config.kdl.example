@@ -1,0 +1,265 @@
+// Example Overseer Configuration
+//
+// CONDITION SYNTAX:
+// Overseer supports two ways to write conditions:
+//
+// 1. Simple syntax:
+//    sensor "value"              - Single value
+//    sensor "val1" "val2"        - Multiple values (OR logic)
+//
+// 2. Structured syntax:
+//    any { ... }                 - OR logic (at least one must match)
+//    all { ... }                 - AND logic (all must match)
+//    Supports nesting for complex conditions
+//
+// Use simple syntax for basic conditions. Use structured syntax when you need
+// explicit AND logic or complex nested conditions.
+
+// Verbosity level (0=quiet, 1=normal, 2=verbose)
+verbose 1
+
+// SSH connection settings
+ssh {
+    server_alive_interval 15
+    server_alive_count_max 3
+    reconnect_enabled true
+    initial_backoff "1s"
+    max_backoff "5m"
+    backoff_factor 2
+    max_retries 10
+}
+
+// Export configuration - write context information to files
+exports {
+    dotenv "~/.local/var/overseer.env"
+    context "~/.local/var/overseer_context"
+    location "~/.local/var/overseer_location"
+    public_ip "~/.local/var/overseer_ip"
+}
+
+// ============================================================================
+// LOCATIONS - Reusable network/physical location definitions
+// ============================================================================
+
+// Simple syntax - single condition
+location "home_simple" {
+    display_name "Home (Simple)"
+    conditions {
+        public_ip "192.168.1.0/24"
+    }
+    environment {
+        TRUST_LEVEL "high"
+    }
+}
+
+// Simple syntax - multiple values = OR
+location "office" {
+    display_name "Office"
+    conditions {
+        public_ip "10.0.1.0/24" "10.0.2.0/24"  // Matches either IP range
+    }
+    environment {
+        TRUST_LEVEL "high"
+        OFFICE_NETWORK "true"
+    }
+}
+
+// Structured syntax - explicit any{} (OR logic)
+// Useful when mixing different sensors or for clarity
+location "home" {
+    display_name "Home Network"
+    conditions {
+        any {
+            public_ip "192.168.1.0/24"
+            public_ip "192.168.2.0/24"
+            env "HOME_ZONE" "yes"
+        }
+    }
+    environment {
+        TRUST_LEVEL "high"
+        HOME_NETWORK "true"
+    }
+}
+
+// Structured syntax - all{} (AND logic)
+// All conditions must be true
+location "secure_office" {
+    display_name "Secure Office Network"
+    conditions {
+        all {
+            public_ip "10.0.1.0/24"
+            online true
+            env "VPN_CONNECTED" "yes"
+        }
+    }
+    environment {
+        TRUST_LEVEL "very_high"
+        SECURE_ACCESS "true"
+    }
+}
+
+// Structured syntax - nested groups (all + any)
+location "trusted_network" {
+    display_name "Any Trusted Network"
+    conditions {
+        all {
+            online true
+            any {
+                public_ip "192.168.1.0/24"  // Home
+                public_ip "10.0.1.0/24"     // Office
+                env "TRUSTED_NETWORK" "yes"
+            }
+        }
+    }
+    environment {
+        TRUST_LEVEL "high"
+    }
+}
+
+// Coffee shop (public WiFi)
+location "public_wifi" {
+    display_name "Public WiFi"
+    conditions {
+        all {
+            online true
+            // Not home and not office
+            env "PUBLIC_NETWORK" "yes"
+        }
+    }
+    environment {
+        TRUST_LEVEL "low"
+        PUBLIC_WIFI "true"
+    }
+}
+
+// ============================================================================
+// CONTEXTS - Security contexts that trigger actions
+// ============================================================================
+
+// Context using location reference
+context "home_context" {
+    display_name "At Home"
+    location "home"
+    actions {
+        connect "home-server" "nas"
+        disconnect "work-vpn"
+    }
+    environment {
+        CONTEXT_TYPE "home"
+    }
+}
+
+// Context using location reference
+context "office_context" {
+    display_name "At Office"
+    location "office" "secure_office"  // Match either location
+    actions {
+        connect "work-vpn" "internal-db"
+        disconnect "home-server"
+    }
+    environment {
+        CONTEXT_TYPE "office"
+    }
+}
+
+// Context with direct conditions - simple syntax
+context "mobile_hotspot" {
+    display_name "Mobile Hotspot"
+    conditions {
+        env "MOBILE_HOTSPOT" "yes"
+    }
+    actions {
+        connect "work-vpn"
+    }
+    environment {
+        CONTEXT_TYPE "mobile"
+    }
+}
+
+// Context with direct conditions - simple syntax
+context "vpn_connected" {
+    display_name "VPN Connected"
+    conditions {
+        env "VPN_CONNECTED" "yes"
+    }
+    actions {
+        connect "internal-services"
+    }
+    environment {
+        CONTEXT_TYPE "vpn"
+    }
+}
+
+// Context with structured syntax - complex nested conditions
+context "remote_work" {
+    display_name "Remote Work"
+    conditions {
+        all {
+            online true
+            any {
+                env "MOBILE_HOTSPOT" "yes"
+                env "CAFE_WIFI" "yes"
+                location "public_wifi"
+            }
+        }
+    }
+    actions {
+        connect "work-vpn"
+        disconnect "home-server"
+    }
+    environment {
+        CONTEXT_TYPE "remote"
+        VPN_REQUIRED "true"
+    }
+}
+
+// ============================================================================
+// DEFAULT LOCATIONS - These are auto-generated but can be customized
+// ============================================================================
+// Default locations (offline, unknown) are special:
+// - "offline": Matches when online = false
+// - "unknown": Fallback when no location matches
+//
+// You can customize them to add environment variables or change display names.
+
+// Default "offline" location (auto-generated if not defined)
+// Matches when: online = false
+location "offline" {
+    display_name "Offline"
+    // Core condition (online = false) is always preserved
+    environment {
+        OVERSEER_LOCATION_BG_COLOR "#999999"
+        OVERSEER_LOCATION_COLOR "#ffffff"
+    }
+}
+
+// Default "unknown" location (auto-generated if not defined)
+// Matches when: no other location matches (fallback)
+location "unknown" {
+    display_name "Unknown Location"
+    // Core condition (no conditions = fallback) is always preserved
+    environment {
+        OVERSEER_LOCATION_BG_COLOR "#aa0000"
+        OVERSEER_LOCATION_COLOR "#ffffff"
+    }
+}
+
+// ============================================================================
+// DEFAULT CONTEXTS - These are auto-generated but can be customized
+// ============================================================================
+
+// Default "untrusted" fallback context (auto-generated if not defined)
+// Matches when: nothing else matches (no conditions)
+// Always appears LAST, regardless of where you define it in your config
+context "untrusted" {
+    display_name "Untrusted Network"
+    // Core condition (no conditions = fallback) is always preserved
+    actions {
+        connect "work-vpn"
+        disconnect "home-server" "nas"
+    }
+    environment {
+        CONTEXT_TYPE "untrusted"
+        TRUST_LEVEL "low"
+    }
+}

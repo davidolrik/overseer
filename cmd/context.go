@@ -13,27 +13,39 @@ import (
 func NewContextCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "context",
-		Short: "Show current security context",
+		Short: "Show current security context (alias for 'status --verbose')",
 		Long: `Display the current security context including location, sensors, and recent changes.
+
+NOTE: This command is now an alias for 'overseer status --verbose'. Use that instead.
 
 The security context is determined by various sensors (like public IP address) and rules
 defined in your configuration file. Context changes can automatically connect or disconnect
 SSH tunnels based on your location or network.`,
 		Aliases: []string{"ctx"},
+		Deprecated: "use 'overseer status --verbose' instead",
 		Run: func(cmd *cobra.Command, args []string) {
 			daemon.EnsureDaemonIsRunning()
 			daemon.CheckVersionMismatch()
 
-			response, err := daemon.SendCommand("CONTEXT_STATUS")
+			// Get context status
+			contextResponse, err := daemon.SendCommand("CONTEXT_STATUS")
 			if err != nil {
 				slog.Error(fmt.Sprintf("Error communicating with daemon: %v", err))
 				return
 			}
 
+			// Get tunnel status
+			tunnelResponse, tunnelErr := daemon.SendCommand("STATUS")
+			var statuses []daemon.DaemonStatus
+			if tunnelErr == nil && tunnelResponse.Data != nil {
+				jsonBytes, _ := json.Marshal(tunnelResponse.Data)
+				json.Unmarshal(jsonBytes, &statuses)
+			}
+
 			// Handle response messages (only in text mode)
 			format, _ := cmd.Flags().GetString("format")
 			if format != "json" {
-				for _, msg := range response.Messages {
+				for _, msg := range contextResponse.Messages {
 					switch msg.Status {
 					case "ERROR":
 						slog.Error(msg.Message)
@@ -48,8 +60,8 @@ SSH tunnels based on your location or network.`,
 			}
 
 			// Display context status
-			if response.Data != nil {
-				displayContextStatus(response.Data, format)
+			if contextResponse.Data != nil {
+				displayContextStatus(contextResponse.Data, statuses, format)
 			}
 		},
 	}
@@ -59,7 +71,7 @@ SSH tunnels based on your location or network.`,
 	return cmd
 }
 
-func displayContextStatus(data interface{}, format string) {
+func displayContextStatus(data interface{}, statuses []daemon.DaemonStatus, format string) {
 	// Parse the data as JSON
 	jsonData, err := json.Marshal(data)
 	if err != nil {
@@ -69,7 +81,12 @@ func displayContextStatus(data interface{}, format string) {
 
 	// Handle JSON format
 	if format == "json" {
-		fmt.Println(string(jsonData))
+		// Combine context and tunnels for JSON output
+		output := make(map[string]interface{})
+		output["context"] = data
+		output["tunnels"] = statuses
+		jsonOutput, _ := json.MarshalIndent(output, "", "  ")
+		fmt.Println(string(jsonOutput))
 		return
 	}
 
@@ -146,6 +163,14 @@ func displayContextStatus(data interface{}, format string) {
 
 			changeStr += fmt.Sprintf(" [%s]", change.Trigger)
 			fmt.Printf("  %s\n", changeStr)
+		}
+	}
+
+	// Display tunnels if any
+	if len(statuses) > 0 {
+		fmt.Printf("\nActive Tunnels:\n")
+		for _, tunnel := range statuses {
+			fmt.Printf("  %s (PID: %d, State: %s)\n", tunnel.Hostname, tunnel.Pid, tunnel.State)
 		}
 	}
 }

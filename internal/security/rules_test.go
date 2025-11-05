@@ -1,6 +1,7 @@
 package security
 
 import (
+	"context"
 	"testing"
 )
 
@@ -17,7 +18,7 @@ func TestMatchesConditions_MultipleIPAddresses(t *testing.T) {
 				"public_ip": {"123.45.67.89"},
 			},
 			sensors: map[string]SensorValue{
-				"public_ip": NewSensorValue("public_ip", "123.45.67.89"),
+				"public_ip": NewSensorValue("public_ip", SensorTypeString, "123.45.67.89"),
 			},
 			want: true,
 		},
@@ -27,7 +28,7 @@ func TestMatchesConditions_MultipleIPAddresses(t *testing.T) {
 				"public_ip": {"123.45.67.89", "123.45.67.90", "123.45.67.91"},
 			},
 			sensors: map[string]SensorValue{
-				"public_ip": NewSensorValue("public_ip", "123.45.67.89"),
+				"public_ip": NewSensorValue("public_ip", SensorTypeString, "123.45.67.89"),
 			},
 			want: true,
 		},
@@ -37,7 +38,7 @@ func TestMatchesConditions_MultipleIPAddresses(t *testing.T) {
 				"public_ip": {"123.45.67.89", "123.45.67.90", "123.45.67.91"},
 			},
 			sensors: map[string]SensorValue{
-				"public_ip": NewSensorValue("public_ip", "123.45.67.90"),
+				"public_ip": NewSensorValue("public_ip", SensorTypeString, "123.45.67.90"),
 			},
 			want: true,
 		},
@@ -47,7 +48,7 @@ func TestMatchesConditions_MultipleIPAddresses(t *testing.T) {
 				"public_ip": {"123.45.67.89", "123.45.67.90", "123.45.67.91"},
 			},
 			sensors: map[string]SensorValue{
-				"public_ip": NewSensorValue("public_ip", "123.45.67.91"),
+				"public_ip": NewSensorValue("public_ip", SensorTypeString, "123.45.67.91"),
 			},
 			want: true,
 		},
@@ -57,7 +58,7 @@ func TestMatchesConditions_MultipleIPAddresses(t *testing.T) {
 				"public_ip": {"123.45.67.89", "123.45.67.90", "123.45.67.91"},
 			},
 			sensors: map[string]SensorValue{
-				"public_ip": NewSensorValue("public_ip", "98.76.54.32"),
+				"public_ip": NewSensorValue("public_ip", SensorTypeString, "98.76.54.32"),
 			},
 			want: false,
 		},
@@ -67,7 +68,7 @@ func TestMatchesConditions_MultipleIPAddresses(t *testing.T) {
 				"public_ip": {"123.45.67.89", "192.168.1.0/24"},
 			},
 			sensors: map[string]SensorValue{
-				"public_ip": NewSensorValue("public_ip", "192.168.1.50"),
+				"public_ip": NewSensorValue("public_ip", SensorTypeString, "192.168.1.50"),
 			},
 			want: true,
 		},
@@ -77,7 +78,7 @@ func TestMatchesConditions_MultipleIPAddresses(t *testing.T) {
 				"public_ip": {"123.45.67.89", "192.168.*"},
 			},
 			sensors: map[string]SensorValue{
-				"public_ip": NewSensorValue("public_ip", "192.168.100.200"),
+				"public_ip": NewSensorValue("public_ip", SensorTypeString, "192.168.100.200"),
 			},
 			want: true,
 		},
@@ -87,7 +88,7 @@ func TestMatchesConditions_MultipleIPAddresses(t *testing.T) {
 				"public_ip": {"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"},
 			},
 			sensors: map[string]SensorValue{
-				"public_ip": NewSensorValue("public_ip", "172.16.50.100"),
+				"public_ip": NewSensorValue("public_ip", SensorTypeString, "172.16.50.100"),
 			},
 			want: true,
 		},
@@ -95,7 +96,7 @@ func TestMatchesConditions_MultipleIPAddresses(t *testing.T) {
 			name: "Empty conditions (fallback rule)",
 			conditions: map[string][]string{},
 			sensors: map[string]SensorValue{
-				"public_ip": NewSensorValue("public_ip", "1.2.3.4"),
+				"public_ip": NewSensorValue("public_ip", SensorTypeString, "1.2.3.4"),
 			},
 			want: true,
 		},
@@ -173,13 +174,59 @@ func TestRuleEngine_EvaluateWithMultipleIPs(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			sensors := map[string]SensorValue{
-				"public_ip": NewSensorValue("public_ip", tt.sensorIP),
+			// Create mock sensor
+			mockSensor := &MockSensor{
+				name:      "public_ip",
+				sensorType: SensorTypeString,
+				value:     tt.sensorIP,
 			}
-			result := re.Evaluate(sensors)
+
+			sensors := map[string]Sensor{
+				"public_ip": mockSensor,
+			}
+
+			result := re.Evaluate(context.Background(), sensors)
 			if result.Context != tt.wantContext {
 				t.Errorf("Evaluate() context = %v, want %v", result.Context, tt.wantContext)
 			}
 		})
 	}
+}
+
+// MockSensor is a simple sensor implementation for testing
+type MockSensor struct {
+	name       string
+	sensorType SensorType
+	value      interface{}
+	listeners  []SensorListener
+}
+
+func (m *MockSensor) Name() string {
+	return m.name
+}
+
+func (m *MockSensor) Type() SensorType {
+	return m.sensorType
+}
+
+func (m *MockSensor) Check(ctx context.Context) (SensorValue, error) {
+	return NewSensorValue(m.name, m.sensorType, m.value), nil
+}
+
+func (m *MockSensor) Subscribe(listener SensorListener) {
+	m.listeners = append(m.listeners, listener)
+}
+
+func (m *MockSensor) Unsubscribe(listener SensorListener) {
+	for i, l := range m.listeners {
+		if l == listener {
+			m.listeners = append(m.listeners[:i], m.listeners[i+1:]...)
+			return
+		}
+	}
+}
+
+func (m *MockSensor) SetValue(value interface{}) error {
+	m.value = value
+	return nil
 }

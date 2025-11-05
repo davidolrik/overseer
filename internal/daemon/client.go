@@ -92,7 +92,7 @@ func CheckVersionMismatch() {
 					// Use formatted versions in the warning
 					clientFormatted := core.FormatVersion(clientVersion)
 					daemonFormatted := core.FormatVersion(daemonVersion)
-					slog.Warn(fmt.Sprintf("Version mismatch! Client (%s) and daemon (%s) versions differ.", clientFormatted, daemonFormatted))
+					slog.Warn(fmt.Sprintf("Version mismatch! Client %s and daemon %s versions differ.", clientFormatted, daemonFormatted))
 					slog.Warn("The daemon may be running an outdated version. Run 'overseer stop' and try again.")
 					versionWarned = true
 				}

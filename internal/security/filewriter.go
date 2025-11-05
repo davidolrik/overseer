@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -64,29 +65,44 @@ func (ew *ExportWriter) Write(data ExportData) error {
 
 	switch ew.exportType {
 	case "dotenv":
-		// Create env-style file with OVERSEER_ prefix
-		var lines []string
+		// Collect all environment variables into a map for sorting
+		envVars := make(map[string]string)
+
+		// Add OVERSEER_ prefixed variables
 		if data.Context != "" {
-			lines = append(lines, fmt.Sprintf("OVERSEER_CONTEXT=\"%s\"", data.Context))
+			envVars["OVERSEER_CONTEXT"] = data.Context
 		}
 		if data.ContextDisplayName != "" {
-			lines = append(lines, fmt.Sprintf("OVERSEER_CONTEXT_DISPLAY_NAME=\"%s\"", data.ContextDisplayName))
+			envVars["OVERSEER_CONTEXT_DISPLAY_NAME"] = data.ContextDisplayName
 		}
 		if data.Location != "" {
-			lines = append(lines, fmt.Sprintf("OVERSEER_LOCATION=\"%s\"", data.Location))
+			envVars["OVERSEER_LOCATION"] = data.Location
 		}
 		if data.LocationDisplayName != "" {
-			lines = append(lines, fmt.Sprintf("OVERSEER_LOCATION_DISPLAY_NAME=\"%s\"", data.LocationDisplayName))
+			envVars["OVERSEER_LOCATION_DISPLAY_NAME"] = data.LocationDisplayName
 		}
 		if data.PublicIP != "" {
-			lines = append(lines, fmt.Sprintf("OVERSEER_PUBLIC_IP=\"%s\"", data.PublicIP))
+			envVars["OVERSEER_PUBLIC_IP"] = data.PublicIP
 		}
 
 		// Add custom environment variables
 		if data.CustomEnvironment != nil {
 			for key, value := range data.CustomEnvironment {
-				lines = append(lines, fmt.Sprintf("%s=\"%s\"", key, value))
+				envVars[key] = value
 			}
+		}
+
+		// Sort keys alphabetically
+		keys := make([]string, 0, len(envVars))
+		for key := range envVars {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+
+		// Build sorted lines
+		var lines []string
+		for _, key := range keys {
+			lines = append(lines, fmt.Sprintf("%s=\"%s\"", key, envVars[key]))
 		}
 
 		content = strings.Join(lines, "\n") + "\n"

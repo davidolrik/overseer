@@ -46,7 +46,8 @@ type SSHConfig struct {
 type Location struct {
 	Name        string              // Location name (e.g., "hq", "home")
 	DisplayName string              // Human-friendly display name
-	Conditions  map[string][]string // Sensor conditions (e.g., "public_ip": ["1.2.3.4", "5.6.7.0/24"])
+	Conditions  map[string][]string // Simple sensor conditions (e.g., "public_ip": ["1.2.3.4", "5.6.7.0/24"])
+	Condition   interface{}         // New structured condition (supports nesting with any/all) - will be security.Condition
 	Environment map[string]string   // Custom environment variables to export
 }
 
@@ -55,7 +56,8 @@ type ContextRule struct {
 	Name        string              // Context name (e.g., "home", "office")
 	DisplayName string              // Human-friendly display name
 	Locations   []string            // Location names this context applies to
-	Conditions  map[string][]string // Sensor conditions (e.g., "public_ip": ["1.2.3.4", "5.6.7.0/24"])
+	Conditions  map[string][]string // Simple sensor conditions (e.g., "public_ip": ["1.2.3.4", "5.6.7.0/24"])
+	Condition   interface{}         // New structured condition (supports nesting with any/all) - will be security.Condition
 	Actions     ContextActions      // Actions to take when entering this context
 	Environment map[string]string   // Custom environment variables to export
 }
@@ -108,6 +110,7 @@ type kdlContext struct {
 
 type kdlConditions struct {
 	PublicIP []string          `kdl:"public_ip"`
+	Online   *bool             `kdl:"online"` // Pointer to distinguish between unset and false
 	Env      map[string]string `kdl:"env,multiple"`
 }
 
@@ -192,19 +195,21 @@ func LoadConfig(filename string) (*Configuration, error) {
 		return nil, fmt.Errorf("failed to parse KDL: %w", err)
 	}
 
-	// Extract context order, environment variables, and env conditions from the document
+	// Extract context order, environment variables, env conditions, and structured conditions
 	contextOrder := make([]string, 0)
 	contextEnvs := make(map[string]map[string]string)
 	contextEnvConditions := make(map[string]map[string][]string)
+	contextStructuredConditions := make(map[string]interface{}) // Will be security.Condition
 	locationEnvs := make(map[string]map[string]string)
 	locationEnvConditions := make(map[string]map[string][]string)
+	locationStructuredConditions := make(map[string]interface{}) // Will be security.Condition
 
 	for _, node := range doc.Nodes {
 		if node.Name == nil {
 			continue
 		}
 
-		// Extract context order, environment, and env conditions
+		// Extract context order, environment, and conditions
 		if node.Name.Value == "context" && len(node.Arguments) > 0 {
 			if contextName, ok := node.Arguments[0].Value.(string); ok {
 				contextOrder = append(contextOrder, contextName)
@@ -213,15 +218,19 @@ func LoadConfig(filename string) (*Configuration, error) {
 				if len(env) > 0 {
 					contextEnvs[contextName] = env
 				}
-				// Extract env conditions from this context
+				// Extract env conditions from this context (simple)
 				envConds := extractEnvConditionsFromNode(node)
 				if len(envConds) > 0 {
 					contextEnvConditions[contextName] = envConds
 				}
+				// Try to parse structured conditions (new format)
+				if cond, err := parseConditionsBlock(node); err == nil && cond != nil {
+					contextStructuredConditions[contextName] = cond
+				}
 			}
 		}
 
-		// Extract location environment and env conditions
+		// Extract location environment, env conditions, and structured conditions
 		if node.Name.Value == "location" && len(node.Arguments) > 0 {
 			if locationName, ok := node.Arguments[0].Value.(string); ok {
 				// Extract environment variables from this location
@@ -229,10 +238,14 @@ func LoadConfig(filename string) (*Configuration, error) {
 				if len(env) > 0 {
 					locationEnvs[locationName] = env
 				}
-				// Extract env conditions from this location
+				// Extract env conditions from this location (simple)
 				envConds := extractEnvConditionsFromNode(node)
 				if len(envConds) > 0 {
 					locationEnvConditions[locationName] = envConds
+				}
+				// Try to parse structured conditions (new format)
+				if cond, err := parseConditionsBlock(node); err == nil && cond != nil {
+					locationStructuredConditions[locationName] = cond
 				}
 			}
 		}
@@ -303,17 +316,22 @@ func LoadConfig(filename string) (*Configuration, error) {
 			Environment: make(map[string]string),
 		}
 
-		// Convert conditions
-		if kdlLoc.Conditions != nil {
-			if len(kdlLoc.Conditions.PublicIP) > 0 {
-				loc.Conditions["public_ip"] = kdlLoc.Conditions.PublicIP
+		// Check if structured condition exists (new format)
+		if structCond, exists := locationStructuredConditions[name]; exists {
+			loc.Condition = structCond
+		} else {
+			// Fall back to simple conditions
+			if kdlLoc.Conditions != nil {
+				if len(kdlLoc.Conditions.PublicIP) > 0 {
+					loc.Conditions["public_ip"] = kdlLoc.Conditions.PublicIP
+				}
 			}
-		}
 
-		// Add env conditions from manually parsed data
-		if envConds, exists := locationEnvConditions[name]; exists {
-			for key, patterns := range envConds {
-				loc.Conditions[key] = patterns
+			// Add env conditions from manually parsed data
+			if envConds, exists := locationEnvConditions[name]; exists {
+				for key, patterns := range envConds {
+					loc.Conditions[key] = patterns
+				}
 			}
 		}
 
@@ -340,17 +358,22 @@ func LoadConfig(filename string) (*Configuration, error) {
 			Environment: make(map[string]string),
 		}
 
-		// Convert conditions
-		if kdlCtx.Conditions != nil {
-			if len(kdlCtx.Conditions.PublicIP) > 0 {
-				rule.Conditions["public_ip"] = kdlCtx.Conditions.PublicIP
+		// Check if structured condition exists (new format)
+		if structCond, exists := contextStructuredConditions[name]; exists {
+			rule.Condition = structCond
+		} else {
+			// Fall back to simple conditions
+			if kdlCtx.Conditions != nil {
+				if len(kdlCtx.Conditions.PublicIP) > 0 {
+					rule.Conditions["public_ip"] = kdlCtx.Conditions.PublicIP
+				}
 			}
-		}
 
-		// Add env conditions from manually parsed data
-		if envConds, exists := contextEnvConditions[name]; exists {
-			for key, patterns := range envConds {
-				rule.Conditions[key] = patterns
+			// Add env conditions from manually parsed data
+			if envConds, exists := contextEnvConditions[name]; exists {
+				for key, patterns := range envConds {
+					rule.Conditions[key] = patterns
+				}
 			}
 		}
 

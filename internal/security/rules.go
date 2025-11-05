@@ -1,6 +1,7 @@
 package security
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"strings"
@@ -10,7 +11,8 @@ import (
 type Location struct {
 	Name        string              // Location name (e.g., "hq", "home")
 	DisplayName string              // Human-friendly display name
-	Conditions  map[string][]string // Sensor conditions (e.g., "public_ip": ["192.168.1.1", "10.0.0.0/24"])
+	Conditions  map[string][]string // Simple sensor conditions (e.g., "public_ip": ["192.168.1.1", "10.0.0.0/24"])
+	Condition   Condition           // New structured condition (supports nesting with any/all)
 	Environment map[string]string   // Custom environment variables to export
 }
 
@@ -19,7 +21,8 @@ type Rule struct {
 	Name        string              // Context name (e.g., "home", "office")
 	DisplayName string              // Human-friendly display name
 	Locations   []string            // Location names this context can match
-	Conditions  map[string][]string // Sensor conditions (e.g., "public_ip": ["192.168.1.1", "10.0.0.0/24"])
+	Conditions  map[string][]string // Simple sensor conditions (e.g., "public_ip": ["192.168.1.1", "10.0.0.0/24"])
+	Condition   Condition           // New structured condition (supports nesting with any/all)
 	Actions     RuleActions         // Actions to take when this rule matches
 	Environment map[string]string   // Custom environment variables to export
 }
@@ -53,8 +56,30 @@ func NewRuleEngine(rules []Rule, locations map[string]Location) *RuleEngine {
 	}
 }
 
+// determineLocation checks special locations (offline) first, then falls back to unknown
+func (re *RuleEngine) determineLocation(ctx context.Context, sensorMap map[string]Sensor) string {
+	// Check for special "offline" location first
+	if offlineLocation, exists := re.locations["offline"]; exists {
+		if offlineLocation.Condition != nil {
+			if result, err := offlineLocation.Condition.Evaluate(ctx, sensorMap); err == nil && result {
+				return "offline"
+			}
+		} else if len(offlineLocation.Conditions) > 0 {
+			cond := ConditionFromMap(offlineLocation.Conditions)
+			if cond != nil {
+				if result, err := cond.Evaluate(ctx, sensorMap); err == nil && result {
+					return "offline"
+				}
+			}
+		}
+	}
+
+	// Default to unknown
+	return "unknown"
+}
+
 // Evaluate determines which context matches the current sensor values
-func (re *RuleEngine) Evaluate(sensors map[string]SensorValue) *EvaluationResult {
+func (re *RuleEngine) Evaluate(ctx context.Context, sensorMap map[string]Sensor) *EvaluationResult {
 	// Try each rule in order (first match wins)
 	for i := range re.rules {
 		rule := &re.rules[i]
@@ -66,8 +91,25 @@ func (re *RuleEngine) Evaluate(sensors map[string]SensorValue) *EvaluationResult
 				continue
 			}
 
-			// Check if location conditions match
-			if re.matchesConditions(location.Conditions, sensors) {
+			// Check if location conditions match (try new condition first, fallback to simple)
+			matched := false
+			if location.Condition != nil {
+				result, err := location.Condition.Evaluate(ctx, sensorMap)
+				if err == nil && result {
+					matched = true
+				}
+			} else if len(location.Conditions) > 0 {
+				// Simple format: convert to condition and evaluate
+				cond := ConditionFromMap(location.Conditions)
+				if cond != nil {
+					result, err := cond.Evaluate(ctx, sensorMap)
+					if err == nil && result {
+						matched = true
+					}
+				}
+			}
+
+			if matched {
 				return &EvaluationResult{
 					Context:   rule.Name,
 					Location:  location.Name,
@@ -78,30 +120,47 @@ func (re *RuleEngine) Evaluate(sensors map[string]SensorValue) *EvaluationResult
 		}
 
 		// Empty conditions means this is a default/fallback rule
-		if len(rule.Conditions) == 0 && len(rule.Locations) == 0 {
+		if rule.Condition == nil && len(rule.Conditions) == 0 && len(rule.Locations) == 0 {
 			return &EvaluationResult{
 				Context:   rule.Name,
-				Location:  "",
+				Location:  re.determineLocation(ctx, sensorMap),
 				Rule:      rule,
 				MatchedBy: "fallback",
 			}
 		}
 
-		// Check if rule conditions match directly
-		if len(rule.Conditions) > 0 && re.matchesConditions(rule.Conditions, sensors) {
-			return &EvaluationResult{
-				Context:   rule.Name,
-				Location:  "",
-				Rule:      rule,
-				MatchedBy: "conditions",
+		// Check if rule conditions match directly (try new condition first, fallback to simple)
+		if rule.Condition != nil {
+			result, err := rule.Condition.Evaluate(ctx, sensorMap)
+			if err == nil && result {
+				return &EvaluationResult{
+					Context:   rule.Name,
+					Location:  re.determineLocation(ctx, sensorMap),
+					Rule:      rule,
+					MatchedBy: "conditions",
+				}
+			}
+		} else if len(rule.Conditions) > 0 {
+			// Simple format: convert to condition and evaluate
+			cond := ConditionFromMap(rule.Conditions)
+			if cond != nil {
+				result, err := cond.Evaluate(ctx, sensorMap)
+				if err == nil && result {
+					return &EvaluationResult{
+						Context:   rule.Name,
+						Location:  re.determineLocation(ctx, sensorMap),
+						Rule:      rule,
+						MatchedBy: "conditions",
+					}
+				}
 			}
 		}
 	}
 
-	// No rule matched, return unknown
+	// No rule matched, return unknown context and location
 	return &EvaluationResult{
 		Context:   "unknown",
-		Location:  "",
+		Location:  re.determineLocation(ctx, sensorMap),
 		Rule:      nil,
 		MatchedBy: "none",
 	}
@@ -179,7 +238,13 @@ func matchesCIDR(ip, cidr string) bool {
 
 // matchesWildcard checks if a value matches a wildcard pattern
 // Supports simple wildcards with * (e.g., "192.168.*", "*.example.com")
+// Wildcards do not match empty strings
 func matchesWildcard(value, pattern string) bool {
+	// Wildcards should not match empty values
+	if value == "" {
+		return false
+	}
+
 	// Split pattern by *
 	parts := strings.Split(pattern, "*")
 
