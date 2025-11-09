@@ -35,6 +35,7 @@ type Daemon struct {
 	securityManager *security.Manager  // Security context manager
 	database        *db.DB             // Database for logging
 	isRemote        bool               // Running on remote server (via SSH)
+	parentMonitor   *ParentMonitor     // Monitors parent process in remote mode
 	ctx             context.Context    // Context for lifecycle management
 	cancelFunc      context.CancelFunc // Cancel function for context
 }
@@ -183,6 +184,14 @@ func (d *Daemon) Run() {
 	d.isRemote = os.Getenv("SSH_CONNECTION") != ""
 	if d.isRemote {
 		slog.Info("Running in remote mode - will exit on SSH disconnect")
+
+		// Start parent process monitoring for robust disconnect detection
+		// This provides multi-layer protection:
+		// - Layer 1: SIGHUP (handled below)
+		// - Layer 2: Platform-specific parent death signal (Linux: prctl)
+		// - Layer 3: PPID polling (all platforms)
+		d.parentMonitor = NewParentMonitor(d)
+		d.parentMonitor.Start(d.ctx)
 	}
 
 	// Initialize database
