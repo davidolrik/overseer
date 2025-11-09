@@ -5,6 +5,8 @@ package daemon
 import (
 	"fmt"
 	"syscall"
+
+	"golang.org/x/sys/unix"
 )
 
 // setupParentDeathSignal sets up platform-specific parent death detection
@@ -14,7 +16,7 @@ func (pm *ParentMonitor) setupParentDeathSignal() error {
 	// PR_SET_PDEATHSIG = 1
 	// SIGTERM = 15
 	// This tells the kernel: "send me SIGTERM when my parent dies"
-	err := syscall.Prctl(syscall.PR_SET_PDEATHSIG, uintptr(syscall.SIGTERM), 0, 0, 0)
+	err := unix.Prctl(unix.PR_SET_PDEATHSIG, uintptr(syscall.SIGTERM), 0, 0, 0)
 	if err != nil {
 		return fmt.Errorf("prctl(PR_SET_PDEATHSIG) failed: %w", err)
 	}

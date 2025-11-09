@@ -8,6 +8,7 @@ require (
 	github.com/lmittmann/tint v1.1.2
 	github.com/sblinch/kdl-go v0.0.0-20250930225324-bf4099d4614a
 	github.com/spf13/cobra v1.10.1
+	golang.org/x/sys v0.38.0
 	golang.org/x/term v0.36.0
 	modernc.org/sqlite v1.40.0
 )
@@ -28,7 +29,6 @@ require (
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	github.com/spf13/pflag v1.0.10 // indirect
 	golang.org/x/exp v0.0.0-20251023183803-a4bb9ffd2546 // indirect
-	golang.org/x/sys v0.38.0 // indirect
 	modernc.org/libc v1.66.10 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
