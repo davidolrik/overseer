@@ -104,10 +104,18 @@ func CheckVersionMismatch() {
 // StartDaemon starts the daemon process in the background
 func StartDaemon() error {
 	cmd := exec.Command(os.Args[0], "daemon")
+
+	// Pass the parent PID (shell/SSH session) to the daemon
+	// The daemon will monitor this PID instead of its own parent (which will be PID 1)
+	// This is critical for remote mode: when you SSH in and run 'overseer start',
+	// the daemon needs to monitor the SSH session, not init.
+	parentPID := os.Getppid()
+	cmd.Env = append(os.Environ(), fmt.Sprintf("OVERSEER_MONITOR_PID=%d", parentPID))
+
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("could not fork daemon process: %w", err)
 	}
-	slog.Debug(fmt.Sprintf("Daemon process launched with PID: %d", cmd.Process.Pid))
+	slog.Debug(fmt.Sprintf("Daemon process launched with PID: %d, monitoring PID: %d", cmd.Process.Pid, parentPID))
 	return nil
 }
 

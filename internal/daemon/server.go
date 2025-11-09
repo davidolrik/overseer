@@ -188,8 +188,12 @@ func (d *Daemon) Run() {
 		// Start parent process monitoring for robust disconnect detection
 		// This provides multi-layer protection:
 		// - Layer 1: SIGHUP (handled below)
-		// - Layer 2: Platform-specific parent death signal (Linux: prctl)
-		// - Layer 3: PPID polling (all platforms)
+		// - Layer 2: Platform-specific parent death signal (Linux: prctl, only for direct parent)
+		// - Layer 3: Process existence polling (all platforms, works for any PID)
+		//
+		// When started via 'overseer start', the monitor watches the shell PID (passed via
+		// OVERSEER_MONITOR_PID env var). When started via 'overseer daemon', it watches
+		// the SSH session (daemon's actual parent).
 		d.parentMonitor = NewParentMonitor(d)
 		d.parentMonitor.Start(d.ctx)
 	}

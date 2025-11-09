@@ -16,12 +16,28 @@ func TestParentMonitorCreation(t *testing.T) {
 		t.Fatal("Expected parent monitor to be created, got nil")
 	}
 
-	if monitor.initialPPID != os.Getppid() {
-		t.Errorf("Expected initialPPID to be %d, got %d", os.Getppid(), monitor.initialPPID)
+	// By default (no OVERSEER_MONITOR_PID), should monitor actual parent
+	if monitor.monitoredPID != os.Getppid() {
+		t.Errorf("Expected monitoredPID to be %d, got %d", os.Getppid(), monitor.monitoredPID)
 	}
 
 	if monitor.daemon != daemon {
 		t.Error("Expected monitor.daemon to reference the daemon instance")
+	}
+}
+
+// TestParentMonitorWithExternalPID tests monitoring an external PID
+func TestParentMonitorWithExternalPID(t *testing.T) {
+	// Set env var to monitor a specific PID
+	testPID := 12345
+	os.Setenv("OVERSEER_MONITOR_PID", "12345")
+	defer os.Unsetenv("OVERSEER_MONITOR_PID")
+
+	daemon := New()
+	monitor := NewParentMonitor(daemon)
+
+	if monitor.monitoredPID != testPID {
+		t.Errorf("Expected monitoredPID to be %d, got %d", testPID, monitor.monitoredPID)
 	}
 }
 
