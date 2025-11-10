@@ -51,16 +51,15 @@ func NewRootCommand() *cobra.Command {
 
 	rootCmd.AddCommand(
 		NewAskpassCommand(),
+		NewConnectCommand(),
 		NewDaemonCommand(),
+		NewDisconnectCommand(),
 		NewLogsCommand(),
 		NewPasswordCommand(),
 		NewResetCommand(),
 		NewStartCommand(),
-		NewStopCommand(),
-		NewConnectCommand(),
-		NewContextCommand(),
 		NewStatusCommand(),
-		NewDisconnectCommand(),
+		NewStopCommand(),
 		NewVersionCommand(),
 	)
 
