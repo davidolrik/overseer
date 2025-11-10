@@ -1266,12 +1266,29 @@ func (d *Daemon) handleContextChange(from, to string, rule *security.Rule) {
 				slog.Info("Reconnecting tunnel due to context change",
 					"tunnel", alias,
 					"context", to,
-					"previous_state", tunnel.State)
+					"previous_state", tunnel.State,
+					"previous_retry_count", tunnel.RetryCount)
 				// Stop existing tunnel first (cleans up processes and timers)
 				d.stopTunnel(alias)
 			}
 
 			if shouldConnect {
+				// Reset retry counters for this tunnel to give it a fresh start
+				// This is especially important when reconnecting after network changes,
+				// daemon restarts, or context re-evaluation. Any tunnel referenced in
+				// the activated context's action block should get maximum retry attempts.
+				d.mu.Lock()
+				if existingTunnel, stillExists := d.tunnels[alias]; stillExists {
+					existingTunnel.RetryCount = 0
+					existingTunnel.TotalReconnects = 0
+					existingTunnel.NextRetryTime = time.Time{}
+					d.tunnels[alias] = existingTunnel
+					slog.Info("Reset retry counters for tunnel before context-driven connection",
+						"tunnel", alias,
+						"context", to)
+				}
+				d.mu.Unlock()
+
 				resp := d.startTunnel(alias)
 				// Check if any response messages indicate an error
 				for _, msg := range resp.Messages {
