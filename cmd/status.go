@@ -41,8 +41,9 @@ and rules defined in your configuration. Context changes automatically connect o
 				return statuses[i].Hostname < statuses[j].Hostname
 			})
 
-			// Get context status
-			contextResponse, err := daemon.SendCommand("CONTEXT_STATUS")
+			// Get context status with event limit
+			eventLimit, _ := cmd.Flags().GetInt("events")
+			contextResponse, err := daemon.SendCommand(fmt.Sprintf("CONTEXT_STATUS %d", eventLimit))
 
 			format, _ := cmd.Flags().GetString("format")
 			verbose, _ := cmd.Flags().GetBool("verbose")
@@ -53,7 +54,7 @@ and rules defined in your configuration. Context changes automatically connect o
 				if err == nil && contextResponse.Data != nil {
 					displayContextBanner(contextResponse.Data)
 					if verbose {
-						displayDetailedContext(contextResponse.Data)
+						displayContextInfo(contextResponse.Data)
 					}
 				}
 
@@ -117,6 +118,11 @@ and rules defined in your configuration. Context changes automatically connect o
 						extraInfo,
 					)
 				}
+
+				// Show recent events after tunnels in verbose mode
+				if verbose && err == nil && contextResponse.Data != nil {
+					displayRecentEvents(contextResponse.Data)
+				}
 			case "json":
 				// Combine tunnel and context status for JSON output
 				output := make(map[string]interface{})
@@ -134,6 +140,7 @@ and rules defined in your configuration. Context changes automatically connect o
 	}
 	statusCmd.Flags().StringP("format", "F", "text", "Format to use (text/json)")
 	statusCmd.Flags().BoolP("verbose", "v", false, "Show detailed sensor information and change history")
+	statusCmd.Flags().IntP("events", "n", 20, "Number of recent events to show in verbose mode")
 
 	return statusCmd
 }
@@ -182,8 +189,8 @@ func displayContextBanner(data interface{}) {
 	fmt.Println()
 }
 
-// displayDetailedContext shows detailed sensor values and change history
-func displayDetailedContext(data interface{}) {
+// displayContextInfo shows context age and sensor values
+func displayContextInfo(data interface{}) {
 	jsonData, err := json.Marshal(data)
 	if err != nil {
 		return
@@ -203,6 +210,19 @@ func displayDetailedContext(data interface{}) {
 			Timestamp    string `json:"timestamp"`
 			Trigger      string `json:"trigger"`
 		} `json:"change_history"`
+		SensorChanges []struct {
+			SensorName string `json:"sensor_name"`
+			SensorType string `json:"sensor_type"`
+			OldValue   string `json:"old_value"`
+			NewValue   string `json:"new_value"`
+			Timestamp  string `json:"timestamp"`
+		} `json:"sensor_changes"`
+		TunnelEvents []struct {
+			TunnelAlias string `json:"tunnel_alias"`
+			EventType   string `json:"event_type"`
+			Details     string `json:"details,omitempty"`
+			Timestamp   string `json:"timestamp"`
+		} `json:"tunnel_events"`
 	}
 
 	if err := json.Unmarshal(jsonData, &status); err != nil {
@@ -215,6 +235,9 @@ func displayDetailedContext(data interface{}) {
 		colorGray    = "\033[90m"
 		colorReset   = "\033[0m"
 		colorBold    = "\033[1m"
+		colorYellow  = "\033[33m"
+		colorMagenta = "\033[35m"
+		colorBlue    = "\033[34m"
 	)
 
 	// Display context age
@@ -235,32 +258,102 @@ func displayDetailedContext(data interface{}) {
 		}
 	}
 
-	// Display recent changes
-	if len(status.ChangeHistory) > 0 {
-		fmt.Printf("\n%sRecent Changes:%s\n", colorBold, colorReset)
-		for _, change := range status.ChangeHistory {
-			// Build the change display string
-			changeStr := fmt.Sprintf("%s → %s", change.From, change.To)
+	fmt.Println()
+}
 
-			// Add location information if available
-			if change.FromLocation != "" || change.ToLocation != "" {
-				changeStr += " ("
-				if change.FromLocation != "" {
-					changeStr += change.FromLocation
-				} else {
-					changeStr += "no location"
-				}
-				changeStr += " → "
-				if change.ToLocation != "" {
-					changeStr += change.ToLocation
-				} else {
-					changeStr += "no location"
-				}
-				changeStr += ")"
-			}
+// displayRecentEvents shows recent sensor changes and tunnel events
+func displayRecentEvents(data interface{}) {
+	jsonData, err := json.Marshal(data)
+	if err != nil {
+		return
+	}
 
-			changeStr += fmt.Sprintf(" %s[%s]%s", colorGray, change.Trigger, colorReset)
-			fmt.Printf("  %s\n", changeStr)
+	var status struct {
+		SensorChanges []struct {
+			SensorName string `json:"sensor_name"`
+			SensorType string `json:"sensor_type"`
+			OldValue   string `json:"old_value"`
+			NewValue   string `json:"new_value"`
+			Timestamp  string `json:"timestamp"`
+		} `json:"sensor_changes"`
+		TunnelEvents []struct {
+			TunnelAlias string `json:"tunnel_alias"`
+			EventType   string `json:"event_type"`
+			Details     string `json:"details,omitempty"`
+			Timestamp   string `json:"timestamp"`
+		} `json:"tunnel_events"`
+	}
+
+	if err := json.Unmarshal(jsonData, &status); err != nil {
+		return
+	}
+
+	// ANSI color codes
+	const (
+		colorCyan    = "\033[36m"
+		colorGray    = "\033[90m"
+		colorReset   = "\033[0m"
+		colorBold    = "\033[1m"
+		colorYellow  = "\033[33m"
+		colorMagenta = "\033[35m"
+		colorBlue    = "\033[34m"
+	)
+
+	// Collect all events into a single list for unified display
+	type logEvent struct {
+		timestamp time.Time
+		message   string
+	}
+	var events []logEvent
+
+	// Add sensor changes as individual log lines
+	for _, sc := range status.SensorChanges {
+		ts, err := time.Parse(time.RFC3339Nano, sc.Timestamp)
+		if err != nil {
+			continue
+		}
+
+		var msg string
+		if sc.SensorName == "context" {
+			msg = fmt.Sprintf("%s%s → %s%s", colorMagenta, sc.OldValue, sc.NewValue, colorReset)
+		} else if sc.SensorName == "location" {
+			msg = fmt.Sprintf("%s%s → %s%s (location)", colorBlue, sc.OldValue, sc.NewValue, colorReset)
+		} else {
+			msg = fmt.Sprintf("%s%s:%s %s → %s", colorCyan, sc.SensorName, colorReset, sc.OldValue, sc.NewValue)
+		}
+
+		events = append(events, logEvent{timestamp: ts, message: msg})
+	}
+
+	// Add tunnel events
+	for _, te := range status.TunnelEvents {
+		ts, err := time.Parse(time.RFC3339Nano, te.Timestamp)
+		if err != nil {
+			continue
+		}
+
+		var msg string
+		eventDesc := te.EventType
+		if te.Details != "" {
+			eventDesc = fmt.Sprintf("%s (%s)", te.EventType, te.Details)
+		}
+		msg = fmt.Sprintf("%s%s:%s %s", colorYellow, te.TunnelAlias, colorReset, eventDesc)
+
+		events = append(events, logEvent{timestamp: ts, message: msg})
+	}
+
+	// Sort events by timestamp (most recent first)
+	sort.Slice(events, func(i, j int) bool {
+		return events[i].timestamp.After(events[j].timestamp)
+	})
+
+	// Display recent events
+	if len(events) > 0 {
+		fmt.Printf("\n%sRecent Events:%s\n", colorBold, colorReset)
+		for _, event := range events {
+			// Format timestamp as HH:MM:SS
+			timeStr := event.timestamp.Local().Format("2006-01-02 15:04:05")
+			fmt.Printf("  %s%s%s %s\n", colorGray, timeStr, colorReset, event.message)
 		}
 	}
 

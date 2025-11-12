@@ -231,3 +231,31 @@ func (db *DB) GetRecentDaemonEvents(limit int) ([]DaemonEvent, error) {
 	}
 	return events, rows.Err()
 }
+
+// GetLastTunnelEventPerAlias retrieves the most recent event for each tunnel alias
+func (db *DB) GetLastTunnelEventPerAlias() ([]TunnelEvent, error) {
+	rows, err := db.conn.Query(
+		`SELECT id, tunnel_alias, event_type, details, timestamp
+		 FROM tunnel_events
+		 WHERE id IN (
+			 SELECT MAX(id)
+			 FROM tunnel_events
+			 GROUP BY tunnel_alias
+		 )
+		 ORDER BY timestamp DESC`,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var events []TunnelEvent
+	for rows.Next() {
+		var e TunnelEvent
+		if err := rows.Scan(&e.ID, &e.TunnelAlias, &e.EventType, &e.Details, &e.Timestamp); err != nil {
+			return nil, err
+		}
+		events = append(events, e)
+	}
+	return events, rows.Err()
+}

@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -370,7 +371,14 @@ func (d *Daemon) handleConnection(conn net.Conn) {
 		d.handleLogs(conn)
 		return // Don't send JSON response
 	case "CONTEXT_STATUS":
-		response = d.getContextStatus()
+		// Parse optional event limit parameter (default: 20)
+		limit := 20
+		if len(args) > 0 {
+			if parsedLimit, err := strconv.Atoi(args[0]); err == nil && parsedLimit > 0 {
+				limit = parsedLimit
+			}
+		}
+		response = d.getContextStatus(limit)
 	default:
 		response.AddMessage("Unknown command.", "ERROR")
 	}
@@ -1312,6 +1320,8 @@ type ContextStatus struct {
 	Uptime        string              `json:"uptime"`
 	Sensors       map[string]string   `json:"sensors"`
 	ChangeHistory []ContextChangeInfo `json:"change_history,omitempty"`
+	SensorChanges []SensorChangeInfo  `json:"sensor_changes,omitempty"`
+	TunnelEvents  []TunnelEventInfo   `json:"tunnel_events,omitempty"`
 }
 
 // ContextChangeInfo represents a context change event
@@ -1324,8 +1334,25 @@ type ContextChangeInfo struct {
 	Trigger      string `json:"trigger"`
 }
 
+// SensorChangeInfo represents a sensor state change
+type SensorChangeInfo struct {
+	SensorName string `json:"sensor_name"`
+	SensorType string `json:"sensor_type"`
+	OldValue   string `json:"old_value"`
+	NewValue   string `json:"new_value"`
+	Timestamp  string `json:"timestamp"`
+}
+
+// TunnelEventInfo represents a tunnel lifecycle event
+type TunnelEventInfo struct {
+	TunnelAlias string `json:"tunnel_alias"`
+	EventType   string `json:"event_type"`
+	Details     string `json:"details,omitempty"`
+	Timestamp   string `json:"timestamp"`
+}
+
 // getContextStatus returns the current security context status
-func (d *Daemon) getContextStatus() Response {
+func (d *Daemon) getContextStatus(eventLimit int) Response {
 	response := Response{}
 
 	// Check if security manager is initialized
@@ -1365,6 +1392,98 @@ func (d *Daemon) getContextStatus() Response {
 		})
 	}
 
+	// Get recent sensor changes and tunnel events from database
+	// Fetch eventLimit of each type, then combine and limit to eventLimit total
+	var sensorChanges []SensorChangeInfo
+	var tunnelEvents []TunnelEventInfo
+
+	if d.database != nil {
+		// Fetch sensor changes
+		dbSensorChanges, err := d.database.GetRecentSensorChanges(eventLimit)
+		if err != nil {
+			slog.Warn("Failed to fetch sensor changes from database", "error", err)
+		} else {
+			sensorChanges = make([]SensorChangeInfo, 0, len(dbSensorChanges))
+			for _, sc := range dbSensorChanges {
+				sensorChanges = append(sensorChanges, SensorChangeInfo{
+					SensorName: sc.SensorName,
+					SensorType: sc.SensorType,
+					OldValue:   sc.OldValue,
+					NewValue:   sc.NewValue,
+					Timestamp:  sc.Timestamp.Format(time.RFC3339Nano),
+				})
+			}
+		}
+
+		// Fetch tunnel events
+		dbTunnelEvents, err := d.database.GetRecentTunnelEvents(eventLimit)
+		if err != nil {
+			slog.Warn("Failed to fetch tunnel events from database", "error", err)
+		} else {
+			tunnelEvents = make([]TunnelEventInfo, 0, len(dbTunnelEvents))
+			for _, te := range dbTunnelEvents {
+				tunnelEvents = append(tunnelEvents, TunnelEventInfo{
+					TunnelAlias: te.TunnelAlias,
+					EventType:   te.EventType,
+					Details:     te.Details,
+					Timestamp:   te.Timestamp.Format(time.RFC3339Nano),
+				})
+			}
+		}
+
+		// Combine events and sort by timestamp to get the most recent eventLimit events
+		type combinedEvent struct {
+			timestamp  time.Time
+			sensorInfo *SensorChangeInfo
+			tunnelInfo *TunnelEventInfo
+		}
+		combined := make([]combinedEvent, 0, len(sensorChanges)+len(tunnelEvents))
+
+		for i := range sensorChanges {
+			ts, err := time.Parse(time.RFC3339Nano, sensorChanges[i].Timestamp)
+			if err != nil {
+				continue
+			}
+			combined = append(combined, combinedEvent{
+				timestamp:  ts,
+				sensorInfo: &sensorChanges[i],
+			})
+		}
+
+		for i := range tunnelEvents {
+			ts, err := time.Parse(time.RFC3339Nano, tunnelEvents[i].Timestamp)
+			if err != nil {
+				continue
+			}
+			combined = append(combined, combinedEvent{
+				timestamp:  ts,
+				tunnelInfo: &tunnelEvents[i],
+			})
+		}
+
+		// Sort by timestamp (most recent first)
+		sort.Slice(combined, func(i, j int) bool {
+			return combined[i].timestamp.After(combined[j].timestamp)
+		})
+
+		// Limit to eventLimit total events
+		if len(combined) > eventLimit {
+			combined = combined[:eventLimit]
+		}
+
+		// Split back into separate slices
+		sensorChanges = make([]SensorChangeInfo, 0, eventLimit)
+		tunnelEvents = make([]TunnelEventInfo, 0, eventLimit)
+		for _, e := range combined {
+			if e.sensorInfo != nil {
+				sensorChanges = append(sensorChanges, *e.sensorInfo)
+			}
+			if e.tunnelInfo != nil {
+				tunnelEvents = append(tunnelEvents, *e.tunnelInfo)
+			}
+		}
+	}
+
 	// Build status
 	status := ContextStatus{
 		Context:       ctx.GetContext(),
@@ -1373,6 +1492,8 @@ func (d *Daemon) getContextStatus() Response {
 		Uptime:        ctx.GetUptime().Round(time.Second).String(),
 		Sensors:       sensors,
 		ChangeHistory: changeHistory,
+		SensorChanges: sensorChanges,
+		TunnelEvents:  tunnelEvents,
 	}
 
 	response.AddMessage("OK", "INFO")
