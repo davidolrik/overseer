@@ -886,7 +886,7 @@ func (d *Daemon) stopTunnel(alias string) Response {
 
 	// Log to database
 	if d.database != nil {
-		if err := d.database.LogTunnelEvent(alias, "manual_stop", ""); err != nil {
+		if err := d.database.LogTunnelEvent(alias, "manual_disconnect", ""); err != nil {
 			slog.Error("Failed to log tunnel manual stop", "error", err)
 		}
 	}

@@ -21,7 +21,7 @@ func NewStatusCommand() *cobra.Command {
 
 The security context is determined by sensors (public IP, environment variables, online status, etc.)
 and rules defined in your configuration. Context changes automatically connect or disconnect tunnels.`,
-		Args:    cobra.NoArgs,
+		Args: cobra.NoArgs,
 		Run: func(cmd *cobra.Command, args []string) {
 			daemon.CheckVersionMismatch()
 
