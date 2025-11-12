@@ -206,7 +206,8 @@ func (d *Daemon) Run() {
 		slog.Error("Failed to open database", "error", err, "path", dbPath)
 	} else {
 		d.database = database
-		defer d.database.Close()
+		// Don't use defer here - we'll close it explicitly in shutdown()
+		// to avoid race condition where Run() returns and closes DB before shutdown() completes
 		slog.Info("Database opened", "path", dbPath)
 
 		// Log daemon start event
@@ -276,6 +277,9 @@ func (d *Daemon) Run() {
 		<-shutdownChan
 		slog.Info("Shutdown signal received. Closing all tunnels.")
 		d.shutdown()
+		if d.listener != nil {
+			d.listener.Close()
+		}
 		os.Exit(0)
 	}()
 
@@ -288,6 +292,9 @@ func (d *Daemon) Run() {
 				d.database.LogDaemonEvent("ssh_disconnect", "SSH session ended, shutting down")
 			}
 			d.shutdown()
+			if d.listener != nil {
+				d.listener.Close()
+			}
 			os.Exit(0)
 		} else {
 			slog.Info("SIGHUP received (ignored - not in remote mode)")
@@ -353,7 +360,11 @@ func (d *Daemon) handleConnection(conn net.Conn) {
 		// Shutdown the daemon
 		slog.Info("Stop command received. Shutting down daemon.")
 		d.shutdown()
-		return // Don't send response again
+		// Close listener to unblock Accept() loop and allow clean exit
+		if d.listener != nil {
+			d.listener.Close()
+		}
+		os.Exit(0) // Exit after shutdown completes
 	case "STATUS":
 		response = d.getStatus()
 	case "VERSION":
@@ -1033,19 +1044,60 @@ func (d *Daemon) shutdown() {
 			d.cancelFunc()
 		}
 
-		// Close the listener first to prevent any new client connections.
-		// This will unblock the main Accept() loop in the Run() function.
-		if d.listener != nil {
-			d.listener.Close()
-		}
-
 		d.mu.Lock()
 		defer d.mu.Unlock()
 
+		// Disconnect and kill all tunnels first
+		tunnelCount := len(d.tunnels)
 		for alias, tunnel := range d.tunnels {
-			tunnel.Cmd.Process.Kill()
-			slog.Info(fmt.Sprintf("Killed process for '%s'", alias))
+			// Log disconnect event before killing
+			if d.database != nil {
+				slog.Debug("Logging disconnect event for tunnel during shutdown", "alias", alias)
+				if err := d.database.LogTunnelEvent(alias, "disconnect", "Daemon shutdown"); err != nil {
+					slog.Error("Failed to log tunnel disconnect during shutdown", "error", err, "alias", alias)
+				} else {
+					slog.Debug("Successfully logged disconnect event", "alias", alias)
+				}
+			}
+
+			// Kill the tunnel process
+			if tunnel.Cmd != nil && tunnel.Cmd.Process != nil {
+				pid := tunnel.Cmd.Process.Pid
+				slog.Debug("Killing tunnel process", "alias", alias, "pid", pid)
+				if err := tunnel.Cmd.Process.Kill(); err != nil {
+					slog.Error("Failed to kill tunnel process", "error", err, "alias", alias, "pid", pid)
+				} else {
+					slog.Debug("Successfully killed tunnel process", "alias", alias, "pid", pid)
+				}
+			} else {
+				slog.Warn("Tunnel process is nil, cannot kill", "alias", alias)
+			}
 		}
+
+		// Log daemon stop event as the final event after all tunnels are disconnected
+		if d.database != nil {
+			details := fmt.Sprintf("daemon stopped (PID: %d, remote: %v, active tunnels: %d)", os.Getpid(), d.isRemote, tunnelCount)
+			if err := d.database.LogDaemonEvent("stop", details); err != nil {
+				slog.Error("Failed to log daemon stop event", "error", err)
+			}
+		}
+
+		// Flush database to ensure all events are written before daemon exits
+		if d.database != nil {
+			if err := d.database.Flush(); err != nil {
+				slog.Error("Failed to flush database during shutdown", "error", err)
+			}
+		}
+
+		// Close database after all logging is complete
+		if d.database != nil {
+			if err := d.database.Close(); err != nil {
+				slog.Error("Failed to close database during shutdown", "error", err)
+			} else {
+				slog.Info("Database closed successfully")
+			}
+		}
+
 		d.tunnels = make(map[string]Tunnel)
 	})
 }
@@ -1322,6 +1374,7 @@ type ContextStatus struct {
 	ChangeHistory []ContextChangeInfo `json:"change_history,omitempty"`
 	SensorChanges []SensorChangeInfo  `json:"sensor_changes,omitempty"`
 	TunnelEvents  []TunnelEventInfo   `json:"tunnel_events,omitempty"`
+	DaemonEvents  []DaemonEventInfo   `json:"daemon_events,omitempty"`
 }
 
 // ContextChangeInfo represents a context change event
@@ -1349,6 +1402,13 @@ type TunnelEventInfo struct {
 	EventType   string `json:"event_type"`
 	Details     string `json:"details,omitempty"`
 	Timestamp   string `json:"timestamp"`
+}
+
+// DaemonEventInfo represents a daemon lifecycle event
+type DaemonEventInfo struct {
+	EventType string `json:"event_type"`
+	Details   string `json:"details,omitempty"`
+	Timestamp string `json:"timestamp"`
 }
 
 // getContextStatus returns the current security context status
@@ -1392,10 +1452,11 @@ func (d *Daemon) getContextStatus(eventLimit int) Response {
 		})
 	}
 
-	// Get recent sensor changes and tunnel events from database
+	// Get recent sensor changes, tunnel events, and daemon events from database
 	// Fetch eventLimit of each type, then combine and limit to eventLimit total
 	var sensorChanges []SensorChangeInfo
 	var tunnelEvents []TunnelEventInfo
+	var daemonEvents []DaemonEventInfo
 
 	if d.database != nil {
 		// Fetch sensor changes
@@ -1431,13 +1492,29 @@ func (d *Daemon) getContextStatus(eventLimit int) Response {
 			}
 		}
 
+		// Fetch daemon events
+		dbDaemonEvents, err := d.database.GetRecentDaemonEvents(eventLimit)
+		if err != nil {
+			slog.Warn("Failed to fetch daemon events from database", "error", err)
+		} else {
+			daemonEvents = make([]DaemonEventInfo, 0, len(dbDaemonEvents))
+			for _, de := range dbDaemonEvents {
+				daemonEvents = append(daemonEvents, DaemonEventInfo{
+					EventType: de.EventType,
+					Details:   de.Details,
+					Timestamp: de.Timestamp.Format(time.RFC3339Nano),
+				})
+			}
+		}
+
 		// Combine events and sort by timestamp to get the most recent eventLimit events
 		type combinedEvent struct {
 			timestamp  time.Time
 			sensorInfo *SensorChangeInfo
 			tunnelInfo *TunnelEventInfo
+			daemonInfo *DaemonEventInfo
 		}
-		combined := make([]combinedEvent, 0, len(sensorChanges)+len(tunnelEvents))
+		combined := make([]combinedEvent, 0, len(sensorChanges)+len(tunnelEvents)+len(daemonEvents))
 
 		for i := range sensorChanges {
 			ts, err := time.Parse(time.RFC3339Nano, sensorChanges[i].Timestamp)
@@ -1461,6 +1538,17 @@ func (d *Daemon) getContextStatus(eventLimit int) Response {
 			})
 		}
 
+		for i := range daemonEvents {
+			ts, err := time.Parse(time.RFC3339Nano, daemonEvents[i].Timestamp)
+			if err != nil {
+				continue
+			}
+			combined = append(combined, combinedEvent{
+				timestamp:  ts,
+				daemonInfo: &daemonEvents[i],
+			})
+		}
+
 		// Sort by timestamp (most recent first)
 		sort.Slice(combined, func(i, j int) bool {
 			return combined[i].timestamp.After(combined[j].timestamp)
@@ -1474,12 +1562,16 @@ func (d *Daemon) getContextStatus(eventLimit int) Response {
 		// Split back into separate slices
 		sensorChanges = make([]SensorChangeInfo, 0, eventLimit)
 		tunnelEvents = make([]TunnelEventInfo, 0, eventLimit)
+		daemonEvents = make([]DaemonEventInfo, 0, eventLimit)
 		for _, e := range combined {
 			if e.sensorInfo != nil {
 				sensorChanges = append(sensorChanges, *e.sensorInfo)
 			}
 			if e.tunnelInfo != nil {
 				tunnelEvents = append(tunnelEvents, *e.tunnelInfo)
+			}
+			if e.daemonInfo != nil {
+				daemonEvents = append(daemonEvents, *e.daemonInfo)
 			}
 		}
 	}
@@ -1494,6 +1586,7 @@ func (d *Daemon) getContextStatus(eventLimit int) Response {
 		ChangeHistory: changeHistory,
 		SensorChanges: sensorChanges,
 		TunnelEvents:  tunnelEvents,
+		DaemonEvents:  daemonEvents,
 	}
 
 	response.AddMessage("OK", "INFO")

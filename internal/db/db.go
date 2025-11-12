@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -53,7 +54,19 @@ func Open(path string) (*DB, error) {
 // Close closes the database connection
 func (db *DB) Close() error {
 	if db.conn != nil {
+		// Checkpoint the WAL to ensure all data is written to the main database file
+		db.conn.Exec("PRAGMA wal_checkpoint(TRUNCATE)")
 		return db.conn.Close()
+	}
+	return nil
+}
+
+// Flush forces a WAL checkpoint to write pending changes to the main database file
+func (db *DB) Flush() error {
+	if db.conn != nil {
+		// Use RESTART mode to force checkpoint even if there are active readers
+		_, err := db.conn.Exec("PRAGMA wal_checkpoint(RESTART)")
+		return err
 	}
 	return nil
 }
@@ -131,12 +144,28 @@ type TunnelEvent struct {
 
 // LogTunnelEvent logs a tunnel lifecycle event to the database
 func (db *DB) LogTunnelEvent(tunnelAlias, eventType, details string) error {
-	_, err := db.conn.Exec(
-		`INSERT INTO tunnel_events (tunnel_alias, event_type, details, timestamp)
-		 VALUES (?, ?, ?, ?)`,
-		tunnelAlias, eventType, details, time.Now(),
-	)
-	return err
+	// Retry briefly if database is locked (3 attempts, 5ms between)
+	// This is best-effort - we don't want to block daemon shutdown
+	maxRetries := 3
+	for i := 0; i < maxRetries; i++ {
+		_, err := db.conn.Exec(
+			`INSERT INTO tunnel_events (tunnel_alias, event_type, details, timestamp)
+			 VALUES (?, ?, ?, ?)`,
+			tunnelAlias, eventType, details, time.Now(),
+		)
+		if err == nil {
+			return nil
+		}
+		// Check if error is SQLITE_BUSY
+		if strings.Contains(err.Error(), "database is locked") || strings.Contains(err.Error(), "SQLITE_BUSY") {
+			// Wait briefly and retry
+			time.Sleep(5 * time.Millisecond)
+			continue
+		}
+		// Other error, return immediately
+		return err
+	}
+	return fmt.Errorf("failed to log tunnel event after %d retries: database locked", maxRetries)
 }
 
 // DaemonEvent represents a daemon lifecycle event

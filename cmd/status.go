@@ -282,6 +282,11 @@ func displayRecentEvents(data interface{}) {
 			Details     string `json:"details,omitempty"`
 			Timestamp   string `json:"timestamp"`
 		} `json:"tunnel_events"`
+		DaemonEvents []struct {
+			EventType string `json:"event_type"`
+			Details   string `json:"details,omitempty"`
+			Timestamp string `json:"timestamp"`
+		} `json:"daemon_events"`
 	}
 
 	if err := json.Unmarshal(jsonData, &status); err != nil {
@@ -297,6 +302,7 @@ func displayRecentEvents(data interface{}) {
 		colorYellow  = "\033[33m"
 		colorMagenta = "\033[35m"
 		colorBlue    = "\033[34m"
+		colorGreen   = "\033[32m"
 	)
 
 	// Collect all events into a single list for unified display
@@ -338,6 +344,23 @@ func displayRecentEvents(data interface{}) {
 			eventDesc = fmt.Sprintf("%s (%s)", te.EventType, te.Details)
 		}
 		msg = fmt.Sprintf("%s%s:%s %s", colorYellow, te.TunnelAlias, colorReset, eventDesc)
+
+		events = append(events, logEvent{timestamp: ts, message: msg})
+	}
+
+	// Add daemon events
+	for _, de := range status.DaemonEvents {
+		ts, err := time.Parse(time.RFC3339Nano, de.Timestamp)
+		if err != nil {
+			continue
+		}
+
+		var msg string
+		eventDesc := de.EventType
+		if de.Details != "" {
+			eventDesc = fmt.Sprintf("%s (%s)", de.EventType, de.Details)
+		}
+		msg = fmt.Sprintf("%sdaemon:%s %s", colorGreen, colorReset, eventDesc)
 
 		events = append(events, logEvent{timestamp: ts, message: msg})
 	}
