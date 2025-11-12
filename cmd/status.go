@@ -238,6 +238,8 @@ func displayContextInfo(data interface{}) {
 		colorYellow  = "\033[33m"
 		colorMagenta = "\033[35m"
 		colorBlue    = "\033[34m"
+		colorGreen   = "\033[32m"
+		colorRed     = "\033[31m"
 	)
 
 	// Display context age
@@ -249,10 +251,19 @@ func displayContextInfo(data interface{}) {
 	if len(status.Sensors) > 0 {
 		fmt.Printf("\n%sSensors:%s\n", colorBold, colorReset)
 		for key, value := range status.Sensors {
-			// Highlight specific sensors
+			// Format the display value
 			displayValue := value
 			if value == "" {
-				displayValue = colorGray + "(empty)" + colorReset
+				// Environment sensors show "(empty)", others show "unknown"
+				if len(key) > 4 && key[:4] == "env:" {
+					displayValue = colorGray + "(empty)" + colorReset
+				} else {
+					displayValue = colorGray + "unknown" + colorReset
+				}
+			} else if value == "true" {
+				displayValue = colorGreen + "true" + colorReset
+			} else if value == "false" {
+				displayValue = colorRed + "false" + colorReset
 			}
 			fmt.Printf("  %s%s:%s %s\n", colorCyan, key, colorReset, displayValue)
 		}
@@ -303,6 +314,7 @@ func displayRecentEvents(data interface{}) {
 		colorMagenta = "\033[35m"
 		colorBlue    = "\033[34m"
 		colorGreen   = "\033[32m"
+		colorRed     = "\033[31m"
 	)
 
 	// Collect all events into a single list for unified display
@@ -319,13 +331,41 @@ func displayRecentEvents(data interface{}) {
 			continue
 		}
 
+		// Format old and new values
+		oldValue := sc.OldValue
+		newValue := sc.NewValue
+		isEnvSensor := len(sc.SensorName) > 4 && sc.SensorName[:4] == "env:"
+
+		if oldValue == "" {
+			if isEnvSensor {
+				oldValue = colorGray + "(empty)" + colorReset
+			} else {
+				oldValue = colorGray + "unknown" + colorReset
+			}
+		} else if oldValue == "true" {
+			oldValue = colorGreen + "true" + colorReset
+		} else if oldValue == "false" {
+			oldValue = colorRed + "false" + colorReset
+		}
+		if newValue == "" {
+			if isEnvSensor {
+				newValue = colorGray + "(empty)" + colorReset
+			} else {
+				newValue = colorGray + "unknown" + colorReset
+			}
+		} else if newValue == "true" {
+			newValue = colorGreen + "true" + colorReset
+		} else if newValue == "false" {
+			newValue = colorRed + "false" + colorReset
+		}
+
 		var msg string
 		if sc.SensorName == "context" {
 			msg = fmt.Sprintf("%s%s → %s%s", colorMagenta, sc.OldValue, sc.NewValue, colorReset)
 		} else if sc.SensorName == "location" {
 			msg = fmt.Sprintf("%s%s → %s%s (location)", colorBlue, sc.OldValue, sc.NewValue, colorReset)
 		} else {
-			msg = fmt.Sprintf("%s%s:%s %s → %s", colorCyan, sc.SensorName, colorReset, sc.OldValue, sc.NewValue)
+			msg = fmt.Sprintf("%s%s:%s %s → %s", colorCyan, sc.SensorName, colorReset, oldValue, newValue)
 		}
 
 		events = append(events, logEvent{timestamp: ts, message: msg})
