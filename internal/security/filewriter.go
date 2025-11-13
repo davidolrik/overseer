@@ -39,7 +39,7 @@ func NewExportWriter(exportType, path string) (*ExportWriter, error) {
 
 	// Ensure parent directory exists
 	dir := filepath.Dir(absPath)
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("failed to create directory: %w", err)
 	}
 
@@ -51,21 +51,31 @@ func NewExportWriter(exportType, path string) (*ExportWriter, error) {
 
 // ExportData contains all the data that can be exported
 type ExportData struct {
-	Context              string
-	ContextDisplayName   string
-	Location             string
-	LocationDisplayName  string
-	PublicIP             string
-	CustomEnvironment    map[string]string // Custom environment variables from context and location
+	Context             string
+	ContextDisplayName  string
+	Location            string
+	LocationDisplayName string
+	PublicIP            string
+	CustomEnvironment   map[string]string // Custom environment variables from context and location
 }
 
 // Write writes the export data to the file atomically based on the export type
-func (ew *ExportWriter) Write(data ExportData) error {
+func (ew *ExportWriter) Write(data ExportData, varsToUnset []string) error {
 	var content string
 
 	switch ew.exportType {
 	case "dotenv":
-		// Collect all environment variables into a map for sorting
+		var lines []string
+
+		// Step 1: Unset all tracked variables first (clean slate)
+		// This prevents stale values when switching between contexts
+		if len(varsToUnset) > 0 {
+			lines = append(lines, "# Unset all tracked variables from contexts/locations")
+			lines = append(lines, fmt.Sprintf("unset %s", strings.Join(varsToUnset, " ")))
+			lines = append(lines, "")
+		}
+
+		// Step 2: Collect and export current context's environment variables
 		envVars := make(map[string]string)
 
 		// Add OVERSEER_ prefixed variables
@@ -99,10 +109,9 @@ func (ew *ExportWriter) Write(data ExportData) error {
 		}
 		sort.Strings(keys)
 
-		// Build sorted lines
-		var lines []string
+		// Build sorted export lines
 		for _, key := range keys {
-			lines = append(lines, fmt.Sprintf("%s=\"%s\"", key, envVars[key]))
+			lines = append(lines, fmt.Sprintf("export %s=\"%s\"", key, envVars[key]))
 		}
 
 		content = strings.Join(lines, "\n") + "\n"
@@ -124,7 +133,7 @@ func (ew *ExportWriter) Write(data ExportData) error {
 	tempFile := ew.path + ".tmp"
 
 	// Write to temporary file
-	if err := os.WriteFile(tempFile, []byte(content), 0644); err != nil {
+	if err := os.WriteFile(tempFile, []byte(content), 0o644); err != nil {
 		return fmt.Errorf("failed to write temp file: %w", err)
 	}
 

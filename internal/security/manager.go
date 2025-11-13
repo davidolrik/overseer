@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sort"
 	"sync"
 )
 
@@ -19,6 +20,7 @@ type Manager struct {
 	stopChan       chan struct{}
 	stopped        bool
 	dbLogger       *DatabaseLogger // Database logger for sensor changes
+	trackedEnvVars []string        // All env var names exported by contexts/locations (for clean unset)
 
 	// Callbacks
 	onContextChange func(from, to string, rule *Rule)
@@ -120,6 +122,36 @@ func NewManager(config ManagerConfig) (*Manager, error) {
 		config.Logger.Debug("Environment sensor created", "var", varName)
 	}
 
+	// Collect all environment variable names that are EXPORTED (for auto-unset)
+	// These are the vars defined in Environment maps of contexts and locations
+	exportedEnvVars := make(map[string]bool)
+
+	// Collect from all locations
+	for _, location := range config.Locations {
+		if location.Environment != nil {
+			for key := range location.Environment {
+				exportedEnvVars[key] = true
+			}
+		}
+	}
+
+	// Collect from all contexts/rules
+	for _, rule := range config.Rules {
+		if rule.Environment != nil {
+			for key := range rule.Environment {
+				exportedEnvVars[key] = true
+			}
+		}
+	}
+
+	// Convert to sorted slice for consistent output
+	trackedVarNames := make([]string, 0, len(exportedEnvVars))
+	for key := range exportedEnvVars {
+		trackedVarNames = append(trackedVarNames, key)
+	}
+	// Sort alphabetically for deterministic output
+	sort.Strings(trackedVarNames)
+
 	m := &Manager{
 		context:         NewSecurityContext(),
 		ruleEngine:      NewRuleEngine(config.Rules, config.Locations),
@@ -130,6 +162,7 @@ func NewManager(config ManagerConfig) (*Manager, error) {
 		onContextChange: config.OnContextChange,
 		exportWriters:   make([]*ExportWriter, 0),
 		checkingContext: false,
+		trackedEnvVars:  trackedVarNames,
 	}
 
 	// Subscribe to sensors that should trigger context re-evaluation
@@ -344,7 +377,13 @@ func (m *Manager) checkContext(trigger string) error {
 
 			// Write to each export writer
 			for _, ew := range m.exportWriters {
-				if err := ew.Write(exportData); err != nil {
+				// Only pass varsToUnset for dotenv exports
+				var varsToUnset []string
+				if ew.GetType() == "dotenv" {
+					varsToUnset = m.trackedEnvVars
+				}
+
+				if err := ew.Write(exportData, varsToUnset); err != nil {
 					m.logger.Error("Failed to write export file",
 						"type", ew.GetType(),
 						"path", ew.GetPath(),
