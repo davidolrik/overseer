@@ -381,7 +381,7 @@ func displayRecentEvents(data interface{}) {
 		var msg string
 		eventDesc := te.EventType
 		if te.Details != "" {
-			eventDesc = fmt.Sprintf("%s (%s)", te.EventType, te.Details)
+			eventDesc = fmt.Sprintf("%s - %s", te.EventType, te.Details)
 		}
 		msg = fmt.Sprintf("%s%s:%s %s", colorYellow, te.TunnelAlias, colorReset, eventDesc)
 

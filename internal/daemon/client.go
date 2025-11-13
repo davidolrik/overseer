@@ -128,3 +128,15 @@ func WaitForDaemon() error {
 	}
 	return fmt.Errorf("daemon was launched but socket was not created in time")
 }
+
+// WaitForDaemonStop waits for the daemon to stop
+func WaitForDaemonStop() error {
+	for range 20 {
+		time.Sleep(100 * time.Millisecond)
+		if _, err := SendCommand("STATUS"); err != nil {
+			// Daemon stopped (connection failed)
+			return nil
+		}
+	}
+	return fmt.Errorf("daemon did not stop in time")
+}

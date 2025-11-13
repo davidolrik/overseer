@@ -212,7 +212,7 @@ func (d *Daemon) Run() {
 
 		// Log daemon start event
 		version := core.FormatVersion(core.Version)
-		if err := d.database.LogDaemonEvent("start", fmt.Sprintf("daemon started (version: %s, PID: %d, remote: %v)", version, os.Getpid(), d.isRemote)); err != nil {
+		if err := d.database.LogDaemonEvent("start", fmt.Sprintf("daemon started - version: %s, PID: %d, remote: %v", version, os.Getpid(), d.isRemote)); err != nil {
 			slog.Error("Failed to log daemon start", "error", err)
 		}
 	}
@@ -255,6 +255,15 @@ func (d *Daemon) Run() {
 
 	d.listener = listener
 	slog.Info(fmt.Sprintf("Daemon listening on %s", socketPath))
+
+	// Attempt to adopt existing tunnels from previous daemon (hot reload)
+	// IMPORTANT: This must happen BEFORE initializing security manager
+	// so that when the security manager evaluates context rules, it sees
+	// the adopted tunnels and doesn't try to reconnect them
+	adoptedCount := d.adoptExistingTunnels()
+	if adoptedCount > 0 {
+		slog.Info("Hot reload complete", "adopted_tunnels", adoptedCount)
+	}
 
 	// Initialize security context manager (always active)
 	// Database logging is enabled inside initSecurityManager before starting
@@ -354,6 +363,61 @@ func (d *Daemon) handleConnection(conn net.Conn) {
 			stopResponse := d.stopTunnel(alias)
 			response.AddMessage(stopResponse.Messages[0].Message, stopResponse.Messages[0].Status)
 		}
+	case "RELOAD":
+		// Hot reload: save tunnel state before stopping
+		slog.Info("Reload command received. Saving tunnel state for hot reload...")
+		if err := d.SaveTunnelState(); err != nil {
+			slog.Error("Failed to save tunnel state", "error", err)
+			response.AddMessage(fmt.Sprintf("Failed to save tunnel state: %v", err), "ERROR")
+			conn.Write([]byte(response.ToJSON()))
+			return
+		}
+
+		slog.Info("Tunnel state saved successfully")
+		response.AddMessage("Tunnel state saved, shutting down for reload", "INFO")
+
+		// Send response before shutting down
+		conn.Write([]byte(response.ToJSON()))
+
+		// Hot reload shutdown: minimal cleanup WITHOUT killing tunnels
+		// Tunnels will survive due to Setsid and be adopted by new daemon
+		slog.Info("Shutting down for hot reload (preserving tunnels)...")
+
+		// Stop security manager
+		if d.securityManager != nil {
+			d.securityManager.Stop()
+		}
+
+		// Cancel context to stop background tasks
+		if d.cancelFunc != nil {
+			d.cancelFunc()
+		}
+
+		// Log daemon stop event (but don't log tunnel disconnects - they're not disconnecting!)
+		if d.database != nil {
+			version := core.FormatVersion(core.Version)
+			tunnelCount := len(d.tunnels)
+			details := fmt.Sprintf("daemon stopped for hot reload - version: %s, PID: %d, preserved tunnels: %d", version, os.Getpid(), tunnelCount)
+			if err := d.database.LogDaemonEvent("reload", details); err != nil {
+				slog.Error("Failed to log daemon reload event", "error", err)
+			}
+
+			// Flush and close database
+			if err := d.database.Flush(); err != nil {
+				slog.Error("Failed to flush database during reload", "error", err)
+			}
+			if err := d.database.Close(); err != nil {
+				slog.Error("Failed to close database during reload", "error", err)
+			}
+		}
+
+		// Close listener to unblock Accept() loop
+		if d.listener != nil {
+			d.listener.Close()
+		}
+
+		// Exit WITHOUT killing tunnels - they will be adopted by new daemon
+		os.Exit(0)
 	case "STOP":
 		response = d.stopDaemon()
 		// Send response before shutting down
@@ -427,6 +491,11 @@ func (d *Daemon) startTunnel(alias string) Response {
 
 	cmd := exec.Command("ssh", sshArgs...)
 	cmd.Env = os.Environ()
+
+	// Make tunnel process independent - survives daemon death (for hot reload)
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		Setsid: true, // Create new session, detach from parent
+	}
 
 	// Capture stderr to monitor connection status
 	stderrPipe, err := cmd.StderrPipe()
@@ -679,6 +748,11 @@ func (d *Daemon) monitorTunnel(alias string) {
 		newCmd := exec.Command("ssh", sshArgs...)
 		newCmd.Env = os.Environ()
 
+		// Make tunnel process independent - survives daemon death (for hot reload)
+		newCmd.SysProcAttr = &syscall.SysProcAttr{
+			Setsid: true, // Create new session, detach from parent
+		}
+
 		// Capture stderr to monitor connection status
 		stderrPipe, err := newCmd.StderrPipe()
 		if err != nil {
@@ -868,13 +942,30 @@ func (d *Daemon) stopTunnel(alias string) Response {
 		return response
 	}
 
-	if err := tunnel.Cmd.Process.Kill(); err != nil {
+	// Kill the tunnel process - handle both normal and adopted tunnels
+	var killErr error
+	if tunnel.Cmd != nil && tunnel.Cmd.Process != nil {
+		// Normal tunnel spawned by this daemon
+		killErr = tunnel.Cmd.Process.Kill()
+	} else if tunnel.Pid > 0 {
+		// Adopted tunnel from hot reload - kill by PID
+		process, err := os.FindProcess(tunnel.Pid)
+		if err != nil {
+			killErr = err
+		} else {
+			killErr = process.Kill()
+		}
+	} else {
+		killErr = fmt.Errorf("tunnel has no process reference")
+	}
+
+	if killErr != nil {
 		// Even if killing fails, we should clean up the map and token
 		if tunnel.AskpassToken != "" {
 			delete(d.askpassTokens, tunnel.AskpassToken)
 		}
 		delete(d.tunnels, alias)
-		response.AddMessage(fmt.Sprintf("Failed to kill process for '%s': %v", alias, err), "ERROR")
+		response.AddMessage(fmt.Sprintf("Failed to kill process for '%s': %v", alias, killErr), "ERROR")
 		return response
 	}
 
@@ -952,11 +1043,20 @@ func (d *Daemon) getStatus() Response {
 func (d *Daemon) getVersion() Response {
 	response := Response{}
 
-	// Return the daemon version
+	// Return the daemon version and mode information
 	response.AddMessage("OK", "INFO")
-	response.AddData(map[string]string{
-		"version": core.Version,
-	})
+	data := map[string]interface{}{
+		"version":   core.Version,
+		"is_remote": d.isRemote,
+		"pid":       os.Getpid(),
+	}
+
+	// Add monitored PID if in remote mode
+	if d.isRemote && d.parentMonitor != nil {
+		data["monitored_pid"] = d.parentMonitor.monitoredPID
+	}
+
+	response.AddData(data)
 
 	return response
 }
@@ -1062,7 +1162,9 @@ func (d *Daemon) shutdown() {
 			}
 
 			// Kill the tunnel process
+			// Handle both normal tunnels (with Cmd) and adopted tunnels (PID only)
 			if tunnel.Cmd != nil && tunnel.Cmd.Process != nil {
+				// Normal tunnel spawned by this daemon
 				pid := tunnel.Cmd.Process.Pid
 				slog.Debug("Killing tunnel process", "alias", alias, "pid", pid)
 				if err := tunnel.Cmd.Process.Kill(); err != nil {
@@ -1070,15 +1172,29 @@ func (d *Daemon) shutdown() {
 				} else {
 					slog.Debug("Successfully killed tunnel process", "alias", alias, "pid", pid)
 				}
+			} else if tunnel.Pid > 0 {
+				// Adopted tunnel from hot reload - kill by PID
+				pid := tunnel.Pid
+				slog.Debug("Killing adopted tunnel process", "alias", alias, "pid", pid)
+				process, err := os.FindProcess(pid)
+				if err != nil {
+					slog.Error("Failed to find tunnel process", "error", err, "alias", alias, "pid", pid)
+				} else {
+					if err := process.Kill(); err != nil {
+						slog.Error("Failed to kill adopted tunnel process", "error", err, "alias", alias, "pid", pid)
+					} else {
+						slog.Debug("Successfully killed adopted tunnel process", "alias", alias, "pid", pid)
+					}
+				}
 			} else {
-				slog.Warn("Tunnel process is nil, cannot kill", "alias", alias)
+				slog.Warn("Tunnel has no process reference, cannot kill", "alias", alias)
 			}
 		}
 
 		// Log daemon stop event as the final event after all tunnels are disconnected
 		if d.database != nil {
 			version := core.FormatVersion(core.Version)
-			details := fmt.Sprintf("daemon stopped (version: %s, PID: %d, remote: %v, active tunnels: %d)", version, os.Getpid(), d.isRemote, tunnelCount)
+			details := fmt.Sprintf("daemon stopped - version: %s, PID: %d, remote: %v, active tunnels: %d", version, os.Getpid(), d.isRemote, tunnelCount)
 			if err := d.database.LogDaemonEvent("stop", details); err != nil {
 				slog.Error("Failed to log daemon stop event", "error", err)
 			}
@@ -1332,6 +1448,12 @@ func (d *Daemon) handleContextChange(from, to string, rule *security.Rule) {
 					"previous_retry_count", tunnel.RetryCount)
 				// Stop existing tunnel first (cleans up processes and timers)
 				d.stopTunnel(alias)
+			} else {
+				// Tunnel exists and is already connected - skip it
+				slog.Debug("Skipping tunnel - already connected",
+					"tunnel", alias,
+					"state", tunnel.State,
+					"pid", tunnel.Pid)
 			}
 
 			if shouldConnect {
@@ -1922,4 +2044,250 @@ func (d *Daemon) watchConfig() {
 	}()
 
 	slog.Info("Watching configuration file for changes")
+}
+
+// adoptExistingTunnels attempts to adopt tunnel processes from a previous daemon instance
+// This enables hot reload - daemon can restart without killing active SSH tunnels
+// Returns the number of successfully adopted tunnels
+func (d *Daemon) adoptExistingTunnels() int {
+	// Load tunnel state from previous daemon
+	state, err := LoadTunnelState()
+	if err != nil {
+		slog.Warn("Failed to load tunnel state", "error", err)
+		return 0
+	}
+
+	if state == nil {
+		slog.Debug("No tunnel state file found (first run or clean restart)")
+		return 0
+	}
+
+	slog.Info("Found tunnel state from previous daemon",
+		"tunnel_count", len(state.Tunnels),
+		"state_timestamp", state.Timestamp)
+
+	adoptedCount := 0
+
+	for _, info := range state.Tunnels {
+		if d.adoptTunnel(info) {
+			adoptedCount++
+		}
+	}
+
+	if adoptedCount > 0 {
+		slog.Info("Successfully adopted tunnels",
+			"adopted", adoptedCount,
+			"total", len(state.Tunnels))
+	} else if len(state.Tunnels) > 0 {
+		slog.Warn("Failed to adopt any tunnels, will reconnect via security rules")
+	}
+
+	// Clean up state file after processing
+	if err := RemoveTunnelStateFile(); err != nil {
+		slog.Warn("Failed to remove tunnel state file", "error", err)
+	}
+
+	return adoptedCount
+}
+
+// adoptTunnel attempts to adopt a single tunnel process
+// Returns true if adoption succeeded, false otherwise
+func (d *Daemon) adoptTunnel(info TunnelInfo) bool {
+	// Validate that the process still exists and is the expected SSH tunnel
+	if !ValidateTunnelProcess(info) {
+		slog.Warn("Tunnel process validation failed, will not adopt",
+			"alias", info.Alias,
+			"pid", info.PID)
+		return false
+	}
+
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	// Check if we already have a tunnel with this alias
+	if _, exists := d.tunnels[info.Alias]; exists {
+		slog.Warn("Tunnel alias already exists, skipping adoption",
+			"alias", info.Alias,
+			"existing_pid", d.tunnels[info.Alias].Pid,
+			"adopt_pid", info.PID)
+		return false
+	}
+
+	// Create tunnel entry
+	// Note: Cmd will be nil for adopted tunnels - we can't recreate exec.Cmd
+	// We'll monitor via PID polling instead
+	// AskpassToken is empty for adopted tunnels - they're already authenticated and running
+	tunnel := Tunnel{
+		Hostname:          info.Hostname,
+		Pid:               info.PID,
+		Cmd:               nil, // Can't recreate exec.Cmd from PID
+		StartDate:         info.StartDate,
+		LastConnectedTime: info.LastConnectedTime,
+		AskpassToken:      "", // Adopted tunnels don't need auth - already running
+		RetryCount:        info.RetryCount,
+		TotalReconnects:   info.TotalReconnects,
+		AutoReconnect:     info.AutoReconnect,
+		State:             TunnelState(info.State),
+	}
+
+	d.tunnels[info.Alias] = tunnel
+
+	// Start monitoring goroutine for adopted tunnel
+	// Since we don't have exec.Cmd, we poll the process instead
+	go d.monitorAdoptedTunnel(info.Alias, info.PID)
+
+	slog.Info("Tunnel adopted successfully",
+		"alias", info.Alias,
+		"pid", info.PID,
+		"age", time.Since(info.StartDate).Round(time.Second))
+
+	return true
+}
+
+// monitorAdoptedTunnel monitors an adopted tunnel process by polling its PID
+// This is used instead of cmd.Wait() for tunnels we adopted from a previous daemon
+func (d *Daemon) monitorAdoptedTunnel(alias string, pid int) {
+	slog.Debug("Starting monitor for adopted tunnel", "alias", alias, "pid", pid)
+
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-d.ctx.Done():
+			// Daemon is shutting down
+			return
+
+		case <-ticker.C:
+			// Check if process still exists
+			process, err := os.FindProcess(pid)
+			if err != nil || process.Signal(syscall.Signal(0)) != nil {
+				// Process died
+				slog.Info("Adopted tunnel process died", "alias", alias, "pid", pid)
+
+				d.mu.Lock()
+				tunnel, exists := d.tunnels[alias]
+				if !exists {
+					d.mu.Unlock()
+					return
+				}
+
+				// Log disconnect event
+				if d.database != nil {
+					d.database.LogTunnelEvent(alias, "disconnect", "Adopted tunnel process died")
+				}
+
+				// Mark as disconnected
+				tunnel.State = StateDisconnected
+				d.tunnels[alias] = tunnel
+
+				// Get max retries from config
+				maxRetries := core.Config.SSH.MaxRetries
+
+				// Check if auto-reconnect is enabled and we haven't exceeded max retries
+				if !tunnel.AutoReconnect || tunnel.RetryCount >= maxRetries {
+					// Clean up and don't reconnect
+					delete(d.tunnels, alias)
+
+					if tunnel.RetryCount >= maxRetries {
+						slog.Info("Adopted tunnel exceeded max retry attempts, giving up",
+							"alias", alias,
+							"max_retries", maxRetries)
+
+						if d.database != nil {
+							details := fmt.Sprintf("Max retries (%d) exceeded", maxRetries)
+							d.database.LogTunnelEvent(alias, "max_retries_exceeded", details)
+						}
+					} else {
+						slog.Info("Adopted tunnel auto-reconnect disabled, not reconnecting", "alias", alias)
+					}
+
+					d.mu.Unlock()
+					return
+				}
+
+				// Check if we're online before attempting reconnection
+				isOnline := d.checkOnlineStatus()
+				if !isOnline {
+					slog.Info("Adopted tunnel not reconnecting - currently offline",
+						"alias", alias)
+					d.mu.Unlock()
+					return
+				}
+
+				// Calculate backoff delay
+				backoff := calculateBackoff(tunnel.RetryCount)
+				tunnel.RetryCount++
+				tunnel.LastRetryTime = time.Now()
+				tunnel.State = StateReconnecting
+				tunnel.NextRetryTime = time.Now().Add(backoff)
+
+				slog.Info("Adopted tunnel will reconnect after backoff",
+					"alias", alias,
+					"backoff", backoff,
+					"attempt", tunnel.RetryCount,
+					"max_retries", maxRetries)
+
+				// Update tunnel state
+				d.tunnels[alias] = tunnel
+				d.mu.Unlock()
+
+				// Wait for backoff period
+				time.Sleep(backoff)
+
+				// Attempt to reconnect
+				slog.Info("Attempting to reconnect adopted tunnel",
+					"alias", alias,
+					"attempt", tunnel.RetryCount,
+					"max_retries", maxRetries)
+
+				d.mu.Lock()
+				// Check if tunnel still exists (might have been manually stopped during backoff)
+				tunnel, exists = d.tunnels[alias]
+				if !exists {
+					d.mu.Unlock()
+					return
+				}
+
+				// Check if we're still online
+				if !d.checkOnlineStatus() {
+					slog.Info("Adopted tunnel reconnection cancelled - went offline during backoff",
+						"alias", alias)
+					d.mu.Unlock()
+					return
+				}
+
+				// Remove tunnel from map before calling startTunnel()
+				// startTunnel() will create a fresh entry with proper monitoring
+				delete(d.tunnels, alias)
+				d.mu.Unlock()
+
+				// Start the tunnel (this creates a new SSH process)
+				response := d.startTunnel(alias)
+
+				// Check if reconnection succeeded
+				hasError := false
+				for _, msg := range response.Messages {
+					if msg.Status == "ERROR" {
+						slog.Error("Adopted tunnel reconnection failed",
+							"alias", alias,
+							"error", msg.Message)
+						hasError = true
+					}
+				}
+
+				if hasError {
+					// The tunnel monitoring goroutine spawned by startTunnel will handle
+					// further retries, so we exit this adopted tunnel monitor
+					return
+				}
+
+				// Successfully reconnected - exit this monitor since the new tunnel
+				// will have its own monitoring goroutine
+				slog.Info("Adopted tunnel successfully reconnected",
+					"alias", alias)
+				return
+			}
+		}
+	}
 }
