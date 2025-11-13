@@ -3,6 +3,7 @@ package security
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net"
 	"strings"
 	"time"
@@ -20,9 +21,11 @@ type IPSensor struct {
 func NewIPSensor() *IPSensor {
 	return &IPSensor{
 		BaseSensor: NewBaseSensor("public_ip", SensorTypeString),
+		// Use hardcoded OpenDNS resolver IPs instead of hostnames to avoid DNS chicken-and-egg problem
+		// During network transitions, system DNS may fail or resolve to wrong IPs
 		resolvers: []string{
-			"resolver1.opendns.com:53",
-			"resolver2.opendns.com:53",
+			"208.67.222.222:53", // resolver1.opendns.com
+			"208.67.220.220:53", // resolver2.opendns.com
 		},
 		hostname: "myip.opendns.com",
 		timeout:  15 * time.Second,
@@ -38,7 +41,12 @@ func (s *IPSensor) Check(ctx context.Context) (SensorValue, error) {
 	defer cancel()
 
 	// Try each resolver in order until one succeeds
-	for _, resolverAddr := range s.resolvers {
+	for i, resolverAddr := range s.resolvers {
+		slog.Debug("Querying OpenDNS resolver for public IP",
+			"resolver", resolverAddr,
+			"resolver_num", i+1,
+			"total_resolvers", len(s.resolvers))
+
 		// Use custom resolver
 		resolver := &net.Resolver{
 			PreferGo: true,
@@ -53,17 +61,25 @@ func (s *IPSensor) Check(ctx context.Context) (SensorValue, error) {
 		// Lookup the hostname using the custom resolver
 		ips, err := resolver.LookupHost(ctx, s.hostname)
 		if err != nil {
+			slog.Debug("OpenDNS resolver query failed, trying next",
+				"resolver", resolverAddr,
+				"error", err)
 			// Try next resolver
 			continue
 		}
 
 		if len(ips) == 0 {
+			slog.Debug("OpenDNS resolver returned no IPs, trying next",
+				"resolver", resolverAddr)
 			// Try next resolver
 			continue
 		}
 
 		// Success! Return the first IP address (OpenDNS returns our public IP)
 		publicIP := strings.TrimSpace(ips[0])
+		slog.Debug("Successfully retrieved public IP from OpenDNS",
+			"resolver", resolverAddr,
+			"public_ip", publicIP)
 		newValue := NewSensorValue(s.Name(), s.Type(), publicIP)
 
 		// Notify listeners if value changed
@@ -82,6 +98,9 @@ func (s *IPSensor) Check(ctx context.Context) (SensorValue, error) {
 	}
 
 	// All resolvers failed - return link-local address to indicate no network connectivity
+	slog.Debug("All OpenDNS resolvers failed, returning link-local address (offline)",
+		"total_resolvers", len(s.resolvers),
+		"link_local_ip", "169.254.0.0")
 	newValue := NewSensorValue(s.Name(), s.Type(), "169.254.0.0")
 
 	// Notify listeners if value changed
