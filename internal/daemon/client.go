@@ -115,7 +115,6 @@ func StartDaemon() error {
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("could not fork daemon process: %w", err)
 	}
-	slog.Debug(fmt.Sprintf("Daemon process launched with PID: %d, monitoring PID: %d", cmd.Process.Pid, parentPID))
 	return nil
 }
 
