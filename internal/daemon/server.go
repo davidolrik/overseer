@@ -211,7 +211,8 @@ func (d *Daemon) Run() {
 		slog.Info("Database opened", "path", dbPath)
 
 		// Log daemon start event
-		if err := d.database.LogDaemonEvent("start", fmt.Sprintf("daemon started (PID: %d, remote: %v)", os.Getpid(), d.isRemote)); err != nil {
+		version := core.FormatVersion(core.Version)
+		if err := d.database.LogDaemonEvent("start", fmt.Sprintf("daemon started (version: %s, PID: %d, remote: %v)", version, os.Getpid(), d.isRemote)); err != nil {
 			slog.Error("Failed to log daemon start", "error", err)
 		}
 	}
@@ -1076,7 +1077,8 @@ func (d *Daemon) shutdown() {
 
 		// Log daemon stop event as the final event after all tunnels are disconnected
 		if d.database != nil {
-			details := fmt.Sprintf("daemon stopped (PID: %d, remote: %v, active tunnels: %d)", os.Getpid(), d.isRemote, tunnelCount)
+			version := core.FormatVersion(core.Version)
+			details := fmt.Sprintf("daemon stopped (version: %s, PID: %d, remote: %v, active tunnels: %d)", version, os.Getpid(), d.isRemote, tunnelCount)
 			if err := d.database.LogDaemonEvent("stop", details); err != nil {
 				slog.Error("Failed to log daemon stop event", "error", err)
 			}
