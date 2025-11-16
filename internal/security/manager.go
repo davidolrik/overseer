@@ -328,11 +328,12 @@ func (m *Manager) checkContext(trigger string) error {
 	if changed || forceExport {
 		// Write to all export files
 		if len(m.exportWriters) > 0 {
-			// Get public IP sensor value for exports
+			// Get public IP sensor value for exports (use cached value)
 			publicIP := ""
 			if ipSensor, exists := m.sensors["public_ip"]; exists {
-				value, _ := ipSensor.Check(ctx)
-				publicIP = value.String()
+				if lastValue := ipSensor.GetLastValue(); lastValue != nil {
+					publicIP = lastValue.String()
+				}
 			}
 
 			// Get display names and environment variables

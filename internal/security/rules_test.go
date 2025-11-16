@@ -213,6 +213,11 @@ func (m *MockSensor) Check(ctx context.Context) (SensorValue, error) {
 	return NewSensorValue(m.name, m.sensorType, m.value), nil
 }
 
+func (m *MockSensor) GetLastValue() *SensorValue {
+	v := NewSensorValue(m.name, m.sensorType, m.value)
+	return &v
+}
+
 func (m *MockSensor) Subscribe(listener SensorListener) {
 	m.listeners = append(m.listeners, listener)
 }

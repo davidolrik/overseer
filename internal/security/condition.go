@@ -26,11 +26,19 @@ func (c *SensorCondition) Evaluate(ctx context.Context, sensors map[string]Senso
 		return false, nil // Sensor not found, condition fails
 	}
 
-	// Check the sensor
-	value, err := sensor.Check(ctx)
-	if err != nil {
-		return false, fmt.Errorf("failed to check sensor %s: %w", c.SensorName, err)
+	// Use cached sensor value instead of calling Check() again
+	// The manager already called Check() on all active sensors before evaluation
+	lastValue := sensor.GetLastValue()
+	if lastValue == nil {
+		// No value yet, try checking once
+		var err error
+		value, err := sensor.Check(ctx)
+		if err != nil {
+			return false, fmt.Errorf("failed to check sensor %s: %w", c.SensorName, err)
+		}
+		lastValue = &value
 	}
+	value := *lastValue
 
 	// Handle boolean sensors
 	if c.BoolValue != nil {

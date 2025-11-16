@@ -26,6 +26,9 @@ type Sensor interface {
 	// Check performs a sensor reading and returns the current value
 	Check(ctx context.Context) (SensorValue, error)
 
+	// GetLastValue returns the last cached sensor value (nil if never checked)
+	GetLastValue() *SensorValue
+
 	// Subscribe adds a listener for sensor changes
 	Subscribe(listener SensorListener)
 

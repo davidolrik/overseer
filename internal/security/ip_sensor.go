@@ -21,13 +21,16 @@ type IPSensor struct {
 func NewIPSensor() *IPSensor {
 	return &IPSensor{
 		BaseSensor: NewBaseSensor("public_ip", SensorTypeString),
-		// Use hardcoded OpenDNS resolver IPs instead of hostnames to avoid DNS chicken-and-egg problem
-		// During network transitions, system DNS may fail or resolve to wrong IPs
+		// Use OpenDNS resolvers with FQDN (trailing dot prevents search domain expansion)
+		// If DNS resolution fails, we're offline anyway and will return 169.254.0.0
 		resolvers: []string{
-			"208.67.222.222:53", // resolver1.opendns.com
-			"208.67.220.220:53", // resolver2.opendns.com
+			"resolver1.opendns.com.:53",
+			"resolver2.opendns.com.:53",
 		},
-		hostname: "myip.opendns.com",
+		// IMPORTANT: Use FQDN with trailing dot to prevent search domain expansion
+		// Without the dot, "myip.opendns.com" could be expanded to "myip.opendns.com.<search-domain>"
+		// which might match wildcard DNS records, which could give the wrong ip
+		hostname: "myip.opendns.com.",
 		timeout:  15 * time.Second,
 	}
 }
