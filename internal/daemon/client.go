@@ -82,19 +82,19 @@ func CheckVersionMismatch() {
 		}
 
 		if response.Data != nil {
-			jsonBytes, _ := json.Marshal(response.Data)
-			var versionData map[string]string
-			if json.Unmarshal(jsonBytes, &versionData) == nil {
-				daemonVersion := versionData["version"]
-				clientVersion := core.Version
+			// Data comes back as map[string]interface{} from JSON unmarshaling
+			if dataMap, ok := response.Data.(map[string]interface{}); ok {
+				if daemonVersion, ok := dataMap["version"].(string); ok {
+					clientVersion := core.Version
 
-				if clientVersion != daemonVersion {
-					// Use formatted versions in the warning
-					clientFormatted := core.FormatVersion(clientVersion)
-					daemonFormatted := core.FormatVersion(daemonVersion)
-					slog.Warn(fmt.Sprintf("Version mismatch! Client %s and daemon %s versions differ.", clientFormatted, daemonFormatted))
-					slog.Warn("The daemon may be running an outdated version. Run 'overseer stop' and try again.")
-					versionWarned = true
+					if clientVersion != daemonVersion {
+						// Use formatted versions in the warning
+						clientFormatted := core.FormatVersion(clientVersion)
+						daemonFormatted := core.FormatVersion(daemonVersion)
+						slog.Warn(fmt.Sprintf("Version mismatch! Client %s and daemon %s versions differ.", clientFormatted, daemonFormatted))
+						slog.Warn("The daemon may be running an outdated version. Run 'overseer stop' and try again.")
+						versionWarned = true
+					}
 				}
 			}
 		}

@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
@@ -31,16 +30,16 @@ func NewVersionCommand() *cobra.Command {
 
 			// Parse daemon version from response
 			if response.Data != nil {
-				jsonBytes, _ := json.Marshal(response.Data)
-				var versionData map[string]string
-				if json.Unmarshal(jsonBytes, &versionData) == nil {
-					daemonVersion := versionData["version"]
-					daemonFormatted := core.FormatVersion(daemonVersion)
-					fmt.Fprintf(os.Stderr, "Daemon version: %s\n", daemonFormatted)
+				// Data comes back as map[string]interface{} from JSON unmarshaling
+				if dataMap, ok := response.Data.(map[string]interface{}); ok {
+					if version, ok := dataMap["version"].(string); ok {
+						daemonFormatted := core.FormatVersion(version)
+						fmt.Fprintf(os.Stderr, "Daemon version: %s\n", daemonFormatted)
 
-					// Check for version mismatch
-					if clientVersion != daemonVersion {
-						slog.Warn(fmt.Sprintf("Version mismatch! Client %s and daemon %s versions differ. Consider restarting the daemon.", clientFormatted, daemonFormatted))
+						// Check for version mismatch
+						if clientVersion != version {
+							slog.Warn(fmt.Sprintf("Version mismatch! Client %s and daemon %s versions differ. Consider restarting the daemon.", clientFormatted, daemonFormatted))
+						}
 					}
 				}
 			}
