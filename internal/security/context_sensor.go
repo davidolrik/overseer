@@ -46,9 +46,14 @@ func (s *ContextSensor) SetValue(value interface{}) error {
 
 	// Only notify if value changed
 	if oldValue == nil || !oldValue.Equals(newValue) {
+		// Use zero value if oldValue is nil
+		var oldVal SensorValue
 		if oldValue != nil {
-			s.NotifyListeners(s, *oldValue, newValue)
+			oldVal = *oldValue
+		} else {
+			oldVal = NewSensorValue(s.Name(), s.Type(), "none")
 		}
+		s.NotifyListeners(s, oldVal, newValue)
 		s.SetLastValue(newValue)
 	}
 

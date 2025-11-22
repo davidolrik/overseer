@@ -56,7 +56,7 @@ func NewRuleEngine(rules []Rule, locations map[string]Location) *RuleEngine {
 	}
 }
 
-// determineLocation checks special locations (offline) first, then falls back to unknown
+// determineLocation checks special locations (offline) first, then all other locations, then falls back to unknown
 func (re *RuleEngine) determineLocation(ctx context.Context, sensorMap map[string]Sensor) string {
 	// Check for special "offline" location first
 	if offlineLocation, exists := re.locations["offline"]; exists {
@@ -71,6 +71,35 @@ func (re *RuleEngine) determineLocation(ctx context.Context, sensorMap map[strin
 					return "offline"
 				}
 			}
+		}
+	}
+
+	// Check all other locations to find a match
+	for locationName, location := range re.locations {
+		// Skip "offline" and "unknown" - already handled
+		if locationName == "offline" || locationName == "unknown" {
+			continue
+		}
+
+		// Check if location conditions match
+		matched := false
+		if location.Condition != nil {
+			result, err := location.Condition.Evaluate(ctx, sensorMap)
+			if err == nil && result {
+				matched = true
+			}
+		} else if len(location.Conditions) > 0 {
+			cond := ConditionFromMap(location.Conditions)
+			if cond != nil {
+				result, err := cond.Evaluate(ctx, sensorMap)
+				if err == nil && result {
+					matched = true
+				}
+			}
+		}
+
+		if matched {
+			return locationName
 		}
 	}
 
