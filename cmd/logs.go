@@ -12,8 +12,8 @@ import (
 	"syscall"
 
 	"github.com/spf13/cobra"
-	"olrik.dev/davidolrik/overseer/internal/core"
-	"olrik.dev/davidolrik/overseer/internal/daemon"
+	"overseer.olrik.dev/internal/core"
+	"overseer.olrik.dev/internal/daemon"
 )
 
 func NewLogsCommand() *cobra.Command {

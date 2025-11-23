@@ -5,7 +5,7 @@ import (
 	"log/slog"
 
 	"github.com/spf13/cobra"
-	"olrik.dev/davidolrik/overseer/internal/daemon"
+	"overseer.olrik.dev/internal/daemon"
 )
 
 func NewReloadCommand() *cobra.Command {

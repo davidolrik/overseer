@@ -4,7 +4,7 @@ import (
 	"fmt"
 
 	"github.com/sblinch/kdl-go/document"
-	"olrik.dev/davidolrik/overseer/internal/security"
+	"overseer.olrik.dev/internal/security"
 )
 
 // parseConditionNode recursively parses a KDL node into a Condition structure

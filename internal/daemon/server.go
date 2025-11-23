@@ -19,10 +19,10 @@ import (
 	"time"
 
 	"github.com/fsnotify/fsnotify"
-	"olrik.dev/davidolrik/overseer/internal/core"
-	"olrik.dev/davidolrik/overseer/internal/db"
-	"olrik.dev/davidolrik/overseer/internal/keyring"
-	"olrik.dev/davidolrik/overseer/internal/security"
+	"overseer.olrik.dev/internal/core"
+	"overseer.olrik.dev/internal/db"
+	"overseer.olrik.dev/internal/keyring"
+	"overseer.olrik.dev/internal/security"
 )
 
 // Daemon manages the SSH tunnel processes and security context.

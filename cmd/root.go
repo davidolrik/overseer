@@ -8,7 +8,7 @@ import (
 
 	"github.com/lmittmann/tint"
 	"github.com/spf13/cobra"
-	"olrik.dev/davidolrik/overseer/internal/core"
+	"overseer.olrik.dev/internal/core"
 )
 
 func NewRootCommand() *cobra.Command {

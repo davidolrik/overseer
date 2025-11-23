@@ -11,6 +11,8 @@ before:
 builds:
   # Linux builds - CGO disabled for static linking
   - id: linux
+    binary: overseer
+    main: .
     env:
       - CGO_ENABLED=0
     goos:
@@ -21,6 +23,8 @@ builds:
 
   # macOS builds - CGO enabled for keychain access
   - id: darwin-amd64
+    binary: overseer
+    main: .
     env:
       - CGO_ENABLED=1
     goos:
@@ -37,6 +41,8 @@ builds:
         - sh -c 'if [ -n "$APPLE_ID" ] && [ -n "$APPLE_APP_PASSWORD" ] && [ -n "$APPLE_TEAM_ID" ]; then echo "Notarizing {{ .Path }}..."; ditto -c -k --keepParent "{{ .Path }}" "{{ .Path }}.zip" && xcrun notarytool submit "{{ .Path }}.zip" --apple-id "$APPLE_ID" --password "$APPLE_APP_PASSWORD" --team-id "$APPLE_TEAM_ID" --wait && rm "{{ .Path }}.zip" && echo "Notarization complete (stapling skipped for standalone binary)"; else echo "Skipping notarization (credentials not set)"; fi'
 
   - id: darwin-arm64
+    binary: overseer
+    main: .
     env:
       - CGO_ENABLED=1
     goos:

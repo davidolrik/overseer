@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 
-	"olrik.dev/davidolrik/overseer/cmd"
+	"overseer.olrik.dev/cmd"
 )
 
 func main() {

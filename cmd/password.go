@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 
 	"github.com/spf13/cobra"
-	"olrik.dev/davidolrik/overseer/internal/keyring"
+	"overseer.olrik.dev/internal/keyring"
 )
 
 func NewPasswordCommand() *cobra.Command {

@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"olrik.dev/davidolrik/overseer/internal/core"
+	"overseer.olrik.dev/internal/core"
 )
 
 var (
