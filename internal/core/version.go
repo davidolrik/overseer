@@ -16,8 +16,7 @@ var Version string = strings.TrimSpace(version)
 // Input format: "v0.7.0-5-g9154987-devel"
 // Output examples:
 //   - "0.7.0 (9154987)" - clean release
-//   - "0.7.0+5 (9154987)" - 5 commits after tag
-//   - "0.7.0+5 (9154987-devel)" - development version with uncommitted changes
+//   - "0.7.0+5 (9154987+5)" - 5 commits after tag
 func FormatVersion(v string) string {
 	// Remove 'v' prefix if present
 	v = strings.TrimPrefix(v, "v")
@@ -30,24 +29,24 @@ func FormatVersion(v string) string {
 		return v
 	}
 
-	baseVersion := parts[0]           // e.g., "0.7.0"
-	commitsSinceTag := parts[1]       // e.g., "5" or "0"
+	baseVersion := parts[0]                  // e.g., "0.7.0"
+	commitsSinceTag := parts[1]              // e.g., "5" or "0"
 	sha := strings.TrimPrefix(parts[2], "g") // e.g., "9154987" (remove 'g' prefix)
 
-	// Check if this is a development version
+	// Check if this is a development version (has uncommitted changes)
 	isDevel := len(parts) > 3 && parts[3] == "devel"
 
 	// Build the formatted version
 	result := baseVersion
 
-	// Add commit count if not zero
+	// Add commit count to base version if not zero
 	if commitsSinceTag != "0" {
 		result += fmt.Sprintf("+%s", commitsSinceTag)
 	}
 
-	// Add SHA
-	if isDevel {
-		result += fmt.Sprintf(" (%s-devel)", sha)
+	// Add SHA with commit count for development versions
+	if isDevel || commitsSinceTag != "0" {
+		result += fmt.Sprintf(" (%s+%s)", sha, commitsSinceTag)
 	} else {
 		result += fmt.Sprintf(" (%s)", sha)
 	}
