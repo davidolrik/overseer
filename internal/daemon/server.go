@@ -627,6 +627,13 @@ func (d *Daemon) monitorTunnel(alias string) {
 			return // Tunnel was manually stopped while we were waiting
 		}
 
+		// Check if this is still the same tunnel we were monitoring
+		// (tunnel may have been replaced by a rapid disconnect/connect cycle)
+		if tunnel.Cmd != cmd {
+			d.mu.Unlock()
+			return // Tunnel was replaced, new monitorTunnel goroutine is watching it
+		}
+
 		// Log the exit
 		if waitErr != nil {
 			slog.Info(fmt.Sprintf("Tunnel process for '%s' exited with an error: %v", alias, waitErr))
@@ -2170,6 +2177,13 @@ func (d *Daemon) monitorAdoptedTunnel(alias string, pid int) {
 				if !exists {
 					d.mu.Unlock()
 					return
+				}
+
+				// Check if this is still the same tunnel we were monitoring
+				// (tunnel may have been replaced by a rapid disconnect/connect cycle)
+				if tunnel.Pid != pid {
+					d.mu.Unlock()
+					return // Tunnel was replaced, different monitor is watching it
 				}
 
 				// Log disconnect event
