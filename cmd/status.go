@@ -15,7 +15,7 @@ import (
 func NewStatusCommand() *cobra.Command {
 	statusCmd := &cobra.Command{
 		Use:     "status",
-		Aliases: []string{"list", "ls", "context", "ctx"},
+		Aliases: []string{"s", "list", "ls", "context", "ctx"},
 		Short:   "Shows current security context, sensors, and active tunnels",
 		Long: `Display comprehensive status including security context, sensor values, and active SSH tunnels.
 
@@ -46,16 +46,13 @@ and rules defined in your configuration. Context changes automatically connect o
 			contextResponse, err := daemon.SendCommand(fmt.Sprintf("CONTEXT_STATUS %d", eventLimit))
 
 			format, _ := cmd.Flags().GetString("format")
-			verbose, _ := cmd.Flags().GetBool("verbose")
 
 			switch format {
 			case "text":
 				// Show comprehensive context information
 				if err == nil && contextResponse.Data != nil {
 					displayContextBanner(contextResponse.Data)
-					if verbose {
-						displayContextInfo(contextResponse.Data)
-					}
+					displayContextInfo(contextResponse.Data)
 				}
 
 				fmt.Println("Active Tunnels:")
@@ -120,7 +117,7 @@ and rules defined in your configuration. Context changes automatically connect o
 				}
 
 				// Show recent events after tunnels in verbose mode
-				if verbose && err == nil && contextResponse.Data != nil {
+				if eventLimit > 0 && err == nil && contextResponse.Data != nil {
 					displayRecentEvents(contextResponse.Data)
 				}
 			case "json":
@@ -139,8 +136,7 @@ and rules defined in your configuration. Context changes automatically connect o
 		},
 	}
 	statusCmd.Flags().StringP("format", "F", "text", "Format to use (text/json)")
-	statusCmd.Flags().BoolP("verbose", "v", false, "Show detailed sensor information and change history")
-	statusCmd.Flags().IntP("events", "n", 20, "Number of recent events to show in verbose mode")
+	statusCmd.Flags().IntP("events", "n", 20, "Number of recent events to show")
 
 	return statusCmd
 }
