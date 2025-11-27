@@ -1,586 +1,387 @@
-<img width="25%" align="right" alt="Overseer logo" src="https://raw.githubusercontent.com/davidolrik/overseer/main/assets/img/overseer.png">
+<img width="25%" align="right" alt="Overseer logo" src="https://raw.githubusercontent.com/davidolrik/overseer/main/docs/static/overseer.png">
 
 # Overseer - Contextual Computing
 
-Detect Security Context based upon sensors & manage SSH tunnels,
-using your existing OpenSSH config.
+Detect security context based on sensors and manage SSH tunnels using your existing OpenSSH config.
 
-Configure connection reuse, socks proxies, port forwarding and jump hosts in
-`~/.ssh/config` and use `overseer` to manage your SSH tunnels.
+Configure connection reuse, SOCKS proxies, port forwarding and jump hosts in `~/.ssh/config` and use
+`overseer` to manage your SSH tunnels automatically based on your network location.
 
 ## Features
 
-* **Full OpenSSH Integration**: Supports everything OpenSSH can do (connection reuse, SOCKS proxies, port forwarding, jump hosts)
-* **Security Context Awareness**: Automatically detect your logical location and connect/disconnect SSH tunnels based on your context
-* **Automatic Reconnection**: Tunnels automatically reconnect with exponential backoff when connections fail
-* **Secure Password Storage**: Store passwords in your system keyring (Keychain/Secret Service)
-* **Shell Completion**: Dynamic completion commands and SSH host aliases (bash, zsh, fish)
-* **Multiple Output Formats**: Status available in plaintext (with colors) and JSON for easy automation
-
-## Quick Start
-
-```bash
-# Start overseer daemon
-overseer start
-
-# Connect a tunnel using SSH config alias
-overseer connect jump.example.com
-
-# Check tunnel status
-overseer status
-
-# Disconnect a specific tunnel
-overseer disconnect jump.example.com
-
-# Disconnect all tunnels and shutdown daemon
-overseer stop
-```
+- **Full OpenSSH Integration**: Supports everything OpenSSH can do (connection reuse, SOCKS proxies, port forwarding, jump hosts)
+- **Security Context Awareness**: Automatically detect your logical location and connect/disconnect SSH tunnels based on your context
+- **Automatic Reconnection**: Tunnels automatically reconnect with exponential backoff when connections fail
+- **Secure Password Storage**: Store passwords in your system keyring (Keychain/Secret Service)
+- **Shell Completion**: Dynamic completion for commands and SSH host aliases (bash, zsh, fish)
+- **Multiple Output Formats**: Status available in plaintext (with colors) and JSON for easy automation
 
 ## Installation
 
-### Download binary from GitHub
-
-Download the latest release directly from the GitHub [release page](https://github.com/davidolrik/overseer/releases).
-
 ### Install using mise
 
-```sh
+```bash
 mise use --global ubi:davidolrik/overseer@latest
 ```
 
-## SSH Config
-
-All configuration related to your tunnels must be defined in your SSH config,
-`overseer` will only manage running tunnels based upon the SSH config.
-
-```ssh-config
-Host *
-    # Reuse ssh connections for all hosts
-    ControlMaster auto
-    ControlPath ~/.ssh/control/%h_%p_%r
-
-# Jump host
-Host jump.example.com
-    # SOCKS proxy via jump host
-    DynamicForward 25000
-
-# Hosts that use the jump host
-Host *.internal.example.com
-    ProxyJump jump.example.com
-```
-
-## SSH servers with password
-
-For SSH servers that require password authentication, Overseer can securely store passwords in your system keyring
-(Keychain on macOS, Secret Service on Linux, Credential Manager on Windows).
-
-**Note**: SSH key-based authentication is more secure and recommended. Only use password storage for servers that
-require it. Passwords are provided to SSH using the SSH_ASKPASS mechanism, which works with all modern SSH clients
-without requiring additional tools.
-
-## Automatic Reconnection
-
-Overseer automatically reconnects tunnels when they fail, using exponential backoff to avoid overwhelming the SSH server:
-
-* **Smart Backoff**: 1s → 2s → 4s → 8s → 16s → ... up to 5 minutes
-* **Visual Status**: Real-time connection state with countdown timers
-* **Stability Tracking**: See total reconnection count for each tunnel
-* **Configurable**: Adjust backoff timing, max retries, and enable/disable per tunnel
+### Install using go directly
 
 ```bash
-# View connection status with reconnection info
-overseer status
-
-# Example output:
-# Active Tunnels:
-#   ✓ production-db (PID: 12345, Age: 2h15m)
-#   ⟳ staging-server (PID: 12346, Age: 5m23s, Reconnects: 3) (next attempt in 8s) [attempt 4]
-#   ✗ backup-server (PID: 0, Age: 10m)
+go install overseer.olrik.dev@latest
 ```
 
-Configure connection monitoring and reconnection behavior in `~/.config/overseer/config.kdl`:
+## Quick Start
 
-```kdl
-// SSH connection health monitoring
-ssh {
-  server_alive_interval 15  // Send keepalive every N seconds (0 to disable)
-  server_alive_count_max 3  // Exit after N failed keepalives
-}
+1. Start the overseer daemon:
 
-// Automatic reconnection settings
-reconnect {
-  enabled true              // Enable/disable auto-reconnect
-  initial_backoff "1s"      // First retry delay
-  max_backoff "5m"          // Maximum delay between retries
-  backoff_factor 2          // Multiplier for each retry
-  max_retries 10            // Give up after this many attempts
-}
-```
+   ```bash
+   overseer start
+   ```
 
-**Connection Health Monitoring:**
+2. Check current status:
 
-* Detects dead connections within 45 seconds (with default settings)
-* SSH automatically exits when connection becomes unresponsive
-* Triggers automatic reconnection with exponential backoff
-* Can be customized or disabled (set `server_alive_interval` to 0)
+   ```bash
+   overseer status
+   ```
 
-## Security Context Awareness
+3. Manually connect to an SSH host:
 
-Overseer automatically detects your network context and can connect/disconnect tunnels
-based on where you are.
-This enables true contextual computing - your tunnels adapt to your environment.
+   ```bash
+   overseer connect my-server
+   ```
 
-**How it works:**
-
-* Monitors your public IP address (via DNS query to OpenDNS)
-* Detects network changes in real-time (macOS/Linux)
-* Evaluates context rules to determine your location
-* Automatically manages tunnels based on context changes
-
-**Example configuration** (`~/.config/overseer/config.kdl`):
-
-```kdl
-// Contexts are evaluated from top to bottom (first match wins)
-// Place more specific contexts first
-context "home" {
-  display_name "Home"
-
-  conditions {
-    public_ip "92.0.2.42"       // Your home IP
-    public_ip "192.168.1.0/24"  // Or local network range
-  }
-
-  actions {
-    connect "home-lab"          // Connect to home services
-    disconnect "office-vpn"     // Disconnect from office
-  }
-}
-
-context "office" {
-  display_name "Office"
-
-  conditions {
-    public_ip "198.51.100.0/24" // Office IP range
-  }
-
-  actions {
-    connect "office-vpn"
-    disconnect "home-lab"
-  }
-}
-
-// Fallback context when no rules match
-// (automatically added if not defined)
-context "untrusted" {
-  display_name "Untrusted"
-
-  actions {
-    disconnect "home-lab"
-    disconnect "office-vpn"
-  }
-}
-```
-
-**View current context:**
-
-```bash
-# Detailed context information
-overseer context
-
-# Quick view in status output
-overseer status
-```
-
-**Pattern matching in conditions:**
-
-* Exact IP: `public_ip "123.45.67.89"`
-* CIDR range: `public_ip "192.168.1.0/24"`
-* Wildcards: `public_ip "192.168.*"`
-* Multiple values: `public_ip "123.45.67.89"` and `public_ip "123.45.67.90"` (matches any)
-
-## Context Exports & Custom Environment Variables
-
-Overseer can export your current security context to files in various formats, enabling powerful
-integrations with shell scripts, automation tools, status bars, and external systems like Home Assistant.
-
-### Export Types
-
-Configure exports in your `~/.config/overseer/config.kdl`:
-
-```kdl
-exports {
-  dotenv "/home/user/.local/var/overseer.env"
-  context "/home/user/.local/var/context.txt"
-  location "/home/user/.local/var/location.txt"
-  public_ip "/home/user/.local/var/public_ip.txt"
-}
-```
-
-**Available export types:**
-
-* **`dotenv`** - Shell-compatible environment variable file with all context data + custom variables
-* **`context`** - Simple text file with just the context name (e.g., "home")
-* **`location`** - Simple text file with just the location name (e.g., "hq")
-* **`public_ip`** - Simple text file with just your public IP address
-
-**Standard variables in dotenv exports:**
-
-The `dotenv` export always includes these standard variables (when available):
-
-* `OVERSEER_CONTEXT` - Current context name (e.g., "home", "office", "untrusted")
-* `OVERSEER_CONTEXT_DISPLAY_NAME` - Human-friendly context name (e.g., "Home", "Office")
-* `OVERSEER_LOCATION` - Current location name (e.g., "hq", "downtown")
-* `OVERSEER_LOCATION_DISPLAY_NAME` - Human-friendly location name (e.g., "HQ", "Downtown Office")
-* `OVERSEER_PUBLIC_IP` - Your current public IP address
-
-### Custom Environment Variables
-
-The most powerful feature is defining **arbitrary custom environment variables** that get included
-in your dotenv exports. This enables endless customization and integration possibilities.
-
-**Define variables in `environment {}` blocks:**
-
-```kdl
-context "home" {
-  display_name "Home"
-  location "hq"
-
-  environment {
-    TRUST_LEVEL "high"
-    ALLOW_SSH "true"
-    VPN_REQUIRED "false"
-    OVERSEER_CONTEXT_COLOR "#00aa00"
-  }
-
-  conditions {
-    public_ip "123.45.67.89"
-  }
-
-  actions {
-    connect "homelab"
-    disconnect "office-vpn"
-  }
-}
-
-context "office" {
-  display_name "Office"
-
-  environment {
-    TRUST_LEVEL "medium"
-    OVERSEER_CONTEXT_COLOR "#3a579a"
-    VPN_REQUIRED "true"
-  }
-
-  conditions {
-    public_ip "98.76.54.0/24"
-  }
-
-  actions {
-    connect "office-vpn"
-  }
-}
-
-context "untrusted" {
-  display_name "Untrusted"
-
-  environment {
-    TRUST_LEVEL "low"
-    ALLOW_SSH "false"
-    OVERSEER_CONTEXT_COLOR "#aa0000"
-  }
-
-  actions {
-    connect "vpn-tunnel"
-    disconnect "homelab"
-  }
-}
-
-location "hq" {
-  display_name "HQ"
-
-  environment {
-    BUILDING "headquarters"
-    FLOOR "3"
-    DESK "42"
-  }
-
-  conditions {
-    public_ip "192.168.1.0/24"
-  }
-}
-```
-
-**Variable merging:** When a context has a location, environment variables are merged with
-**context variables taking precedence** over location variables.
-
-### Dotenv Export Format
-
-The `dotenv` export includes both standard Overseer variables and your custom environment variables:
-
-```bash
-# Standard Overseer variables
-OVERSEER_CONTEXT="home"
-OVERSEER_CONTEXT_DISPLAY_NAME="Home"
-OVERSEER_LOCATION="hq"
-OVERSEER_LOCATION_DISPLAY_NAME="HQ"
-OVERSEER_PUBLIC_IP="185.15.72.56"
-
-# Custom variables from context and location
-TRUST_LEVEL="high"
-ALLOW_SSH="true"
-VPN_REQUIRED="false"
-OVERSEER_CONTEXT_COLOR="#00aa00"
-BUILDING="headquarters"
-FLOOR="3"
-DESK="42"
-```
-
-### Export Update Triggers
-
-Exports are automatically updated when:
-
-* **Context changes** - You move to a different location/network
-* **Config reloads** - Config file changes are detected (even if context stays the same)
-* **Network changes** - Network state changes detected by the system
-* **Daemon startup** - Initial context detection
-
-All exports use **atomic writes** (temp file + rename) to ensure readers never see partial data.
-
-### Integration Examples
-
-**Shell script integration:**
-
-```bash
-#!/bin/bash
-# Source the dotenv file to access variables
-source ~/.local/var/overseer.env
-
-if [ "$OVERSEER_CONTEXT" = "home" ]; then
-  echo "Welcome home! Trust level: $TRUST_LEVEL"
-
-  if [ "$ALLOW_SSH" = "true" ]; then
-    echo "SSH access enabled"
-  fi
-fi
-```
-
-**Shell prompt with context:**
-
-```bash
-# In your .bashrc or .zshrc
-PS1='[$(cat ~/.local/var/context.txt)] $ '
-```
-
-**Colored status bar indicator:**
-
-```bash
-#!/bin/bash
-source ~/.local/var/overseer.env
-
-# Convert hex color to RGB for terminal
-echo -e "\033[48;2;${OVERSEER_CONTEXT_COLOR}m ${OVERSEER_CONTEXT_DISPLAY_NAME} \033[0m"
-```
-
-**Home Assistant integration:**
-
-```yaml
-# Monitor context file
-sensor:
-  - platform: file
-    name: "Network Context"
-    file_path: "/home/user/.local/var/context.txt"
-
-# Monitor location
-sensor:
-  - platform: file
-    name: "Network Location"
-    file_path: "/home/user/.local/var/location.txt"
-
-# Create automations based on context changes
-automation:
-  - alias: "Arrived Home"
-    trigger:
-      platform: state
-      entity_id: sensor.network_context
-      to: "home"
-    action:
-      service: script.welcome_home
-```
-
-**Conditional execution script:**
-
-```bash
-#!/bin/bash
-CONTEXT=$(cat ~/.local/var/context.txt)
-
-case $CONTEXT in
-  home)
-    echo "Home detected - syncing files to NAS"
-    rsync -av ~/Documents/ nas:/backup/
-    ;;
-  office)
-    echo "Office detected - connecting to internal services"
-    /usr/local/bin/connect-office-services
-    ;;
-  untrusted)
-    echo "Untrusted network - enabling VPN"
-    /usr/local/bin/enable-vpn
-    ;;
-esac
-```
-
-**tmux/status bar integration:**
-
-```bash
-# In your .tmux.conf
-set -g status-right '#[fg=white,bg=blue] #(cat ~/.local/var/context.txt) #[default]'
-```
-
-### Complete Configuration Example
-
-```kdl
-# Export configuration
-exports {
-  dotenv "~/.local/var/overseer.env"
-  context "~/.local/var/context.txt"
-  location "~/.local/var/location.txt"
-}
-
-# Location definitions (shared conditions)
-location "hq" {
-  display_name "HQ"
-
-  environment {
-    BUILDING "headquarters"
-    FLOOR "3"
-  }
-
-  conditions {
-    public_ip "192.168.1.0/24"
-  }
-}
-
-location "home-network" {
-  display_name "Home Network"
-
-  environment {
-    NETWORK_TYPE "residential"
-  }
-
-  conditions {
-    public_ip "10.0.0.0/8"
-  }
-}
-
-# Context definitions (evaluated in order)
-context "home" {
-  display_name "Home"
-  location "home-network"
-
-  environment {
-    TRUST_LEVEL "high"
-    ALLOW_SSH "true"
-    VPN_REQUIRED "false"
-    OVERSEER_CONTEXT_COLOR "#00aa00"
-  }
-
-  conditions {
-    public_ip "123.45.67.89"
-  }
-
-  actions {
-    connect "homelab"
-    disconnect "office-vpn"
-  }
-}
-
-context "office" {
-  display_name "Office"
-  location "hq"
-
-  environment {
-    TRUST_LEVEL "high"
-    ALLOW_SSH "true"
-    VPN_REQUIRED "false"
-    OVERSEER_CONTEXT_COLOR "#3a579a"
-  }
-
-  conditions {
-    public_ip "98.76.54.0/24"
-  }
-
-  actions {
-    connect "office-vpn"
-    disconnect "homelab"
-  }
-}
-
-context "untrusted" {
-  display_name "Untrusted Network"
-
-  environment {
-    TRUST_LEVEL "low"
-    ALLOW_SSH "false"
-    VPN_REQUIRED "true"
-    OVERSEER_CONTEXT_COLOR "#aa0000"
-  }
-
-  actions {
-    connect "secure-vpn"
-    disconnect "homelab"
-    disconnect "office-vpn"
-  }
-}
-```
+4. Configure automatic context-based connections by editing `~/.config/overseer/config.kdl`
 
 ## Commands
 
+### Daemon Management
+
+| Command | Description |
+|---------|-------------|
+| `overseer start` | Start the daemon in background |
+| `overseer stop` | Stop the daemon and disconnect all tunnels |
+| `overseer restart` | Cold restart (reconnects tunnels based on context) |
+| `overseer reload` | Hot reload config (preserves active tunnels) |
+| `overseer daemon` | Run daemon in foreground (for debugging) |
+
 ### Tunnel Management
 
-```sh
-# Connect a tunnel (daemon starts automatically if not running)
-overseer connect <ssh-alias>
-overseer c <ssh-alias>  # alias for 'connect'
+| Command | Aliases | Description |
+|---------|---------|-------------|
+| `overseer connect <alias>` | `c` | Connect to an SSH host |
+| `overseer disconnect [alias]` | `d` | Disconnect tunnel (or all if no alias) |
+| `overseer reconnect <alias>` | `r` | Reconnect a tunnel |
 
-# Disconnect a specific tunnel
-overseer disconnect <ssh-alias>
-overseer d <ssh-alias>  # alias for 'disconnect'
+### Status & Information
 
-# Disconnect all tunnels and shutdown daemon
-overseer quit
-
-# View tunnel status
-overseer status
-
-# JSON output (useful for scripting)
-overseer status -F json
-```
+| Command | Aliases | Description |
+|---------|---------|-------------|
+| `overseer status` | `s`, `list`, `ls`, `context`, `ctx` | Show context, sensors, and tunnels |
+| `overseer logs` | `log` | Stream daemon logs in real-time |
+| `overseer version` | | Show version information |
 
 ### Password Management
 
-```sh
-# Store password for an SSH host
-overseer password set <ssh-alias>
+| Command | Description |
+|---------|-------------|
+| `overseer password set <alias>` | Store password in system keyring |
+| `overseer password delete <alias>` | Delete stored password |
+| `overseer password list` | List hosts with stored passwords |
 
-# List hosts with stored passwords
-overseer password list
+### Utility Commands
 
-# Delete stored password
-overseer password delete <ssh-alias>
+| Command | Description |
+|---------|-------------|
+| `overseer reset` | Reset retry counters for reconnecting tunnels |
+| `overseer completion` | Generate shell completion scripts |
+
+## Global Flags
+
+```plain
+--config-path <path>  Config directory (default: ~/.config/overseer)
+-v, --verbose         Increase verbosity (repeat for more: -vvv)
+-h, --help            Show help
 ```
 
-### Version and Help
+## Configuration
 
-```sh
-# Check version (shows both client and daemon versions)
-overseer version
+Overseer uses [KDL](https://kdl.dev) format for configuration. The config file is located at `~/.config/overseer/config.kdl`.
 
-# Get help
-overseer help
-overseer --help
+### Global Settings
 
-# Command-specific help
-overseer connect --help
+```kdl
+verbose 0
+
+ssh {
+  server_alive_interval 15    // Keepalive interval in seconds
+  server_alive_count_max 3    // Exit after N failed keepalives
+  reconnect_enabled true      // Enable auto-reconnect
+  initial_backoff "1s"        // First retry delay
+  max_backoff "5m"            // Maximum retry delay
+  backoff_factor 2            // Exponential backoff multiplier
+  max_retries 10              // Give up after N attempts
+}
+
+exports {
+  dotenv "/path/to/overseer.env"    // Export context as env file
+  context "/path/to/context.txt"    // Export context name
+  location "/path/to/location.txt"  // Export location name
+  public_ip "/path/to/public_ip.txt" // Export public IP
+  preferred_ip "ipv4"               // Preferred IP version (ipv4 or ipv6)
+}
+```
+
+### Defining Locations
+
+Locations represent physical or network locations detected by sensors:
+
+```kdl
+location "home" {
+  display_name "Home Network"
+
+  conditions {
+    public_ip "203.0.113.42"        // Match specific IP
+    public_ip "198.51.100.0/24"     // Or CIDR range
+  }
+
+  environment {
+    LOCATION_TYPE "residential"     // Custom env vars to export
+  }
+}
+
+location "office" {
+  display_name "Office Network"
+
+  conditions {
+    env "HOSTNAME" "work-laptop"    // Match environment variable
+  }
+}
+```
+
+### Defining Contexts
+
+Contexts group locations and define actions to take:
+
+```kdl
+context "trusted" {
+  display_name "Trusted Network"
+
+  // Reference one or more locations
+  location "home"
+  location "office"
+
+  // Or use direct conditions
+  conditions {
+    public_ip "1.2.3.4"
+  }
+
+  environment {
+    TRUST_LEVEL "high"
+  }
+
+  actions {
+    connect "home-lab"      // Tunnels to connect in this context
+    connect "dev-server"
+    disconnect "vpn"        // Tunnels to disconnect
+  }
+}
+
+context "untrusted" {
+  display_name "Public Network"
+  default true              // Fallback context when no other matches
+
+  actions {
+    connect "vpn"
+    disconnect "home-lab"
+  }
+}
+```
+
+## Sensors
+
+Overseer uses sensors to detect your current environment:
+
+| Sensor | Type | Description |
+|--------|------|-------------|
+| `public_ipv4` | string | Your public IPv4 address |
+| `public_ipv6` | string | Your public IPv6 address |
+| `tcp` | boolean | Network connectivity status |
+| `online` | boolean | General online status |
+| `env:<VAR>` | string | Environment variable value |
+| `context` | string | Current security context |
+| `location` | string | Current location |
+
+### Condition Types
+
+Use these in `conditions` blocks:
+
+- `public_ip "<ip>"` - Match IP address or CIDR range
+- `online <true/false>` - Check online status
+- `env "<VAR>" "<value>"` - Match environment variable
+
+## Exports
+
+Overseer can export context information to files for integration with other tools, scripts, or shell
+prompts. Configure exports in the `exports` block:
+
+```kdl
+exports {
+  dotenv "~/.config/overseer/overseer.env"  // Shell-sourceable env file
+  context "~/.config/overseer/context.txt"  // Context name only
+  location "~/.config/overseer/location.txt" // Location name only
+  public_ip "~/.config/overseer/ip.txt"     // Public IP only
+  preferred_ip "ipv4"                        // Which IP to use: ipv4 or ipv6
+}
+```
+
+### Export Types
+
+| Type | Description | Example Content |
+|------|-------------|-----------------|
+| `dotenv` | Shell-sourceable file with all variables | `export OVERSEER_CONTEXT="home"` |
+| `context` | Plain text context name | `home` |
+| `location` | Plain text location name | `hq` |
+| `public_ip` | Plain text IP address | `203.0.113.42` |
+
+### Dotenv Variables
+
+The `dotenv` export includes these variables:
+
+| Variable | Description |
+|----------|-------------|
+| `OVERSEER_CONTEXT` | Current context name |
+| `OVERSEER_CONTEXT_DISPLAY_NAME` | Context display name |
+| `OVERSEER_LOCATION` | Current location name |
+| `OVERSEER_LOCATION_DISPLAY_NAME` | Location display name |
+| `OVERSEER_PUBLIC_IP` | Preferred public IP (based on `preferred_ip`) |
+| `OVERSEER_PUBLIC_IPV4` | Public IPv4 address |
+| `OVERSEER_PUBLIC_IPV6` | Public IPv6 address |
+| Custom variables | Any variables defined in context/location `environment` blocks |
+
+### Shell Integration
+
+Source the dotenv file in your shell to access overseer context:
+
+**Bash/Zsh** (`~/.bashrc` or `~/.zshrc`):
+
+```bash
+# Source overseer environment if available
+[[ -f ~/.config/overseer/overseer.env ]] && source ~/.config/overseer/overseer.env
+```
+
+**Fish** (`~/.config/fish/config.fish`):
+
+```fish
+# Source overseer environment if available
+test -f ~/.config/overseer/overseer.env && source ~/.config/overseer/overseer.env
+```
+
+Use in your prompt or scripts:
+
+```bash
+# Show context in prompt
+PS1="[$OVERSEER_CONTEXT] \w $ "
+
+# Conditional behavior based on context
+if [[ "$OVERSEER_CONTEXT" == "work" ]]; then
+  export http_proxy="http://proxy.corp:8080"
+fi
+```
+
+## Examples
+
+### Basic Home/Away Setup
+
+```kdl
+location "home" {
+  conditions {
+    public_ip "203.0.113.42"
+  }
+}
+
+context "home" {
+  location "home"
+  actions {
+    connect "home-server"
+  }
+}
+
+context "away" {
+  default true
+  actions {
+    connect "vpn"
+    disconnect "home-server"
+  }
+}
+```
+
+### Multi-Location with VPN
+
+```kdl
+location "home" {
+  conditions {
+    public_ip "203.0.113.0/24"
+  }
+}
+
+location "office" {
+  conditions {
+    public_ip "198.51.100.0/24"
+  }
+}
+
+context "corporate" {
+  location "office"
+  actions {
+    connect "corp-gateway"
+    connect "dev-cluster"
+  }
+}
+
+context "remote-work" {
+  location "home"
+  actions {
+    connect "corp-vpn"
+    connect "dev-cluster"
+  }
+}
+
+context "public" {
+  default true
+  actions {
+    connect "secure-vpn"
+  }
+}
+```
+
+## Status Command
+
+View current context and tunnel status:
+
+```bash
+# Text output (default)
+overseer status
+
+# JSON output for scripting
+overseer status --format json
+
+# Show more events
+overseer status -n 50
+```
+
+## Shell Completion
+
+Generate completion scripts for your shell:
+
+```bash
+# Bash
+overseer completion bash > /etc/bash_completion.d/overseer
+
+# Zsh
+overseer completion zsh > "${fpath[1]}/_overseer"
+
+# Fish
+overseer completion fish > ~/.config/fish/completions/overseer.fish
 ```
 
 ## License
