@@ -461,8 +461,8 @@ func TestConditionFromMap(t *testing.T) {
 				"public_ip": {"192.168.1.100"},
 			},
 			sensors: map[string]Sensor{
-				"public_ip": &MockSensor{
-					name:       "public_ip",
+				"public_ipv4": &MockSensor{
+					name:       "public_ipv4",
 					sensorType: SensorTypeString,
 					value:      "192.168.1.100",
 				},
@@ -475,8 +475,8 @@ func TestConditionFromMap(t *testing.T) {
 				"public_ip": {"192.168.1.100", "10.0.0.1"},
 			},
 			sensors: map[string]Sensor{
-				"public_ip": &MockSensor{
-					name:       "public_ip",
+				"public_ipv4": &MockSensor{
+					name:       "public_ipv4",
 					sensorType: SensorTypeString,
 					value:      "10.0.0.1",
 				},
@@ -490,8 +490,8 @@ func TestConditionFromMap(t *testing.T) {
 				"env:HOME":  {"yes"},
 			},
 			sensors: map[string]Sensor{
-				"public_ip": &MockSensor{
-					name:       "public_ip",
+				"public_ipv4": &MockSensor{
+					name:       "public_ipv4",
 					sensorType: SensorTypeString,
 					value:      "192.168.1.50",
 				},
@@ -507,8 +507,8 @@ func TestConditionFromMap(t *testing.T) {
 			name: "Empty conditions (always true)",
 			conditions: map[string][]string{},
 			sensors: map[string]Sensor{
-				"public_ip": &MockSensor{
-					name:       "public_ip",
+				"public_ipv4": &MockSensor{
+					name:       "public_ipv4",
 					sensorType: SensorTypeString,
 					value:      "1.2.3.4",
 				},

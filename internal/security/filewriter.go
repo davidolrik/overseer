@@ -55,7 +55,9 @@ type ExportData struct {
 	ContextDisplayName  string
 	Location            string
 	LocationDisplayName string
-	PublicIP            string
+	PublicIP            string            // Preferred IP (based on config)
+	PublicIPv4          string            // IPv4 address
+	PublicIPv6          string            // IPv6 address
 	CustomEnvironment   map[string]string // Custom environment variables from context and location
 }
 
@@ -93,6 +95,12 @@ func (ew *ExportWriter) Write(data ExportData, varsToUnset []string) error {
 		}
 		if data.PublicIP != "" {
 			envVars["OVERSEER_PUBLIC_IP"] = data.PublicIP
+		}
+		if data.PublicIPv4 != "" {
+			envVars["OVERSEER_PUBLIC_IPV4"] = data.PublicIPv4
+		}
+		if data.PublicIPv6 != "" {
+			envVars["OVERSEER_PUBLIC_IPV6"] = data.PublicIPv6
 		}
 
 		// Add custom environment variables

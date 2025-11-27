@@ -161,6 +161,17 @@ func NewAnyCondition(conditions ...Condition) *GroupCondition {
 	}
 }
 
+// mapConditionKeyToSensor maps condition keys from config to actual sensor names
+// This allows users to use "public_ip" in config while the actual sensor is "public_ipv4"
+func mapConditionKeyToSensor(conditionKey string) string {
+	switch conditionKey {
+	case "public_ip":
+		return "public_ipv4" // Map config key to IPv4 sensor
+	default:
+		return conditionKey
+	}
+}
+
 // ConditionFromMap creates conditions from a map[string][]string format
 // This provides backward compatibility with simple condition format
 func ConditionFromMap(conditions map[string][]string) Condition {
@@ -172,10 +183,13 @@ func ConditionFromMap(conditions map[string][]string) Condition {
 	// Convert map to conditions
 	var allConditions []Condition
 
-	for sensorName, patterns := range conditions {
+	for conditionKey, patterns := range conditions {
 		if len(patterns) == 0 {
 			continue
 		}
+
+		// Map condition key to actual sensor name
+		sensorName := mapConditionKeyToSensor(conditionKey)
 
 		if len(patterns) == 1 {
 			// Single pattern, create sensor condition directly

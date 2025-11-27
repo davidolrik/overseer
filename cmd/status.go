@@ -176,9 +176,11 @@ func displayContextBanner(data interface{}) {
 	// Display compact context info
 	fmt.Printf("%s%s%s%s", location, colorBoldCyan, status.Context, colorReset)
 
-	// Show public IP if available
-	if ip, ok := status.Sensors["public_ip"]; ok && ip != "" {
-		fmt.Printf(" (Public IP: %s)", ip)
+	// Show public IP if available (prefer IPv4, fallback to IPv6)
+	if ip, ok := status.Sensors["public_ipv4"]; ok && ip != "" && ip != "169.254.0.0" {
+		fmt.Printf(" (IP: %s)", ip)
+	} else if ip, ok := status.Sensors["public_ipv6"]; ok && ip != "" && ip != "fe80::" {
+		fmt.Printf(" (IP: %s)", ip)
 	}
 
 	fmt.Println()
@@ -243,10 +245,16 @@ func displayContextInfo(data interface{}) {
 		fmt.Printf("%sContext Age:%s %s\n", colorGray, colorReset, status.Uptime)
 	}
 
-	// Display all sensors
+	// Display all sensors (sorted by name)
 	if len(status.Sensors) > 0 {
 		fmt.Printf("\n%sSensors:%s\n", colorBold, colorReset)
-		for key, value := range status.Sensors {
+		sensorKeys := make([]string, 0, len(status.Sensors))
+		for key := range status.Sensors {
+			sensorKeys = append(sensorKeys, key)
+		}
+		sort.Strings(sensorKeys)
+		for _, key := range sensorKeys {
+			value := status.Sensors[key]
 			// Format the display value
 			displayValue := value
 			if value == "" {

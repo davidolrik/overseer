@@ -22,7 +22,7 @@ func parseConditionNode(node *document.Node) (security.Condition, error) {
 	case "all":
 		return parseGroupCondition(node, "all")
 	case "public_ip":
-		return parseSensorCondition(node, "public_ip")
+		return parseSensorCondition(node, "public_ipv4") // Config uses public_ip, sensor is public_ipv4
 	case "env":
 		return parseEnvCondition(node)
 	case "online":

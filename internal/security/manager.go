@@ -21,6 +21,7 @@ type Manager struct {
 	stopped        bool
 	dbLogger       *DatabaseLogger // Database logger for sensor changes
 	trackedEnvVars []string        // All env var names exported by contexts/locations (for clean unset)
+	preferredIP    string          // Preferred IP version for OVERSEER_PUBLIC_IP: "ipv4" or "ipv6"
 
 	// Callbacks
 	onContextChange func(from, to string, rule *Rule)
@@ -40,6 +41,7 @@ type ManagerConfig struct {
 	Rules           []Rule
 	Locations       map[string]Location
 	Exports         []ExportConfig
+	PreferredIP     string // "ipv4" (default) or "ipv6"
 	CheckOnStartup  bool
 	OnContextChange func(from, to string, rule *Rule)
 	Logger          *slog.Logger
@@ -54,9 +56,15 @@ func NewManager(config ManagerConfig) (*Manager, error) {
 	// Create sensor map
 	sensors := make(map[string]Sensor)
 
-	// Add core active sensors
-	ipSensor := NewIPSensor()
-	sensors[ipSensor.Name()] = ipSensor
+	// Add core active sensors - both IPv4 and IPv6
+	ipv4Sensor := NewIPv4Sensor()
+	ipv6Sensor := NewIPv6Sensor()
+	sensors[ipv4Sensor.Name()] = ipv4Sensor
+	sensors[ipv6Sensor.Name()] = ipv6Sensor
+
+	// Add TCP sensor - provides reliable connectivity check via TCP connections
+	tcpSensor := NewTCPSensor()
+	sensors[tcpSensor.Name()] = tcpSensor
 
 	// Add passive sensors (Context, Location, Online)
 	contextSensor := NewContextSensor()
@@ -67,8 +75,10 @@ func NewManager(config ManagerConfig) (*Manager, error) {
 	sensors[locationSensor.Name()] = locationSensor
 	sensors[onlineSensor.Name()] = onlineSensor
 
-	// Wire up Online sensor to listen to public_ip changes
-	ipSensor.Subscribe(onlineSensor)
+	// Wire up Online sensor to listen to TCP and IPv4 sensor changes
+	// TCP takes precedence over public_ip for online status determination
+	tcpSensor.Subscribe(onlineSensor)
+	ipv4Sensor.Subscribe(onlineSensor)
 
 	// Extract all unique environment variable names from rules and locations
 	envVars := make(map[string]bool)
@@ -152,6 +162,12 @@ func NewManager(config ManagerConfig) (*Manager, error) {
 	// Sort alphabetically for deterministic output
 	sort.Strings(trackedVarNames)
 
+	// Set preferred IP version, default to ipv4
+	preferredIP := config.PreferredIP
+	if preferredIP == "" {
+		preferredIP = "ipv4"
+	}
+
 	m := &Manager{
 		context:         NewSecurityContext(),
 		ruleEngine:      NewRuleEngine(config.Rules, config.Locations),
@@ -163,6 +179,7 @@ func NewManager(config ManagerConfig) (*Manager, error) {
 		exportWriters:   make([]*ExportWriter, 0),
 		checkingContext: false,
 		trackedEnvVars:  trackedVarNames,
+		preferredIP:     preferredIP,
 	}
 
 	// Subscribe to sensors that should trigger context re-evaluation
@@ -251,10 +268,45 @@ func (m *Manager) checkContext(trigger string) error {
 	ctx := context.Background()
 
 	// Check all active sensors (skip passive sensors like context/location/online)
+	// Check TCP FIRST before IP sensors so that online status precedence works correctly
+	prioritySensors := []string{"tcp", "public_ipv4", "public_ipv6"}
+	checkedSensors := make(map[string]bool)
+
+	// First pass: check priority sensors in order
+	for _, sensorName := range prioritySensors {
+		sensor, exists := m.sensors[sensorName]
+		if !exists {
+			continue
+		}
+		checkedSensors[sensorName] = true
+
+		value, err := sensor.Check(ctx)
+		if err != nil {
+			m.logger.Warn("Sensor check failed",
+				"sensor", sensor.Name(),
+				"error", err)
+			continue
+		}
+
+		m.logger.Debug("Sensor reading",
+			"sensor", sensor.Name(),
+			"type", value.Type,
+			"value", value.String())
+
+		// Update sensor value in legacy context
+		m.context.UpdateSensor(value)
+	}
+
+	// Second pass: check remaining active sensors
 	for _, sensor := range m.sensors {
+		// Skip already checked sensors
+		if checkedSensors[sensor.Name()] {
+			continue
+		}
+
 		// Skip passive sensors - they are set by rule evaluation or other sensors
 		// - context/location: set by rule evaluation
-		// - online: set by public_ip sensor notifications
+		// - online: set by ping/public_ip sensor notifications
 		if sensor.Name() == "context" || sensor.Name() == "location" || sensor.Name() == "online" {
 			continue
 		}
@@ -328,12 +380,24 @@ func (m *Manager) checkContext(trigger string) error {
 	if changed || forceExport {
 		// Write to all export files
 		if len(m.exportWriters) > 0 {
-			// Get public IP sensor value for exports (use cached value)
-			publicIP := ""
-			if ipSensor, exists := m.sensors["public_ip"]; exists {
-				if lastValue := ipSensor.GetLastValue(); lastValue != nil {
-					publicIP = lastValue.String()
+			// Get public IP sensor values for exports (use cached values)
+			publicIPv4 := ""
+			publicIPv6 := ""
+			if ipv4Sensor, exists := m.sensors["public_ipv4"]; exists {
+				if lastValue := ipv4Sensor.GetLastValue(); lastValue != nil {
+					publicIPv4 = lastValue.String()
 				}
+			}
+			if ipv6Sensor, exists := m.sensors["public_ipv6"]; exists {
+				if lastValue := ipv6Sensor.GetLastValue(); lastValue != nil {
+					publicIPv6 = lastValue.String()
+				}
+			}
+
+			// Determine preferred IP based on config
+			publicIP := publicIPv4
+			if m.preferredIP == "ipv6" {
+				publicIP = publicIPv6
 			}
 
 			// Get display names and environment variables
@@ -373,6 +437,8 @@ func (m *Manager) checkContext(trigger string) error {
 				Location:            result.Location,
 				LocationDisplayName: locationDisplayName,
 				PublicIP:            publicIP,
+				PublicIPv4:          publicIPv4,
+				PublicIPv6:          publicIPv6,
 				CustomEnvironment:   customEnv,
 			}
 

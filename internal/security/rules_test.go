@@ -174,15 +174,15 @@ func TestRuleEngine_EvaluateWithMultipleIPs(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Create mock sensor
+			// Create mock sensor - config uses "public_ip" but sensor is "public_ipv4"
 			mockSensor := &MockSensor{
-				name:      "public_ip",
+				name:       "public_ipv4",
 				sensorType: SensorTypeString,
-				value:     tt.sensorIP,
+				value:      tt.sensorIP,
 			}
 
 			sensors := map[string]Sensor{
-				"public_ip": mockSensor,
+				"public_ipv4": mockSensor,
 			}
 
 			result := re.Evaluate(context.Background(), sensors)

@@ -23,6 +23,7 @@ type Configuration struct {
 	ConfigPath        string                  // Directory containing config files
 	Verbose           int                     // Verbosity level
 	Exports           []ExportConfig          // Export configurations
+	PreferredIP       string                  // Preferred IP version for OVERSEER_PUBLIC_IP: "ipv4" (default) or "ipv6"
 	SSH               SSHConfig               // SSH connection settings (including reconnect)
 	Locations         map[string]*Location    // Location definitions keyed by location name
 	Contexts          []*ContextRule          // Context rules in evaluation order (first match wins)
@@ -78,10 +79,11 @@ type kdlConfig struct {
 }
 
 type kdlExports struct {
-	Dotenv   string `kdl:"dotenv"`
-	Context  string `kdl:"context"`
-	Location string `kdl:"location"`
-	PublicIP string `kdl:"public_ip"`
+	Dotenv      string `kdl:"dotenv"`
+	Context     string `kdl:"context"`
+	Location    string `kdl:"location"`
+	PublicIP    string `kdl:"public_ip"`
+	PreferredIP string `kdl:"preferred_ip"` // "ipv4" (default) or "ipv6"
 }
 
 type kdlSSH struct {
@@ -260,8 +262,9 @@ func LoadConfig(filename string) (*Configuration, error) {
 	// Convert to our clean Configuration struct
 	cfg := &Configuration{
 		Verbose:              kdlCfg.Verbose,
-		CheckOnStartup:       true,  // Default
-		CheckOnNetworkChange: true,  // Default
+		PreferredIP:          "ipv4", // Default to IPv4
+		CheckOnStartup:       true,   // Default
+		CheckOnNetworkChange: true,   // Default
 		Locations:            make(map[string]*Location),
 		Contexts:             make([]*ContextRule, 0),
 		Exports:              make([]ExportConfig, 0),
@@ -280,6 +283,10 @@ func LoadConfig(filename string) (*Configuration, error) {
 		}
 		if kdlCfg.Exports.PublicIP != "" {
 			cfg.Exports = append(cfg.Exports, ExportConfig{Type: "public_ip", Path: kdlCfg.Exports.PublicIP})
+		}
+		// Set preferred IP version (default is ipv4)
+		if kdlCfg.Exports.PreferredIP == "ipv6" {
+			cfg.PreferredIP = "ipv6"
 		}
 	}
 

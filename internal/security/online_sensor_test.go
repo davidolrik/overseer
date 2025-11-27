@@ -8,7 +8,7 @@ import (
 func TestOnlineSensor_ReactsToIPChanges(t *testing.T) {
 	// Create sensors
 	ipSensor := &MockSensor{
-		name:       "public_ip",
+		name:       "public_ipv4",
 		sensorType: SensorTypeString,
 		value:      "192.168.1.100",
 	}
@@ -117,7 +117,7 @@ func TestOnlineSensor_IgnoresOtherSensors(t *testing.T) {
 
 func TestOnlineSensor_NotifiesListeners(t *testing.T) {
 	ipSensor := &MockSensor{
-		name:       "public_ip",
+		name:       "public_ipv4",
 		sensorType: SensorTypeString,
 		value:      "192.168.1.100",
 	}
