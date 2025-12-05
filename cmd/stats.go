@@ -1,0 +1,954 @@
+package cmd
+
+import (
+	"fmt"
+	"hash/fnv"
+	"os"
+	"path/filepath"
+	"time"
+
+	"github.com/spf13/cobra"
+	"overseer.olrik.dev/internal/db"
+)
+
+// ANSI color codes
+const (
+	colorReset     = "\033[0m"
+	colorBold      = "\033[1m"
+	colorDim       = "\033[2m"
+	colorRed       = "\033[31m"
+	colorGreen     = "\033[32m"
+	colorYellow    = "\033[33m"
+	colorBlue      = "\033[34m"
+	colorMagenta   = "\033[35m"
+	colorCyan      = "\033[36m"
+	colorWhite     = "\033[37m"
+	colorGray      = "\033[90m"
+	colorBoldGreen = "\033[1;32m"
+	colorBoldRed   = "\033[1;31m"
+)
+
+// Predefined vibrant 24-bit colors for IPs (easily distinguishable)
+// Avoids cyan, red, green, yellow which are used in UI indicators
+var ipColors = []struct{ r, g, b uint8 }{
+	{255, 107, 107}, // Coral
+	{199, 125, 255}, // Purple
+	{255, 190, 118}, // Peach/orange
+	{116, 185, 255}, // Sky blue
+	{255, 234, 167}, // Cream yellow
+	{162, 155, 254}, // Lavender
+	{255, 159, 243}, // Pink
+	{255, 165, 2},   // Orange
+	{255, 127, 80},  // Coral orange
+	{218, 112, 214}, // Orchid
+	{255, 182, 193}, // Light pink
+	{244, 164, 96},  // Sandy brown
+}
+
+// ipColorCache stores assigned colors for IPs
+var ipColorCache = make(map[string]string)
+var ipColorIndex = 0
+
+// getIPColor returns a consistent 24-bit color for an IP address
+func getIPColor(ip string) string {
+	if ip == "" || ip == "unknown" {
+		return colorGray
+	}
+
+	// Check cache first
+	if color, exists := ipColorCache[ip]; exists {
+		return color
+	}
+
+	// Assign next predefined color, or generate one if we run out
+	var r, g, b uint8
+	if ipColorIndex < len(ipColors) {
+		c := ipColors[ipColorIndex]
+		r, g, b = c.r, c.g, c.b
+		ipColorIndex++
+	} else {
+		// Generate color from hash for additional IPs
+		h := fnv.New32a()
+		h.Write([]byte(ip))
+		hash := h.Sum32()
+
+		// Use golden ratio to spread hue values
+		hue := float64(hash%360) / 360.0
+		r, g, b = hslToRGB(hue, 0.7, 0.6)
+	}
+
+	// Create 24-bit color escape sequence
+	color := fmt.Sprintf("\033[38;2;%d;%d;%dm", r, g, b)
+	ipColorCache[ip] = color
+	return color
+}
+
+// hslToRGB converts HSL to RGB (h: 0-1, s: 0-1, l: 0-1)
+func hslToRGB(h, s, l float64) (r, g, b uint8) {
+	var fR, fG, fB float64
+
+	if s == 0 {
+		fR, fG, fB = l, l, l
+	} else {
+		var q float64
+		if l < 0.5 {
+			q = l * (1 + s)
+		} else {
+			q = l + s - l*s
+		}
+		p := 2*l - q
+		fR = hueToRGB(p, q, h+1.0/3.0)
+		fG = hueToRGB(p, q, h)
+		fB = hueToRGB(p, q, h-1.0/3.0)
+	}
+
+	return uint8(fR * 255), uint8(fG * 255), uint8(fB * 255)
+}
+
+func hueToRGB(p, q, t float64) float64 {
+	if t < 0 {
+		t += 1
+	}
+	if t > 1 {
+		t -= 1
+	}
+	if t < 1.0/6.0 {
+		return p + (q-p)*6*t
+	}
+	if t < 1.0/2.0 {
+		return q
+	}
+	if t < 2.0/3.0 {
+		return p + (q-p)*(2.0/3.0-t)*6
+	}
+	return p
+}
+
+// OnlineSession represents a period of being online
+type OnlineSession struct {
+	Start    time.Time
+	End      time.Time
+	Duration time.Duration
+	IP       string // Public IP during this session
+}
+
+// IPStats holds statistics for a specific IP/network
+type IPStats struct {
+	IP            string
+	Sessions      []OnlineSession
+	TotalOnline   time.Duration
+	SessionCount  int
+	ShortSessions int // Sessions < 5 minutes
+}
+
+func NewStatsCommand() *cobra.Command {
+	var sinceStr string
+	var days int
+
+	statsCmd := &cobra.Command{
+		Use:     "stats",
+		Aliases: []string{"statistics", "stat"},
+		Short:   "Show connectivity statistics and session history",
+		Long: `Display statistics about online sessions and network quality.
+
+Shows all online sessions with their duration, helping identify network
+stability issues through patterns of frequent connects/disconnects.
+
+Examples:
+  overseer stats                     # Today only
+  overseer stats -s yesterday        # Just yesterday
+  overseer stats -s yesterday -d 2   # Yesterday and today
+  overseer stats -d 7                # Last 7 days
+  overseer stats -s 2025-12-01       # Just Dec 1st
+  overseer stats -s 2025-12-01 -d 3  # Dec 1-3`,
+		Args: cobra.NoArgs,
+		Run: func(cmd *cobra.Command, args []string) {
+			// If -d is specified but -s is not, go backwards from today
+			sinceChanged := cmd.Flags().Changed("since")
+			start, end, label := parseDateRange(sinceStr, days, sinceChanged)
+			runStats(start, end, label)
+		},
+	}
+
+	statsCmd.Flags().StringVarP(&sinceStr, "since", "s", "today", "Start date: today, yesterday, or YYYY-MM-DD")
+	statsCmd.Flags().IntVarP(&days, "days", "d", 1, "Number of days to include")
+
+	return statsCmd
+}
+
+// parseDateRange converts since flag and days into a date range
+func parseDateRange(sinceStr string, days int, sinceSpecified bool) (start, end time.Time, label string) {
+	now := time.Now()
+	startOfToday := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+
+	// If days > 1 but since wasn't specified, go backwards from today
+	if days > 1 && !sinceSpecified {
+		start = startOfToday.AddDate(0, 0, -(days - 1))
+		end = now
+		label = fmt.Sprintf("last %d days", days)
+		return start, end, label
+	}
+
+	// Parse the start date
+	switch sinceStr {
+	case "today", "":
+		start = startOfToday
+	case "yesterday":
+		start = startOfToday.AddDate(0, 0, -1)
+	default:
+		// Try to parse as date
+		if t, err := time.ParseInLocation("2006-01-02", sinceStr, now.Location()); err == nil {
+			start = time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, now.Location())
+		} else {
+			fmt.Fprintf(os.Stderr, "%sWarning:%s Invalid date '%s', using today%s\n", colorYellow, colorReset, sinceStr, colorReset)
+			start = startOfToday
+		}
+	}
+
+	// Calculate end date (start of the day after the last included day)
+	end = start.AddDate(0, 0, days)
+
+	// Don't go beyond now
+	if end.After(now) {
+		end = now
+	}
+
+	// Build label
+	if days == 1 {
+		if start.Equal(startOfToday) {
+			label = "today"
+		} else if start.Equal(startOfToday.AddDate(0, 0, -1)) {
+			label = "yesterday"
+		} else {
+			label = start.Format("Mon Jan 2")
+		}
+	} else {
+		endDay := start.AddDate(0, 0, days-1) // Last included day
+		if endDay.After(startOfToday) {
+			endDay = startOfToday
+		}
+		label = fmt.Sprintf("%s to %s (%d days)", start.Format("Jan 2"), endDay.Format("Jan 2"), days)
+	}
+
+	return start, end, label
+}
+
+func runStats(start, end time.Time, label string) {
+	// Open database directly
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%sError:%s Failed to get home directory: %v\n", colorRed, colorReset, err)
+		os.Exit(1)
+	}
+
+	dbPath := filepath.Join(homeDir, ".config", "overseer", "overseer.db")
+	database, err := db.Open(dbPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%sError:%s Failed to open database: %v\n", colorRed, colorReset, err)
+		os.Exit(1)
+	}
+	defer database.Close()
+
+	// Get online and IP sensor changes
+	onlineChanges, ipChanges, err := getSensorChanges(database, start, end)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%sError:%s Failed to query database: %v\n", colorRed, colorReset, err)
+		os.Exit(1)
+	}
+
+	if len(onlineChanges) == 0 {
+		fmt.Printf("%sNo online/offline events found%s\n", colorGray, colorReset)
+		return
+	}
+
+	// Parse into sessions with IP tracking
+	sessions := parseOnlineSessions(onlineChanges, ipChanges, start, end)
+
+	// Print header
+	fmt.Printf("%s%sConnectivity Statistics%s (%s)\n\n", colorBold, colorCyan, colorReset, label)
+
+	// Print overall summary
+	printSummary(sessions, start, end)
+
+	// Group sessions by IP and print per-network stats
+	ipStats := groupSessionsByIP(sessions, start, end)
+	if len(ipStats) > 1 {
+		fmt.Printf("\n%s%sNetwork Quality by IP:%s\n", colorBold, colorWhite, colorReset)
+		printIPStats(ipStats, start, end)
+	}
+
+	// Print sessions grouped by day
+	fmt.Printf("\n%s%sOnline Sessions:%s\n", colorBold, colorWhite, colorReset)
+	printSessions(sessions)
+
+	// Print overall network quality assessment
+	fmt.Println()
+	printNetworkQuality(sessions, start, end)
+}
+
+// getSensorChanges queries the database for online and IP sensor changes within a date range
+func getSensorChanges(database *db.DB, start, end time.Time) (online, ip []db.SensorChange, err error) {
+	// Get all sensor changes and filter
+	allChanges, err := database.GetRecentSensorChanges(10000)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// Changes come in descending order (most recent first)
+	// First pass: find the first offline event after query end (to know when ongoing sessions end)
+	var firstOfflineAfterEnd *db.SensorChange
+	for _, c := range allChanges {
+		if c.SensorName == "online" && !c.Timestamp.Before(end) {
+			if c.NewValue == "false" {
+				cc := c // Copy to avoid pointer issues
+				firstOfflineAfterEnd = &cc
+				// Keep looking - we want the earliest offline after end
+			}
+		}
+	}
+
+	var onlineChanges, ipChanges []db.SensorChange
+	for _, c := range allChanges {
+		if c.SensorName == "online" {
+			if c.Timestamp.Before(end) {
+				onlineChanges = append(onlineChanges, c)
+			}
+		} else if c.SensorName == "public_ipv4" {
+			if c.Timestamp.Before(end) {
+				ipChanges = append(ipChanges, c)
+			}
+		}
+	}
+
+	// If there's an ongoing session at query end, include the offline event that ends it
+	if firstOfflineAfterEnd != nil && len(onlineChanges) > 0 {
+		// Check if the most recent event before end is "online" (session ongoing)
+		if onlineChanges[0].NewValue == "true" {
+			onlineChanges = append([]db.SensorChange{*firstOfflineAfterEnd}, onlineChanges...)
+		}
+	}
+
+	// Reverse to get chronological order
+	for i, j := 0, len(onlineChanges)-1; i < j; i, j = i+1, j-1 {
+		onlineChanges[i], onlineChanges[j] = onlineChanges[j], onlineChanges[i]
+	}
+	for i, j := 0, len(ipChanges)-1; i < j; i, j = i+1, j-1 {
+		ipChanges[i], ipChanges[j] = ipChanges[j], ipChanges[i]
+	}
+
+	return onlineChanges, ipChanges, nil
+}
+
+// getIPForSession finds the IP that was active during a session
+// It looks at the session start time with a small window ahead since
+// the IP change often comes shortly after the online status change
+func getIPForSession(ipChanges []db.SensorChange, sessionStart, sessionEnd time.Time) string {
+	// Look for an IP change within 30 seconds after session start
+	lookAhead := sessionStart.Add(30 * time.Second)
+
+	var lastIP string
+	var foundInWindow bool
+
+	for _, c := range ipChanges {
+		// Track the last known IP before/at session start
+		if !c.Timestamp.After(sessionStart) {
+			if c.NewValue != "169.254.0.0" && c.NewValue != "" {
+				lastIP = c.NewValue
+			}
+		}
+		// Also check for IP within the look-ahead window
+		if c.Timestamp.After(sessionStart) && !c.Timestamp.After(lookAhead) {
+			if c.NewValue != "169.254.0.0" && c.NewValue != "" {
+				lastIP = c.NewValue
+				foundInWindow = true
+			}
+		}
+		// Stop if we're past the session end
+		if c.Timestamp.After(sessionEnd) {
+			break
+		}
+		// If we found IP in window, keep looking for better match during session
+		if foundInWindow && c.Timestamp.After(lookAhead) && !c.Timestamp.After(sessionEnd) {
+			if c.NewValue != "169.254.0.0" && c.NewValue != "" {
+				lastIP = c.NewValue
+			}
+		}
+	}
+
+	if lastIP == "" {
+		return "unknown"
+	}
+	return lastIP
+}
+
+// parseOnlineSessions converts online/offline events into sessions with IP tracking
+func parseOnlineSessions(onlineChanges, ipChanges []db.SensorChange, start, end time.Time) []OnlineSession {
+	var sessions []OnlineSession
+	var sessionStart time.Time
+	inSession := false
+
+	for _, c := range onlineChanges {
+		// Track state changes before our start time to know if we're in a session
+		if c.Timestamp.Before(start) {
+			if c.NewValue == "true" {
+				inSession = true
+				sessionStart = c.Timestamp // Preserve actual start time
+			} else {
+				inSession = false
+			}
+			continue
+		}
+
+		if c.NewValue == "true" && !inSession {
+			// Going online - start session
+			sessionStart = c.Timestamp
+			inSession = true
+		} else if c.NewValue == "false" && inSession {
+			// Going offline - end session
+			// Only include if session overlaps with query period
+			if !c.Timestamp.Before(start) {
+				ip := getIPForSession(ipChanges, sessionStart, c.Timestamp)
+				sessions = append(sessions, OnlineSession{
+					Start:    sessionStart,
+					End:      c.Timestamp,
+					Duration: c.Timestamp.Sub(sessionStart),
+					IP:       ip,
+				})
+			}
+			inSession = false
+		}
+	}
+
+	// If still online, add current session
+	if inSession {
+		sessionEnd := end
+		if end.After(time.Now()) {
+			sessionEnd = time.Now()
+		}
+		ip := getIPForSession(ipChanges, sessionStart, sessionEnd)
+		sessions = append(sessions, OnlineSession{
+			Start:    sessionStart,
+			End:      sessionEnd,
+			Duration: sessionEnd.Sub(sessionStart),
+			IP:       ip,
+		})
+	}
+
+	return sessions
+}
+
+// groupSessionsByIP groups sessions by their IP address
+func groupSessionsByIP(sessions []OnlineSession, start, end time.Time) []IPStats {
+	ipMap := make(map[string]*IPStats)
+
+	for _, s := range sessions {
+		ip := s.IP
+		if ip == "" {
+			ip = "unknown"
+		}
+
+		stats, exists := ipMap[ip]
+		if !exists {
+			stats = &IPStats{IP: ip}
+			ipMap[ip] = stats
+		}
+
+		// Clip session to query period for duration calculation
+		sessionStart := s.Start
+		sessionEnd := s.End
+		if sessionStart.Before(start) {
+			sessionStart = start
+		}
+		if sessionEnd.After(end) {
+			sessionEnd = end
+		}
+		clippedDuration := time.Duration(0)
+		if sessionEnd.After(sessionStart) {
+			clippedDuration = sessionEnd.Sub(sessionStart)
+		}
+
+		stats.Sessions = append(stats.Sessions, s)
+		stats.TotalOnline += clippedDuration
+		stats.SessionCount++
+		if clippedDuration < 5*time.Minute {
+			stats.ShortSessions++
+		}
+	}
+
+	// Convert map to slice and sort by total online time (descending)
+	var result []IPStats
+	for _, stats := range ipMap {
+		result = append(result, *stats)
+	}
+
+	// Sort by total online time descending
+	for i := 0; i < len(result)-1; i++ {
+		for j := i + 1; j < len(result); j++ {
+			if result[j].TotalOnline > result[i].TotalOnline {
+				result[i], result[j] = result[j], result[i]
+			}
+		}
+	}
+
+	return result
+}
+
+// printIPStats prints statistics for each IP/network
+func printIPStats(ipStats []IPStats, start, end time.Time) {
+	// Calculate total period for per-IP metrics
+	actualEnd := end
+	if end.After(time.Now()) {
+		actualEnd = time.Now()
+	}
+	totalPeriod := actualEnd.Sub(start)
+	days := totalPeriod.Hours() / 24
+	if days < 1 {
+		days = 1
+	}
+
+	for _, stats := range ipStats {
+		// Calculate quality metrics for this IP
+		avgDuration := time.Duration(0)
+		if stats.SessionCount > 0 {
+			avgDuration = stats.TotalOnline / time.Duration(stats.SessionCount)
+		}
+
+		shortPercent := float64(0)
+		if stats.SessionCount > 0 {
+			shortPercent = float64(stats.ShortSessions) / float64(stats.SessionCount) * 100
+		}
+
+		// Calculate uptime percent relative to how long this IP was "in use"
+		// Use sessions per day as a stability metric
+		sessionsPerDay := float64(stats.SessionCount) / days
+
+		// Determine quality level and label
+		var quality, qualityColor string
+		if stats.SessionCount <= 2 && shortPercent < 20 && avgDuration >= 30*time.Minute {
+			quality = "Excellent"
+			qualityColor = colorBoldGreen
+		} else if stats.SessionCount <= 4 && shortPercent < 30 && avgDuration >= 10*time.Minute {
+			quality = "Good"
+			qualityColor = colorGreen
+		} else if shortPercent < 50 && avgDuration >= 5*time.Minute {
+			quality = "Fair"
+			qualityColor = colorYellow
+		} else {
+			quality = "Poor"
+			qualityColor = colorRed
+		}
+
+		// Print IP header with quality dot
+		fmt.Printf("\n  %s●%s %s%s%s %s%s%s\n",
+			qualityColor, colorReset,
+			getIPColor(stats.IP), stats.IP, colorReset,
+			qualityColor, quality, colorReset)
+
+		// Print stats (use IP's color for consistency)
+		ipColor := getIPColor(stats.IP)
+		fmt.Printf("    Online: %s%s%s  Sessions: %s%d%s  Avg: %s%s%s\n",
+			colorGreen, formatDuration(stats.TotalOnline), colorReset,
+			ipColor, stats.SessionCount, colorReset,
+			ipColor, formatDuration(avgDuration), colorReset)
+
+		// Identify and print issues for this IP
+		var issues []string
+		if sessionsPerDay > 5 {
+			issues = append(issues, fmt.Sprintf("Frequent reconnects (%.1f/day)", sessionsPerDay))
+		}
+		if shortPercent > 30 {
+			issues = append(issues, fmt.Sprintf("%.0f%% sessions < 5min", shortPercent))
+		}
+		if avgDuration < 5*time.Minute && stats.SessionCount > 1 {
+			issues = append(issues, fmt.Sprintf("Low avg duration (%s)", formatDuration(avgDuration)))
+		}
+
+		if len(issues) > 0 {
+			for _, issue := range issues {
+				fmt.Printf("    %s⚠ %s%s\n", colorYellow, issue, colorReset)
+			}
+		}
+	}
+}
+
+func printSummary(sessions []OnlineSession, start, end time.Time) {
+	// Calculate total online time by merging overlapping periods within query range
+	// This ensures we never exceed the query period duration
+	type timeRange struct{ start, end time.Time }
+	var ranges []timeRange
+
+	for _, s := range sessions {
+		// Clip session to query period
+		sessionStart := s.Start
+		sessionEnd := s.End
+		if sessionStart.Before(start) {
+			sessionStart = start
+		}
+		if sessionEnd.After(end) {
+			sessionEnd = end
+		}
+		if sessionEnd.After(sessionStart) {
+			ranges = append(ranges, timeRange{sessionStart, sessionEnd})
+		}
+	}
+
+	// Sort ranges by start time
+	for i := 0; i < len(ranges)-1; i++ {
+		for j := i + 1; j < len(ranges); j++ {
+			if ranges[i].start.After(ranges[j].start) {
+				ranges[i], ranges[j] = ranges[j], ranges[i]
+			}
+		}
+	}
+
+	// Merge overlapping ranges and calculate total
+	var totalOnline time.Duration
+	var merged []timeRange
+	for _, r := range ranges {
+		if len(merged) == 0 || r.start.After(merged[len(merged)-1].end) {
+			merged = append(merged, r)
+		} else if r.end.After(merged[len(merged)-1].end) {
+			merged[len(merged)-1].end = r.end
+		}
+	}
+	for _, r := range merged {
+		totalOnline += r.end.Sub(r.start)
+	}
+
+	// Cap at query period duration (safety check)
+	maxDuration := end.Sub(start)
+	if end.After(time.Now()) {
+		maxDuration = time.Now().Sub(start)
+	}
+	if totalOnline > maxDuration {
+		totalOnline = maxDuration
+	}
+
+	avgSessionDuration := time.Duration(0)
+	if len(sessions) > 0 {
+		avgSessionDuration = totalOnline / time.Duration(len(sessions))
+	}
+
+	// Print summary box
+	fmt.Printf("%sSummary:%s\n", colorBold, colorReset)
+	fmt.Printf("  Total Online Time:    %s%s%s\n", colorGreen, formatDuration(totalOnline), colorReset)
+	fmt.Printf("  Sessions:             %s%d%s\n", colorWhite, len(sessions), colorReset)
+	fmt.Printf("  Avg Session Duration: %s%s%s\n", colorWhite, formatDuration(avgSessionDuration), colorReset)
+}
+
+// sessionEntry represents a session or part of a session for display in a day
+type sessionEntry struct {
+	session      OnlineSession
+	displayStart time.Time
+	displayEnd   time.Time
+	continuesNext bool // Session continues to next day
+	continuesPrev bool // Session continued from previous day
+	isActive     bool
+}
+
+func printSessions(sessions []OnlineSession) {
+	if len(sessions) == 0 {
+		fmt.Printf("  %s(no sessions)%s\n", colorGray, colorReset)
+		return
+	}
+
+	// Build display entries, splitting sessions that cross day boundaries
+	type dayGroup struct {
+		date    string
+		entries []sessionEntry
+	}
+	dayMap := make(map[string]*dayGroup)
+
+	for _, s := range sessions {
+		startLocal := s.Start.Local()
+		endLocal := s.End.Local()
+
+		// Check if session ends exactly at midnight (capped at query end)
+		midnight := time.Date(endLocal.Year(), endLocal.Month(), endLocal.Day(), 0, 0, 0, 0, endLocal.Location())
+		endsAtMidnight := endLocal.Equal(midnight) && endLocal.After(startLocal)
+
+		// If session ends exactly at midnight, adjust to 23:59:59 of previous day for display
+		if endsAtMidnight {
+			endLocal = midnight.Add(-time.Second)
+		}
+
+		startDate := startLocal.Format("2006-01-02")
+		endDate := endLocal.Format("2006-01-02")
+		isActive := time.Since(s.End) < time.Second
+
+		if startDate == endDate {
+			// Session within same day (or adjusted from midnight)
+			if dayMap[startDate] == nil {
+				dayMap[startDate] = &dayGroup{date: startDate}
+			}
+			dayMap[startDate].entries = append(dayMap[startDate].entries, sessionEntry{
+				session:       s,
+				displayStart:  startLocal,
+				displayEnd:    endLocal,
+				continuesNext: endsAtMidnight, // Mark as continuing if it was capped at midnight
+				isActive:      isActive,
+			})
+		} else {
+			// Session crosses day boundary - add entry for start day
+			startDayEnd := time.Date(startLocal.Year(), startLocal.Month(), startLocal.Day(), 23, 59, 59, 0, startLocal.Location())
+			if dayMap[startDate] == nil {
+				dayMap[startDate] = &dayGroup{date: startDate}
+			}
+			dayMap[startDate].entries = append(dayMap[startDate].entries, sessionEntry{
+				session:       s,
+				displayStart:  startLocal,
+				displayEnd:    startDayEnd,
+				continuesNext: true,
+			})
+
+			// Add entry for end day (skip if session ends exactly at midnight - 0 duration on that day)
+			endDayStart := time.Date(endLocal.Year(), endLocal.Month(), endLocal.Day(), 0, 0, 0, 0, endLocal.Location())
+			if endLocal.After(endDayStart) {
+				if dayMap[endDate] == nil {
+					dayMap[endDate] = &dayGroup{date: endDate}
+				}
+				dayMap[endDate].entries = append(dayMap[endDate].entries, sessionEntry{
+					session:       s,
+					displayStart:  endDayStart,
+					displayEnd:    endLocal,
+					continuesPrev: true,
+					isActive:      isActive,
+				})
+			}
+		}
+	}
+
+	// Sort days
+	var dates []string
+	for date := range dayMap {
+		dates = append(dates, date)
+	}
+	for i := 0; i < len(dates)-1; i++ {
+		for j := i + 1; j < len(dates); j++ {
+			if dates[i] > dates[j] {
+				dates[i], dates[j] = dates[j], dates[i]
+			}
+		}
+	}
+
+	// Print each day's sessions
+	for _, dateStr := range dates {
+		g := dayMap[dateStr]
+
+		// Sort entries by start time
+		entries := g.entries
+		for i := 0; i < len(entries)-1; i++ {
+			for j := i + 1; j < len(entries); j++ {
+				if entries[i].displayStart.After(entries[j].displayStart) {
+					entries[i], entries[j] = entries[j], entries[i]
+				}
+			}
+		}
+
+		// Parse date for day name
+		date, _ := time.Parse("2006-01-02", g.date)
+		dayName := date.Format("Mon")
+
+		// Calculate day's total online time (only count actual time in this day)
+		var dayTotal time.Duration
+		for _, e := range entries {
+			dayTotal += e.displayEnd.Sub(e.displayStart)
+		}
+
+		// Day header with color based on whether it's today
+		dayColor := colorBlue
+		if g.date == time.Now().Format("2006-01-02") {
+			dayColor = colorBoldGreen
+		}
+		fmt.Printf("\n  %s%s %s%s %s(%s total, %d entries)%s\n",
+			dayColor, dayName, g.date, colorReset,
+			colorGray, formatDuration(dayTotal), len(entries), colorReset)
+
+		// Print entries for this day (oldest first)
+		for j := 0; j < len(entries); j++ {
+			e := entries[j]
+			s := e.session
+
+			// Format times with continuation indicators
+			var startTime, endTime string
+			if e.continuesPrev {
+				// Show actual start time from previous day in gray
+				actualStart := s.Start.Local()
+				startTime = fmt.Sprintf("%s%s%s", colorGray, actualStart.Format("15:04:05"), colorReset)
+			} else {
+				startTime = e.displayStart.Format("15:04:05")
+			}
+
+			if e.continuesNext {
+				// Show actual end time in gray (if we have it, not capped at midnight)
+				actualEnd := s.End.Local()
+				midnight := time.Date(actualEnd.Year(), actualEnd.Month(), actualEnd.Day(), 0, 0, 0, 0, actualEnd.Location())
+				if actualEnd.Equal(midnight) {
+					// Session was capped at midnight - show end of day
+					endTime = e.displayEnd.Format("15:04:05")
+				} else {
+					// We have the actual end time on the next day
+					endTime = fmt.Sprintf("%s%s%s", colorGray, actualEnd.Format("15:04:05"), colorReset)
+				}
+			} else if e.isActive {
+				endTime = fmt.Sprintf("%snow%s", colorGreen, colorReset)
+			} else {
+				endTime = e.displayEnd.Format("15:04:05")
+			}
+
+			// Calculate duration for this day's portion
+			entryDuration := e.displayEnd.Sub(e.displayStart)
+			durationColor := sessionDurationColor(entryDuration)
+
+			// Format IP
+			ipStr := ""
+			if s.IP != "" && s.IP != "unknown" {
+				ipStr = fmt.Sprintf(" %s[%s]%s", getIPColor(s.IP), s.IP, colorReset)
+			}
+
+			// Choose indicator
+			indicator := fmt.Sprintf("%s○%s", colorGray, colorReset)
+			if e.isActive {
+				indicator = fmt.Sprintf("%s●%s", colorGreen, colorReset)
+			} else if e.continuesPrev || e.continuesNext {
+				indicator = fmt.Sprintf("%s◐%s", colorBlue, colorReset)
+			}
+
+			fmt.Printf("    %s %s - %s  %s%s%s%s",
+				indicator,
+				startTime, endTime,
+				durationColor, formatDuration(entryDuration), colorReset,
+				ipStr)
+
+			if e.isActive {
+				fmt.Printf(" %s(active)%s", colorGreen, colorReset)
+			}
+			fmt.Println()
+		}
+	}
+}
+
+func printNetworkQuality(sessions []OnlineSession, start, end time.Time) {
+	if len(sessions) == 0 {
+		return
+	}
+
+	// Calculate metrics for quality assessment (clipped to query period)
+	var totalOnline time.Duration
+	var shortSessions int // Sessions < 5 minutes
+	for _, s := range sessions {
+		// Clip session to query period
+		sessionStart := s.Start
+		sessionEnd := s.End
+		if sessionStart.Before(start) {
+			sessionStart = start
+		}
+		if sessionEnd.After(end) {
+			sessionEnd = end
+		}
+		clippedDuration := time.Duration(0)
+		if sessionEnd.After(sessionStart) {
+			clippedDuration = sessionEnd.Sub(sessionStart)
+		}
+		totalOnline += clippedDuration
+		if clippedDuration < 5*time.Minute {
+			shortSessions++
+		}
+	}
+
+	// If end is in the future, use now
+	actualEnd := end
+	if end.After(time.Now()) {
+		actualEnd = time.Now()
+	}
+	totalPeriod := actualEnd.Sub(start)
+
+	// Calculate days as float for sessions per day
+	days := totalPeriod.Hours() / 24
+	if days < 1 {
+		days = 1 // Minimum 1 day for calculation
+	}
+	sessionsPerDay := float64(len(sessions)) / days
+	shortSessionPercent := float64(shortSessions) / float64(len(sessions)) * 100
+
+	// Calculate average session duration
+	avgDuration := totalOnline / time.Duration(len(sessions))
+
+	// Determine quality level based on session stability
+	var quality string
+	var qualityColor string
+	var issues []string
+
+	if sessionsPerDay <= 3 && shortSessionPercent < 10 && avgDuration >= 30*time.Minute {
+		quality = "Excellent"
+		qualityColor = colorBoldGreen
+	} else if sessionsPerDay <= 6 && shortSessionPercent < 25 && avgDuration >= 10*time.Minute {
+		quality = "Good"
+		qualityColor = colorGreen
+	} else if sessionsPerDay <= 12 && shortSessionPercent < 50 {
+		quality = "Fair"
+		qualityColor = colorYellow
+	} else {
+		quality = "Poor"
+		qualityColor = colorBoldRed
+	}
+
+	// Identify specific issues
+	if sessionsPerDay > 10 {
+		issues = append(issues, fmt.Sprintf("High reconnect frequency (%.1f/day)", sessionsPerDay))
+	}
+	if shortSessionPercent > 30 {
+		issues = append(issues, fmt.Sprintf("Many short sessions (%.0f%% < 5min)", shortSessionPercent))
+	}
+	if avgDuration < 5*time.Minute && len(sessions) > 1 {
+		issues = append(issues, fmt.Sprintf("Low avg session duration (%s)", formatDuration(avgDuration)))
+	}
+
+	fmt.Printf("%s%sOverall Network Quality:%s %s%s%s\n", colorBold, colorWhite, colorReset, qualityColor, quality, colorReset)
+
+	if len(issues) > 0 {
+		fmt.Printf("  %sIssues detected:%s\n", colorYellow, colorReset)
+		for _, issue := range issues {
+			fmt.Printf("    %s⚠%s %s\n", colorYellow, colorReset, issue)
+		}
+	}
+}
+
+// Helper functions
+
+func formatDuration(d time.Duration) string {
+	if d < time.Minute {
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	} else if d < time.Hour {
+		mins := int(d.Minutes())
+		secs := int(d.Seconds()) % 60
+		if secs > 0 {
+			return fmt.Sprintf("%dm%ds", mins, secs)
+		}
+		return fmt.Sprintf("%dm", mins)
+	} else if d < 24*time.Hour {
+		hours := int(d.Hours())
+		mins := int(d.Minutes()) % 60
+		if mins > 0 {
+			return fmt.Sprintf("%dh%dm", hours, mins)
+		}
+		return fmt.Sprintf("%dh", hours)
+	}
+	days := int(d.Hours()) / 24
+	hours := int(d.Hours()) % 24
+	if hours > 0 {
+		return fmt.Sprintf("%dd%dh", days, hours)
+	}
+	return fmt.Sprintf("%dd", days)
+}
+
+func sessionDurationColor(d time.Duration) string {
+	if d < time.Minute {
+		return colorRed // Very short - likely connection issue
+	} else if d < 5*time.Minute {
+		return colorYellow // Short session
+	} else if d < time.Hour {
+		return colorWhite // Normal session
+	}
+	return colorGreen // Long stable session
+}
