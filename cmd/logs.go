@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/spf13/cobra"
 	"overseer.olrik.dev/internal/core"
@@ -23,8 +24,9 @@ func NewLogsCommand() *cobra.Command {
 		Short:   "Stream daemon logs in real-time",
 		Long:    `Stream daemon logs in real-time.
 
-Press Ctrl+C to exit. By default, only shows INFO level and above. Use -v to see DEBUG logs.`,
-		Args:    cobra.NoArgs,
+Press Ctrl+C to exit. By default, only shows INFO level and above. Use -v to see DEBUG logs.
+Automatically reconnects if the daemon is reloaded.`,
+		Args: cobra.NoArgs,
 		Run: func(cmd *cobra.Command, args []string) {
 			// Check if daemon is running
 			if _, err := daemon.SendCommand("STATUS"); err != nil {
@@ -35,57 +37,81 @@ Press Ctrl+C to exit. By default, only shows INFO level and above. Use -v to see
 			// Get verbose flag
 			verbose, _ := cmd.Flags().GetBool("verbose")
 
-			// Connect to daemon
-			conn, err := net.Dial("unix", core.GetSocketPath())
-			if err != nil {
-				slog.Error(fmt.Sprintf("Failed to connect to daemon: %v", err))
-				os.Exit(1)
-			}
-			defer conn.Close()
-
-			// Send LOGS command
-			if _, err := conn.Write([]byte("LOGS\n")); err != nil {
-				slog.Error(fmt.Sprintf("Failed to send LOGS command: %v", err))
-				os.Exit(1)
-			}
-
 			// Set up signal handler for Ctrl+C
 			sigChan := make(chan os.Signal, 1)
 			signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
-			// Channel to signal when reading is done
-			done := make(chan bool)
+			// Reconnect loop
+			for {
+				// Connect to daemon
+				conn, err := net.Dial("unix", core.GetSocketPath())
+				if err != nil {
+					slog.Error(fmt.Sprintf("Failed to connect to daemon: %v", err))
+					os.Exit(1)
+				}
 
-			// Start reading logs in a goroutine
-			go func() {
-				reader := bufio.NewReader(conn)
-				for {
-					line, err := reader.ReadString('\n')
-					if err != nil {
-						if err != io.EOF {
-							slog.Error(fmt.Sprintf("Error reading logs: %v", err))
+				// Send LOGS command
+				if _, err := conn.Write([]byte("LOGS\n")); err != nil {
+					conn.Close()
+					slog.Error(fmt.Sprintf("Failed to send LOGS command: %v", err))
+					os.Exit(1)
+				}
+
+				// Channel to signal when reading is done
+				done := make(chan bool)
+
+				// Start reading logs in a goroutine
+				go func() {
+					reader := bufio.NewReader(conn)
+					for {
+						line, err := reader.ReadString('\n')
+						if err != nil {
+							if err != io.EOF {
+								// Don't log error on normal disconnect
+							}
+							done <- true
+							return
 						}
-						done <- true
+
+						// Filter logs based on verbose flag
+						// Log format: timestamp [LEVEL] message
+						// If not verbose, skip DEBUG logs
+						if !verbose && strings.Contains(line, "DBG") {
+							continue
+						}
+
+						fmt.Print(line)
+					}
+				}()
+
+				// Wait for either Ctrl+C or connection close
+				select {
+				case <-sigChan:
+					conn.Close()
+					fmt.Println("\nDisconnected from daemon logs.")
+					return
+				case <-done:
+					conn.Close()
+					// Try to reconnect after a short delay
+					fmt.Println("Connection lost. Reconnecting...")
+					time.Sleep(500 * time.Millisecond)
+
+					// Wait for daemon to be available again (up to 5 seconds)
+					reconnected := false
+					for i := 0; i < 10; i++ {
+						if _, err := daemon.SendCommand("STATUS"); err == nil {
+							reconnected = true
+							break
+						}
+						time.Sleep(500 * time.Millisecond)
+					}
+
+					if !reconnected {
+						fmt.Println("Daemon not available. Exiting.")
 						return
 					}
-
-					// Filter logs based on verbose flag
-					// Log format: timestamp [LEVEL] message
-					// If not verbose, skip DEBUG logs
-					if !verbose && strings.Contains(line, "DBG") {
-						continue
-					}
-
-					fmt.Print(line)
+					// Continue loop to reconnect
 				}
-			}()
-
-			// Wait for either Ctrl+C or connection close
-			select {
-			case <-sigChan:
-				fmt.Println("\nDisconnected from daemon logs.")
-			case <-done:
-				fmt.Println("Connection to daemon closed.")
 			}
 		},
 	}
