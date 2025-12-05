@@ -1,10 +1,12 @@
 package cmd
 
 import (
+	"bufio"
 	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/spf13/cobra"
 	"overseer.olrik.dev/internal/keyring"
@@ -19,20 +21,42 @@ func NewPasswordCommand() *cobra.Command {
 	}
 
 	// password set command
+	var fromStdin bool
 	setCmd := &cobra.Command{
-		Use:               "set <alias>",
-		Short:             "Store a password for an SSH host",
-		Long:              `Store a password for an SSH host. The password is stored securely in the system keyring (Keychain on macOS, Secret Service on Linux).`,
+		Use:   "set <alias>",
+		Short: "Store a password for an SSH host",
+		Long: `Store a password for an SSH host. The password is stored securely in the system keyring (Keychain on macOS, Secret Service on Linux).
+
+Use --stdin to read password from stdin, useful for piping from password managers:
+  op read "op://Vault/Item/password" | overseer password set myhost --stdin`,
 		Args:              cobra.ExactArgs(1),
 		ValidArgsFunction: sshHostCompletionFunc,
 		Run: func(cmd *cobra.Command, args []string) {
 			alias := args[0]
 
-			// Prompt for password with confirmation
-			password, err := keyring.PromptAndConfirmPassword(alias)
-			if err != nil {
-				slog.Error(fmt.Sprintf("Failed to read password: %v", err))
-				os.Exit(1)
+			var password string
+			var err error
+
+			if fromStdin {
+				// Read password from stdin (single line, trim whitespace)
+				reader := bufio.NewReader(os.Stdin)
+				password, err = reader.ReadString('\n')
+				if err != nil && err.Error() != "EOF" {
+					slog.Error(fmt.Sprintf("Failed to read password from stdin: %v", err))
+					os.Exit(1)
+				}
+				password = strings.TrimSpace(password)
+				if password == "" {
+					slog.Error("Empty password received from stdin")
+					os.Exit(1)
+				}
+			} else {
+				// Prompt for password with confirmation
+				password, err = keyring.PromptAndConfirmPassword(alias)
+				if err != nil {
+					slog.Error(fmt.Sprintf("Failed to read password: %v", err))
+					os.Exit(1)
+				}
 			}
 
 			// Store password in keyring
@@ -44,6 +68,7 @@ func NewPasswordCommand() *cobra.Command {
 			slog.Info(fmt.Sprintf("Password stored securely for '%s'", alias))
 		},
 	}
+	setCmd.Flags().BoolVar(&fromStdin, "stdin", false, "Read password from stdin (for piping from password managers)")
 
 	// password delete command
 	deleteCmd := &cobra.Command{
