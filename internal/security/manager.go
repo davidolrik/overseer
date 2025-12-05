@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"sort"
 	"sync"
+	"time"
 )
 
 // Manager coordinates security context monitoring
@@ -24,7 +25,7 @@ type Manager struct {
 	preferredIP    string          // Preferred IP version for OVERSEER_PUBLIC_IP: "ipv4" or "ipv6"
 
 	// Callbacks
-	onContextChange func(from, to string, rule *Rule)
+	onContextChange func(info ContextChangeInfo)
 
 	// Flag to prevent recursive context checks from sensor notifications
 	checkingContext bool
@@ -37,13 +38,22 @@ type ExportConfig struct {
 }
 
 // ManagerConfig holds configuration for the security manager
+// ContextChangeInfo contains information about a context/location change
+type ContextChangeInfo struct {
+	FromContext  string
+	ToContext    string
+	FromLocation string
+	ToLocation   string
+	Rule         *Rule
+}
+
 type ManagerConfig struct {
 	Rules           []Rule
 	Locations       map[string]Location
 	Exports         []ExportConfig
 	PreferredIP     string // "ipv4" (default) or "ipv6"
 	CheckOnStartup  bool
-	OnContextChange func(from, to string, rule *Rule)
+	OnContextChange func(info ContextChangeInfo)
 	Logger          *slog.Logger
 }
 
@@ -217,6 +227,13 @@ func (m *Manager) Start(ctx context.Context, checkOnStartup bool) error {
 
 	// Start network monitor
 	m.networkMonitor.Start(ctx)
+
+	// Start TCP sensor's continuous connectivity monitoring
+	// This ensures online/offline transitions are detected independently
+	// of the network monitor, which may not detect all changes
+	if tcpSensor, ok := m.sensors["tcp"].(*TCPSensor); ok {
+		tcpSensor.Start(ctx)
+	}
 
 	// Perform initial check if requested
 	if checkOnStartup {
@@ -473,7 +490,13 @@ func (m *Manager) checkContext(trigger string) error {
 				"context", result.Context,
 				"location", result.Location)
 		}
-		m.onContextChange(oldContext, result.Context, result.Rule)
+		m.onContextChange(ContextChangeInfo{
+			FromContext:  oldContext,
+			ToContext:    result.Context,
+			FromLocation: oldLocation,
+			ToLocation:   result.Location,
+			Rule:         result.Rule,
+		})
 	}
 
 	if !changed && !forceExport && !isStartup {
@@ -507,6 +530,18 @@ func (m *Manager) GetSensor(name string) Sensor {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.sensors[name]
+}
+
+// GetSensors returns all sensors
+func (m *Manager) GetSensors() map[string]Sensor {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	// Return a copy to avoid race conditions
+	result := make(map[string]Sensor, len(m.sensors))
+	for k, v := range m.sensors {
+		result[k] = v
+	}
+	return result
 }
 
 // TriggerCheck manually triggers a context check
@@ -579,12 +614,61 @@ func (m *Manager) OnSensorChange(sensor Sensor, oldValue, newValue SensorValue) 
 		"old_value", oldValue.String(),
 		"new_value", newValue.String())
 
-	// Trigger a context check asynchronously to avoid blocking the sensor update
-	go func() {
-		if err := m.checkContext("sensor_change:" + sensor.Name()); err != nil {
-			m.logger.Error("Context check failed after sensor change",
-				"sensor", sensor.Name(),
+	// When transitioning from offline to online, retry IP checks until they succeed
+	// This handles the case where TCP detects online quickly but DNS is slower to respond
+	// Run async to avoid blocking the sensor notification chain
+	if sensor.Name() == "online" && newValue.Bool() && !oldValue.Bool() {
+		m.logger.Debug("Online transition detected, will retry IP checks if needed")
+		go m.retryIPChecksUntilSuccess()
+		return
+	}
+
+	// Trigger a context check synchronously so exports have fresh values
+	if err := m.checkContext("sensor_change:" + sensor.Name()); err != nil {
+		m.logger.Error("Context check failed after sensor change",
+			"sensor", sensor.Name(),
+			"error", err)
+	}
+}
+
+// retryIPChecksUntilSuccess retries IP sensor checks when coming back online
+// This handles the delay between TCP connectivity and DNS availability
+func (m *Manager) retryIPChecksUntilSuccess() {
+	maxRetries := 5
+	retryInterval := 2 * time.Second
+
+	for i := 0; i < maxRetries; i++ {
+		// Run a context check which will check IP sensors
+		if err := m.checkContext("online_transition_retry"); err != nil {
+			m.logger.Warn("Context check failed during online transition retry",
+				"attempt", i+1,
 				"error", err)
 		}
-	}()
+
+		// Check if we got a valid public IP (not the offline placeholder)
+		ipv4Sensor := m.sensors["public_ipv4"]
+		if ipv4Sensor != nil {
+			if lastValue := ipv4Sensor.GetLastValue(); lastValue != nil {
+				ip := lastValue.String()
+				// If we have a real IP (not link-local offline indicator), we're done
+				if ip != "" && ip != "169.254.0.0" {
+					m.logger.Debug("Got valid public IP after online transition",
+						"ip", ip,
+						"attempts", i+1)
+					return
+				}
+			}
+		}
+
+		// Wait before retrying (except on last attempt)
+		if i < maxRetries-1 {
+			m.logger.Debug("IP check returned offline placeholder, retrying",
+				"attempt", i+1,
+				"next_retry_in", retryInterval)
+			time.Sleep(retryInterval)
+		}
+	}
+
+	m.logger.Warn("Failed to get valid public IP after online transition",
+		"max_retries", maxRetries)
 }

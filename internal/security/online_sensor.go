@@ -54,8 +54,9 @@ func (s *OnlineSensor) SetValue(value interface{}) error {
 			defaultOld := NewSensorValue(s.Name(), s.Type(), false)
 			oldValue = &defaultOld
 		}
-		s.NotifyListeners(s, *oldValue, newValue)
+
 		s.SetLastValue(newValue)
+		s.NotifyListeners(s, *oldValue, newValue)
 	}
 
 	return nil

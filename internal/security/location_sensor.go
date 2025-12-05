@@ -53,8 +53,8 @@ func (s *LocationSensor) SetValue(value interface{}) error {
 		} else {
 			oldVal = NewSensorValue(s.Name(), s.Type(), "unknown")
 		}
-		s.NotifyListeners(s, oldVal, newValue)
 		s.SetLastValue(newValue)
+		s.NotifyListeners(s, oldVal, newValue)
 	}
 
 	return nil

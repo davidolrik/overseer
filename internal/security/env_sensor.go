@@ -29,10 +29,10 @@ func (s *EnvSensor) Check(ctx context.Context) (SensorValue, error) {
 	// Notify listeners if value changed
 	oldValue := s.GetLastValue()
 	if oldValue == nil || !oldValue.Equals(newValue) {
+		s.SetLastValue(newValue)
 		if oldValue != nil {
 			s.NotifyListeners(s, *oldValue, newValue)
 		}
-		s.SetLastValue(newValue)
 	}
 
 	return newValue, nil

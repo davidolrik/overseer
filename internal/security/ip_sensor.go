@@ -171,8 +171,8 @@ func (s *IPSensor) Check(ctx context.Context) (SensorValue, error) {
 				defaultOld := NewSensorValue(s.Name(), s.Type(), "")
 				oldValue = &defaultOld
 			}
-			s.NotifyListeners(s, *oldValue, newValue)
 			s.SetLastValue(newValue)
+			s.NotifyListeners(s, *oldValue, newValue)
 		}
 
 		return newValue, nil
@@ -193,8 +193,8 @@ func (s *IPSensor) Check(ctx context.Context) (SensorValue, error) {
 			defaultOld := NewSensorValue(s.Name(), s.Type(), "")
 			oldValue = &defaultOld
 		}
-		s.NotifyListeners(s, *oldValue, newValue)
 		s.SetLastValue(newValue)
+		s.NotifyListeners(s, *oldValue, newValue)
 	}
 
 	return newValue, nil

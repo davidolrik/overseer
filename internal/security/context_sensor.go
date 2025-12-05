@@ -53,8 +53,8 @@ func (s *ContextSensor) SetValue(value interface{}) error {
 		} else {
 			oldVal = NewSensorValue(s.Name(), s.Type(), "none")
 		}
-		s.NotifyListeners(s, oldVal, newValue)
 		s.SetLastValue(newValue)
+		s.NotifyListeners(s, oldVal, newValue)
 	}
 
 	return nil

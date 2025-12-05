@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"sync"
 	"time"
 )
 
@@ -16,11 +17,16 @@ type TCPTarget struct {
 }
 
 // TCPSensor checks network connectivity by attempting TCP connections to known hosts
-// This takes precedence over the public_ip sensor for determining online status
+// This takes precedence over the public_ip sensor for determining online status.
+// The sensor continuously polls connectivity on its own interval, independent of
+// the network monitor, to reliably detect online/offline transitions.
 type TCPSensor struct {
 	*BaseSensor
-	targets []TCPTarget
-	timeout time.Duration
+	targets       []TCPTarget
+	timeout       time.Duration
+	pollInterval  time.Duration
+	lastCheckTime time.Time   // When we last performed a check
+	checkMu       sync.Mutex  // Protects lastCheckTime and prevents concurrent checks
 }
 
 // NewTCPSensor creates a new TCP sensor with default targets
@@ -42,13 +48,56 @@ func NewTCPSensor() *TCPSensor {
 			{Host: "2001:4860:4860::8888", Port: "443", Network: "tcp6"},
 			{Host: "2001:4860:4860::8844", Port: "443", Network: "tcp6"},
 		},
-		timeout: 5 * time.Second,
+		timeout:      5 * time.Second,
+		pollInterval: 10 * time.Second, // Check connectivity every 10 seconds
+	}
+}
+
+// Start begins continuous connectivity monitoring
+func (s *TCPSensor) Start(ctx context.Context) {
+	go s.pollLoop(ctx)
+	slog.Info("TCP sensor started continuous monitoring", "interval", s.pollInterval)
+}
+
+// pollLoop continuously checks connectivity and notifies on changes
+func (s *TCPSensor) pollLoop(ctx context.Context) {
+	ticker := time.NewTicker(s.pollInterval)
+	defer ticker.Stop()
+
+	// Do an initial check immediately
+	s.Check(ctx)
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			s.Check(ctx)
+		}
 	}
 }
 
 // Check performs TCP connection tests to determine network connectivity
 // Returns true if any target is reachable, false otherwise
 func (s *TCPSensor) Check(ctx context.Context) (SensorValue, error) {
+	// Prevent concurrent checks and deduplicate rapid successive checks
+	s.checkMu.Lock()
+
+	// If we checked very recently (within 2 seconds), return cached value
+	// This prevents double-checking when both poll loop and checkContext trigger
+	minCheckInterval := 2 * time.Second
+	if !s.lastCheckTime.IsZero() && time.Since(s.lastCheckTime) < minCheckInterval {
+		s.checkMu.Unlock()
+		if lastValue := s.GetLastValue(); lastValue != nil {
+			return *lastValue, nil
+		}
+		// No cached value, need to actually check
+		s.checkMu.Lock()
+	}
+
+	s.lastCheckTime = time.Now()
+	s.checkMu.Unlock()
+
 	// Create a context with timeout
 	ctx, cancel := context.WithTimeout(ctx, s.timeout)
 	defer cancel()
@@ -102,8 +151,8 @@ func (s *TCPSensor) Check(ctx context.Context) (SensorValue, error) {
 			defaultOld := NewSensorValue(s.Name(), s.Type(), false)
 			oldValue = &defaultOld
 		}
-		s.NotifyListeners(s, *oldValue, newValue)
 		s.SetLastValue(newValue)
+		s.NotifyListeners(s, *oldValue, newValue)
 	}
 
 	return newValue, nil
