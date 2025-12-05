@@ -1394,33 +1394,59 @@ func (d *Daemon) checkOnlineStatus() bool {
 }
 
 // handleContextChange is called when the security context changes
-func (d *Daemon) handleContextChange(from, to string, rule *security.Rule) {
+func (d *Daemon) handleContextChange(info security.ContextChangeInfo) {
 	slog.Info("Security context changed",
-		"from", from,
-		"to", to)
+		"from_context", info.FromContext,
+		"to_context", info.ToContext,
+		"from_location", info.FromLocation,
+		"to_location", info.ToLocation)
 
-	// If no rule matched, nothing to do
-	if rule == nil {
+	// If location changed, reset retry counters for ALL tunnels
+	// This handles scenarios like: laptop sleeps, goes offline, wakes up and reconnects
+	// The SSH connections would have died, so give all tunnels a fresh start
+	if info.FromLocation != info.ToLocation {
+		d.mu.Lock()
+		resetCount := 0
+		for alias, tunnel := range d.tunnels {
+			if tunnel.RetryCount > 0 {
+				tunnel.RetryCount = 0
+				tunnel.NextRetryTime = time.Time{}
+				d.tunnels[alias] = tunnel
+				resetCount++
+			}
+		}
+		d.mu.Unlock()
+
+		if resetCount > 0 {
+			slog.Info("Reset retry counters due to location change",
+				"tunnels_reset", resetCount,
+				"from_location", info.FromLocation,
+				"to_location", info.ToLocation)
+		}
+	}
+
+	// If no rule matched, nothing more to do
+	if info.Rule == nil {
 		slog.Debug("No rule matched, skipping context change actions")
 		return
 	}
 
 	slog.Debug("Context change with rule",
-		"rule_name", rule.Name,
-		"connect_count", len(rule.Actions.Connect),
-		"disconnect_count", len(rule.Actions.Disconnect))
+		"rule_name", info.Rule.Name,
+		"connect_count", len(info.Rule.Actions.Connect),
+		"disconnect_count", len(info.Rule.Actions.Disconnect))
 
 	// Check if we're online before attempting connections
 	isOnline := d.checkOnlineStatus()
 
-	if !isOnline && len(rule.Actions.Connect) > 0 {
+	if !isOnline && len(info.Rule.Actions.Connect) > 0 {
 		slog.Info("Skipping tunnel connections - currently offline",
-			"context", to,
-			"tunnel_count", len(rule.Actions.Connect))
+			"context", info.ToContext,
+			"tunnel_count", len(info.Rule.Actions.Connect))
 	}
 
 	// Execute disconnect actions first (always, even when offline)
-	for _, alias := range rule.Actions.Disconnect {
+	for _, alias := range info.Rule.Actions.Disconnect {
 		d.mu.Lock()
 		_, exists := d.tunnels[alias]
 		d.mu.Unlock()
@@ -1428,14 +1454,14 @@ func (d *Daemon) handleContextChange(from, to string, rule *security.Rule) {
 		if exists {
 			slog.Info("Auto-disconnecting tunnel due to context change",
 				"tunnel", alias,
-				"context", to)
+				"context", info.ToContext)
 			d.stopTunnel(alias)
 		}
 	}
 
 	// Only execute connect actions if we're online
 	if isOnline {
-		for _, alias := range rule.Actions.Connect {
+		for _, alias := range info.Rule.Actions.Connect {
 			d.mu.Lock()
 			tunnel, exists := d.tunnels[alias]
 			d.mu.Unlock()
@@ -1446,12 +1472,12 @@ func (d *Daemon) handleContextChange(from, to string, rule *security.Rule) {
 				shouldConnect = true
 				slog.Info("Auto-connecting tunnel due to context change",
 					"tunnel", alias,
-					"context", to)
+					"context", info.ToContext)
 			} else if tunnel.State == StateDisconnected || tunnel.State == StateReconnecting {
 				shouldConnect = true
 				slog.Info("Reconnecting tunnel due to context change",
 					"tunnel", alias,
-					"context", to,
+					"context", info.ToContext,
 					"previous_state", tunnel.State,
 					"previous_retry_count", tunnel.RetryCount)
 				// Stop existing tunnel first (cleans up processes and timers)
@@ -1465,29 +1491,13 @@ func (d *Daemon) handleContextChange(from, to string, rule *security.Rule) {
 			}
 
 			if shouldConnect {
-				// Reset retry counters for this tunnel to give it a fresh start
-				// This is especially important when reconnecting after network changes,
-				// daemon restarts, or context re-evaluation. Any tunnel referenced in
-				// the activated context's action block should get maximum retry attempts.
-				d.mu.Lock()
-				if existingTunnel, stillExists := d.tunnels[alias]; stillExists {
-					existingTunnel.RetryCount = 0
-					existingTunnel.TotalReconnects = 0
-					existingTunnel.NextRetryTime = time.Time{}
-					d.tunnels[alias] = existingTunnel
-					slog.Info("Reset retry counters for tunnel before context-driven connection",
-						"tunnel", alias,
-						"context", to)
-				}
-				d.mu.Unlock()
-
 				resp := d.startTunnel(alias)
 				// Check if any response messages indicate an error
 				for _, msg := range resp.Messages {
 					if msg.Status == "ERROR" {
 						slog.Error("Failed to start tunnel during context change",
 							"tunnel", alias,
-							"context", to,
+							"context", info.ToContext,
 							"error", msg.Message)
 					}
 				}
@@ -1556,10 +1566,14 @@ func (d *Daemon) getContextStatus(eventLimit int) Response {
 	// Get current context
 	ctx := d.securityManager.GetContext()
 
-	// Build sensor map
+	// Build sensor map - read directly from sensors for current values
+	// Use GetLastValue() for all sensors to avoid blocking on network requests
+	// (active sensors poll continuously so values are at most ~10 seconds old)
 	sensors := make(map[string]string)
-	for key, value := range ctx.GetAllSensors() {
-		sensors[key] = value.String()
+	for _, sensor := range d.securityManager.GetSensors() {
+		if lastValue := sensor.GetLastValue(); lastValue != nil {
+			sensors[sensor.Name()] = lastValue.String()
+		}
 	}
 
 	// Get change history
