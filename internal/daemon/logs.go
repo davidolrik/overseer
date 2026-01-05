@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/lmittmann/tint"
+	"overseer.olrik.dev/internal/awareness/state"
 )
 
 // LogBroadcaster manages streaming logs to multiple clients
@@ -90,9 +91,87 @@ func (d *Daemon) setupLogging() {
 func (d *Daemon) handleLogs(conn net.Conn) {
 	defer conn.Close()
 
-	// Subscribe to log broadcasts
+	// Use handleLogsWithState which includes both slog and state events
+	if stateOrchestrator != nil {
+		d.handleLogsWithState(conn)
+		return
+	}
+
+	// Fallback to just slog if state orchestrator not initialized
 	logChan := d.logBroadcast.Subscribe()
 	defer d.logBroadcast.Unsubscribe(logChan)
+
+	initialMsg := "Connected to overseer daemon logs. Press Ctrl+C to exit.\n"
+	if _, err := conn.Write([]byte(initialMsg)); err != nil {
+		slog.Warn(fmt.Sprintf("Failed to send initial message to logs client: %v", err))
+		return
+	}
+
+	done := make(chan bool)
+	go func() {
+		reader := bufio.NewReader(conn)
+		io.Copy(io.Discard, reader)
+		done <- true
+	}()
+
+	for {
+		select {
+		case logMsg, ok := <-logChan:
+			if !ok {
+				return
+			}
+			if _, err := conn.Write([]byte(logMsg)); err != nil {
+				return
+			}
+		case <-done:
+			return
+		}
+	}
+}
+
+// handleAttach streams raw slog output to the client (same as daemon stderr)
+func (d *Daemon) handleAttach(conn net.Conn) {
+	defer conn.Close()
+
+	// Subscribe to slog broadcasts
+	logChan := d.logBroadcast.Subscribe()
+	defer d.logBroadcast.Unsubscribe(logChan)
+
+	// Send initial message
+	initialMsg := "Attached to overseer daemon. Press Ctrl+C to detach.\n\n"
+	if _, err := conn.Write([]byte(initialMsg)); err != nil {
+		return
+	}
+
+	// Detect when client disconnects
+	done := make(chan bool)
+	go func() {
+		reader := bufio.NewReader(conn)
+		io.Copy(io.Discard, reader)
+		done <- true
+	}()
+
+	// Stream logs
+	for {
+		select {
+		case logMsg, ok := <-logChan:
+			if !ok {
+				return
+			}
+			if _, err := conn.Write([]byte(logMsg)); err != nil {
+				return
+			}
+		case <-done:
+			return
+		}
+	}
+}
+
+// handleLogsWithState streams both slog and structured state logs
+func (d *Daemon) handleLogsWithState(conn net.Conn) {
+	// Subscribe to state log channel (which includes all events)
+	stateID, stateChan := stateOrchestrator.SubscribeLogs(true)
+	defer stateOrchestrator.UnsubscribeLogs(stateID)
 
 	// Send initial message
 	initialMsg := "Connected to overseer daemon logs. Press Ctrl+C to exit.\n"
@@ -101,32 +180,32 @@ func (d *Daemon) handleLogs(conn net.Conn) {
 		return
 	}
 
+	// Create renderer for formatting log entries
+	renderer := state.NewLogRenderer(conn, false)
+
+	// Render separator for history replay
+	renderer.RenderSeparator("Recent History")
+
 	// Create a reader for the connection to detect when client disconnects
 	done := make(chan bool)
 	go func() {
 		reader := bufio.NewReader(conn)
-		// Read until EOF (client disconnect)
 		io.Copy(io.Discard, reader)
 		done <- true
 	}()
 
-	// Stream logs to client
+	// Stream logs
 	for {
 		select {
-		case logMsg, ok := <-logChan:
+		case entry, ok := <-stateChan:
 			if !ok {
-				// Channel closed, broadcaster is shutting down
 				return
 			}
+			renderer.Render(entry)
 
-			// Send log message to client
-			if _, err := conn.Write([]byte(logMsg)); err != nil {
-				// Client disconnected
-				return
-			}
 		case <-done:
-			// Client disconnected
 			return
 		}
 	}
 }
+

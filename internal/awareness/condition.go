@@ -1,4 +1,4 @@
-package security
+package awareness
 
 import (
 	"context"
@@ -243,6 +243,33 @@ func extractSensorsRecursive(cond Condition, sensors map[string]bool) {
 	case *GroupCondition:
 		for _, child := range c.Conditions {
 			extractSensorsRecursive(child, sensors)
+		}
+	}
+}
+
+// ExtractPatternsForSensor returns all patterns for a specific sensor from a condition tree
+// This is useful for extracting IP addresses from conditions for display purposes
+func ExtractPatternsForSensor(cond Condition, sensorName string) []string {
+	patterns := make(map[string]bool)
+	extractPatternsRecursive(cond, sensorName, patterns)
+
+	result := make([]string, 0, len(patterns))
+	for pattern := range patterns {
+		result = append(result, pattern)
+	}
+	return result
+}
+
+// extractPatternsRecursive is the internal recursive implementation
+func extractPatternsRecursive(cond Condition, sensorName string, patterns map[string]bool) {
+	switch c := cond.(type) {
+	case *SensorCondition:
+		if c.SensorName == sensorName && c.Pattern != "" {
+			patterns[c.Pattern] = true
+		}
+	case *GroupCondition:
+		for _, child := range c.Conditions {
+			extractPatternsRecursive(child, sensorName, patterns)
 		}
 	}
 }

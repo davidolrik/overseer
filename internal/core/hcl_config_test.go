@@ -11,59 +11,55 @@ import (
 func TestLoadConfig(t *testing.T) {
 	// Create temporary directory
 	tmpDir := t.TempDir()
-	configPath := filepath.Join(tmpDir, "config.kdl")
+	configPath := filepath.Join(tmpDir, "config.hcl")
 
-	// Write a test KDL config
-	kdlConfig := `// Test configuration
-verbose 0
+	// Write a test HCL config
+	hclConfig := `# Test configuration
+verbose = 0
 
 exports {
-  context "/tmp/test-context.txt"
-  dotenv "/tmp/overseer.env"
+  context  = "/tmp/test-context.txt"
+  dotenv   = "/tmp/overseer.env"
 }
 
 ssh {
-  server_alive_interval 15
-  server_alive_count_max 3
-  reconnect_enabled true
-  initial_backoff "1s"
-  max_backoff "5m"
-  backoff_factor 2
-  max_retries 10
+  server_alive_interval = 15
+  server_alive_count_max = 3
+  reconnect_enabled = true
+  initial_backoff = "1s"
+  max_backoff = "5m"
+  backoff_factor = 2
+  max_retries = 10
 }
 
 context "home" {
-  display_name "Home"
+  display_name = "Home"
 
   conditions {
-    public_ip "123.45.67.89"
-    public_ip "123.45.67.90"
-    public_ip "192.168.1.0/24"
+    public_ip = ["123.45.67.89", "123.45.67.90", "192.168.1.0/24"]
   }
 
   actions {
-    connect "homelab"
-    connect "nas"
-    disconnect "office-vpn"
+    connect    = ["homelab", "nas"]
+    disconnect = ["office-vpn"]
   }
 }
 
 context "office" {
-  display_name "Office"
+  display_name = "Office"
 
   conditions {
-    public_ip "98.76.54.0/24"
-    public_ip "98.76.55.0/24"
+    public_ip = ["98.76.54.0/24", "98.76.55.0/24"]
   }
 
   actions {
-    connect "office-vpn"
-    disconnect "homelab"
+    connect    = ["office-vpn"]
+    disconnect = ["homelab"]
   }
 }
 `
 
-	err := os.WriteFile(configPath, []byte(kdlConfig), 0644)
+	err := os.WriteFile(configPath, []byte(hclConfig), 0644)
 	if err != nil {
 		t.Fatalf("Failed to write test config: %v", err)
 	}
@@ -71,7 +67,7 @@ context "office" {
 	// Load the configuration
 	config, err := LoadConfig(configPath)
 	if err != nil {
-		t.Fatalf("Failed to load KDL config: %v", err)
+		t.Fatalf("Failed to load HCL config: %v", err)
 	}
 
 	// Verify basic settings
@@ -141,42 +137,29 @@ context "office" {
 	}
 
 	// Check home context (should be first in order)
-	var homeRule *ContextRule
-	for _, rule := range config.Contexts {
-		if rule.Name == "home" {
-			homeRule = rule
-			break
-		}
-	}
-	if homeRule == nil {
-		t.Fatal("Could not find home context rule")
-	}
-
+	homeRule := config.Contexts[0]
 	if homeRule.Name != "home" {
-		t.Errorf("Expected name='home', got '%v'", homeRule.Name)
+		t.Errorf("Expected first context name='home', got '%v'", homeRule.Name)
 	}
 
 	if homeRule.DisplayName != "Home" {
 		t.Errorf("Expected display_name='Home', got '%v'", homeRule.DisplayName)
 	}
 
-	// Check that conditions were parsed (either simple or structured format)
-	// With multiple public_ip lines, they get parsed as structured conditions
-	if homeRule.Condition == nil && len(homeRule.Conditions) == 0 {
+	// Check that conditions were parsed
+	if homeRule.Condition == nil {
 		t.Fatal("Expected conditions to be parsed")
 	}
 
 	// Verify the structured condition was created correctly
-	if homeRule.Condition != nil {
-		condStr := fmt.Sprintf("%v", homeRule.Condition)
-		t.Logf("Parsed condition: %s", condStr)
+	condStr := fmt.Sprintf("%v", homeRule.Condition)
+	t.Logf("Parsed condition: %s", condStr)
 
-		// Should contain all three IP patterns
-		expectedPatterns := []string{"123.45.67.89", "123.45.67.90", "192.168.1.0/24"}
-		for _, pattern := range expectedPatterns {
-			if !strings.Contains(condStr, pattern) {
-				t.Errorf("Expected condition to contain pattern '%s'", pattern)
-			}
+	// Should contain all three IP patterns
+	expectedPatterns := []string{"123.45.67.89", "123.45.67.90", "192.168.1.0/24"}
+	for _, pattern := range expectedPatterns {
+		if !strings.Contains(condStr, pattern) {
+			t.Errorf("Expected condition to contain pattern '%s'", pattern)
 		}
 	}
 
@@ -198,22 +181,16 @@ context "office" {
 	}
 
 	// Check office context
-	var officeRule *ContextRule
-	for _, rule := range config.Contexts {
-		if rule.Name == "office" {
-			officeRule = rule
-			break
-		}
-	}
-	if officeRule == nil {
-		t.Fatal("Could not find office context rule")
+	officeRule := config.Contexts[1]
+	if officeRule.Name != "office" {
+		t.Errorf("Expected second context name='office', got '%v'", officeRule.Name)
 	}
 
 	if officeRule.DisplayName != "Office" {
 		t.Errorf("Expected display_name='Office', got '%v'", officeRule.DisplayName)
 	}
 
-	t.Logf("✓ KDL config loaded successfully")
+	t.Logf("HCL config loaded successfully")
 	t.Logf("  Verbose: %v", config.Verbose)
 	t.Logf("  SSH reconnect enabled: %v", config.SSH.ReconnectEnabled)
 	t.Logf("  Context rules: %d", len(config.Contexts))
@@ -222,37 +199,39 @@ context "office" {
 func TestLoadConfig_StructuredConditions(t *testing.T) {
 	// Create temporary directory
 	tmpDir := t.TempDir()
-	configPath := filepath.Join(tmpDir, "config.kdl")
+	configPath := filepath.Join(tmpDir, "config.hcl")
 
-	// Write a test KDL config with new any/all syntax
-	// Note: When using structured conditions (any/all), the KDL unmarshaler
-	// will fail, but parseConditionsBlock will catch them separately
-	kdlConfig := `// Test configuration with structured conditions
-verbose 0
+	// Write a test HCL config with structured conditions
+	hclConfig := `# Test configuration with structured conditions
+verbose = 0
 
 context "trusted" {
-  display_name "Trusted Location"
+  display_name = "Trusted Location"
+
   conditions {
-    online true
-    public_ip "192.168.1.0/24"
+    online    = true
+    public_ip = ["192.168.1.0/24"]
   }
+
   actions {
-    connect "homelab"
+    connect = ["homelab"]
   }
 }
 
 context "offline" {
-  display_name "Offline Mode"
+  display_name = "Offline Mode"
+
   conditions {
-    online false
+    online = false
   }
+
   actions {
-    disconnect "all-tunnels"
+    disconnect = ["all-tunnels"]
   }
 }
 `
 
-	err := os.WriteFile(configPath, []byte(kdlConfig), 0644)
+	err := os.WriteFile(configPath, []byte(hclConfig), 0644)
 	if err != nil {
 		t.Fatalf("Failed to write test config: %v", err)
 	}
@@ -260,7 +239,7 @@ context "offline" {
 	// Load the configuration
 	config, err := LoadConfig(configPath)
 	if err != nil {
-		t.Fatalf("Failed to load KDL config: %v", err)
+		t.Fatalf("Failed to load HCL config: %v", err)
 	}
 
 	// Verify contexts
@@ -269,16 +248,9 @@ context "offline" {
 	}
 
 	// Find trusted context
-	var trustedRule *ContextRule
-	for _, rule := range config.Contexts {
-		if rule.Name == "trusted" {
-			trustedRule = rule
-			break
-		}
-	}
-
-	if trustedRule == nil {
-		t.Fatal("Could not find trusted context rule")
+	trustedRule := config.Contexts[0]
+	if trustedRule.Name != "trusted" {
+		t.Errorf("Expected first context name='trusted', got '%v'", trustedRule.Name)
 	}
 
 	if trustedRule.DisplayName != "Trusted Location" {
@@ -302,16 +274,9 @@ context "offline" {
 	}
 
 	// Find offline context
-	var offlineRule *ContextRule
-	for _, rule := range config.Contexts {
-		if rule.Name == "offline" {
-			offlineRule = rule
-			break
-		}
-	}
-
-	if offlineRule == nil {
-		t.Fatal("Could not find offline context rule")
+	offlineRule := config.Contexts[1]
+	if offlineRule.Name != "offline" {
+		t.Errorf("Expected second context name='offline', got '%v'", offlineRule.Name)
 	}
 
 	if offlineRule.Condition == nil {
@@ -326,6 +291,117 @@ context "offline" {
 		}
 	}
 
-	t.Logf("✓ Structured conditions loaded successfully")
+	t.Logf("Structured conditions loaded successfully")
 	t.Logf("  Contexts: %d", len(config.Contexts))
+}
+
+func TestLoadConfig_LocationsAndEnvironment(t *testing.T) {
+	// Create temporary directory
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.hcl")
+
+	// Write a test HCL config with locations and environment variables
+	hclConfig := `# Test configuration with locations
+verbose = 0
+
+location "home" {
+  display_name = "Home Office"
+
+  conditions {
+    public_ip = ["192.168.1.0/24"]
+  }
+
+  environment = {
+    "LOCATION_TYPE" = "home"
+    "NETWORK"       = "trusted"
+  }
+}
+
+location "office" {
+  display_name = "Work Office"
+
+  conditions {
+    public_ip = ["10.0.0.0/8"]
+    env = {
+      "CORP_NETWORK" = "true"
+    }
+  }
+}
+
+context "work" {
+  display_name = "Work Mode"
+  locations    = ["home", "office"]
+
+  actions {
+    connect = ["vpn"]
+  }
+
+  environment = {
+    "MODE" = "work"
+  }
+}
+`
+
+	err := os.WriteFile(configPath, []byte(hclConfig), 0644)
+	if err != nil {
+		t.Fatalf("Failed to write test config: %v", err)
+	}
+
+	// Load the configuration
+	config, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("Failed to load HCL config: %v", err)
+	}
+
+	// Verify locations
+	if len(config.Locations) != 2 {
+		t.Fatalf("Expected 2 locations, got %d", len(config.Locations))
+	}
+
+	// Check home location
+	homeLoc, ok := config.Locations["home"]
+	if !ok {
+		t.Fatal("Expected to find 'home' location")
+	}
+
+	if homeLoc.DisplayName != "Home Office" {
+		t.Errorf("Expected display_name='Home Office', got '%v'", homeLoc.DisplayName)
+	}
+
+	if len(homeLoc.Environment) != 2 {
+		t.Errorf("Expected 2 environment variables, got %d", len(homeLoc.Environment))
+	}
+
+	if homeLoc.Environment["LOCATION_TYPE"] != "home" {
+		t.Errorf("Expected LOCATION_TYPE='home', got '%v'", homeLoc.Environment["LOCATION_TYPE"])
+	}
+
+	// Check office location with env condition
+	officeLoc, ok := config.Locations["office"]
+	if !ok {
+		t.Fatal("Expected to find 'office' location")
+	}
+
+	if officeLoc.Condition == nil {
+		t.Error("Expected structured condition for office location")
+	} else {
+		condStr := fmt.Sprintf("%v", officeLoc.Condition)
+		t.Logf("Office location condition: %s", condStr)
+	}
+
+	// Check work context with locations
+	if len(config.Contexts) != 1 {
+		t.Fatalf("Expected 1 context, got %d", len(config.Contexts))
+	}
+
+	workCtx := config.Contexts[0]
+	if len(workCtx.Locations) != 2 {
+		t.Errorf("Expected 2 locations in work context, got %d", len(workCtx.Locations))
+	}
+
+	if workCtx.Environment["MODE"] != "work" {
+		t.Errorf("Expected MODE='work', got '%v'", workCtx.Environment["MODE"])
+	}
+
+	t.Logf("Locations and environment loaded successfully")
 }

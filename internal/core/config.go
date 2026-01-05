@@ -25,24 +25,23 @@ func GetPIDFilePath() string {
 	return filepath.Join(Config.ConfigPath, PidFileName)
 }
 
-// InitializeConfig loads the configuration from the KDL file
+// InitializeConfig loads the configuration from the HCL file
 func InitializeConfig(cmd *cobra.Command) ([]string, error) {
 	// Get config path from user input
-	configPath, err := cmd.Parent().Flags().GetString("config-path")
+	configDir, err := cmd.Parent().Flags().GetString("config-path")
 	if err != nil {
 		panic("Unable to determine config path")
 	}
 
-	// Load KDL config
-	kdlPath := filepath.Join(configPath, "config.kdl")
-	if _, err := os.Stat(kdlPath); err == nil {
-		// KDL file exists, parse it
-		Config, err = LoadConfig(kdlPath)
+	// Load HCL config
+	hclPath := filepath.Join(configDir, "config.hcl")
+	if _, err := os.Stat(hclPath); err == nil {
+		// HCL file exists, parse it
+		Config, err = LoadConfig(hclPath)
 		if err != nil {
 			// Clean up the error message
 			errMsg := err.Error()
-			errMsg = strings.TrimPrefix(errMsg, "failed to unmarshal KDL: parse failed: ")
-			errMsg = strings.TrimPrefix(errMsg, "failed to unmarshal KDL: scan failed: ")
+			errMsg = strings.TrimPrefix(errMsg, "failed to parse HCL config: ")
 
 			// Remove the visual pointer (everything after the line/column info)
 			if idx := strings.Index(errMsg, ":\n"); idx != -1 {
@@ -50,22 +49,22 @@ func InitializeConfig(cmd *cobra.Command) ([]string, error) {
 			}
 
 			fmt.Fprintf(os.Stderr, "Error: Configuration file has syntax errors\n")
-			fmt.Fprintf(os.Stderr, "  File: %s\n", kdlPath)
+			fmt.Fprintf(os.Stderr, "  File: %s\n", hclPath)
 			fmt.Fprintf(os.Stderr, "  %s\n", errMsg)
 			os.Exit(1)
 		}
 	} else {
-		// No config file found - create default KDL config
-		err := os.MkdirAll(configPath, 0o755)
+		// No config file found - create default HCL config
+		err := os.MkdirAll(configDir, 0o755)
 		if err != nil {
 			panic(err)
 		}
-		// Write default KDL config
-		if err := writeDefaultKDLConfig(kdlPath); err != nil {
+		// Write default HCL config
+		if err := writeDefaultHCLConfig(hclPath); err != nil {
 			panic(fmt.Sprintf("Failed to write default config: %v", err))
 		}
 		// Load the newly created config
-		Config, err = LoadConfig(kdlPath)
+		Config, err = LoadConfig(hclPath)
 		if err != nil {
 			// This should never happen with default config, but handle it gracefully
 			fmt.Fprintf(os.Stderr, "Error: Failed to parse default configuration: %v\n", err)
@@ -74,7 +73,7 @@ func InitializeConfig(cmd *cobra.Command) ([]string, error) {
 	}
 
 	// Set the config path
-	Config.ConfigPath = configPath
+	Config.ConfigPath = configDir
 
 	// Override verbose from command-line flag if provided
 	if cmd != nil {
@@ -86,134 +85,86 @@ func InitializeConfig(cmd *cobra.Command) ([]string, error) {
 	return []string{}, nil
 }
 
-// writeDefaultKDLConfig writes a default KDL configuration file
-func writeDefaultKDLConfig(path string) error {
-	defaultConfig := `// Overseer Configuration
-// See https://kdl.dev for KDL syntax reference
+// writeDefaultHCLConfig writes a default HCL configuration file
+func writeDefaultHCLConfig(path string) error {
+	defaultConfig := `# Overseer Configuration
 
-// Global settings
-verbose 0
+# Global settings
+verbose = 0
 
-// Optional: Export context data to files for external integration
-// All export paths support ~ for home directory
-// exports {
-//   dotenv "/path/to/overseer.env"      // Env file with OVERSEER_* variables (see below)
-//   context "/path/to/context.txt"      // Context name only
-//   location "/path/to/location.txt"    // Location name only
-//   public_ip "/path/to/public_ip.txt"  // Public IP only
-// }
-//
-// Dotenv format exports these variables:
-//   OVERSEER_CONTEXT=home
-//   OVERSEER_CONTEXT_DISPLAY_NAME=Home Network
-//   OVERSEER_LOCATION=hq
-//   OVERSEER_LOCATION_DISPLAY_NAME=Headquarters
-//   OVERSEER_PUBLIC_IP=123.45.67.89
+# Optional: Export context data to files for external integration
+# All export paths support ~ for home directory
+# exports {
+#   dotenv    = "/path/to/overseer.env"      # Env file with OVERSEER_* variables
+#   context   = "/path/to/context.txt"       # Context name only
+#   location  = "/path/to/location.txt"      # Location name only
+#   public_ip = "/path/to/public_ip.txt"     # Public IP only
+# }
 
-// SSH connection settings
+# SSH connection settings
 ssh {
-  // Keep alive settings - detect dead connections
-  server_alive_interval 15   // Send keepalive every N seconds (0 to disable)
-  server_alive_count_max 3   // Exit after N failed keepalives
+  # Keep alive settings - detect dead connections
+  server_alive_interval = 15  # Send keepalive every N seconds (0 to disable)
+  server_alive_count_max = 3  # Exit after N failed keepalives
 
-  // Automatic reconnection settings
-  reconnect_enabled true
-  initial_backoff "1s"       // First retry delay
-  max_backoff "5m"           // Maximum delay between retries
-  backoff_factor 2           // Multiplier for each retry
-  max_retries 10             // Give up after this many attempts
+  # Automatic reconnection settings
+  reconnect_enabled = true
+  initial_backoff   = "1s"    # First retry delay
+  max_backoff       = "5m"    # Maximum delay between retries
+  backoff_factor    = 2       # Multiplier for each retry
+  max_retries       = 10      # Give up after this many attempts
 }
 
-// Location definitions - reusable network/physical locations
-// Uncomment and customize for your networks
-// location "home" {
-//   display_name "Home Network"
-//
-//   conditions {
-//     public_ip "203.0.113.42"      // Your home IP
-//     public_ip "198.51.100.0/24"   // CIDR ranges supported
-//     env "HOSTNAME" "my-laptop"    // Match environment variables
-//     env "USER" "myusername"       // Multiple env conditions supported
-//   }
-//
-//   environment {
-//     LOCATION_TYPE "residential"
-//     NETWORK_SPEED "1000"
-//   }
-// }
-//
-// location "office" {
-//   display_name "Office"
-//
-//   conditions {
-//     public_ip "192.0.2.0/24"
-//     env "COMPANY_NETWORK" "true"
-//   }
-//
-//   environment {
-//     LOCATION_TYPE "corporate"
-//     NETWORK_SPEED "10000"
-//   }
-// }
+# Location definitions - reusable network/physical locations
+# Uncomment and customize for your networks
+# location "home" {
+#   display_name = "Home Network"
+#
+#   conditions {
+#     public_ip = ["203.0.113.42", "198.51.100.0/24"]
+#     env = {
+#       "HOSTNAME" = "my-laptop"
+#     }
+#   }
+#
+#   environment = {
+#     "LOCATION_TYPE"  = "residential"
+#     "NETWORK_SPEED"  = "1000"
+#   }
+# }
 
-// Context definitions - evaluated in order (first match wins)
-// Contexts can reference locations or use direct conditions
-// Put more specific contexts first
-// context "trusted" {
-//   display_name "Trusted Network"
-//   location "home"        // Reference a location
-//   location "office"      // Multiple locations supported
-//
-//   environment {
-//     TRUST_LEVEL "high"
-//     ALLOW_SSH "true"
-//   }
-//
-//   actions {
-//     connect "home-lab"   // Connect these tunnels
-//     connect "dev-server"
-//   }
-// }
-//
-// context "development" {
-//   display_name "Development Environment"
-//
-//   conditions {
-//     env "ENVIRONMENT" "dev"        // Match environment variables
-//     env "ENVIRONMENT" "development" // Multiple patterns for same var (OR logic)
-//     env "DEPLOYMENT_TYPE" "local"  // Multiple env vars (AND logic)
-//   }
-//
-//   environment {
-//     TRUST_LEVEL "medium"
-//     ENABLE_DEBUG "true"
-//   }
-//
-//   actions {
-//     connect "dev-tunnel"
-//     connect "local-db"
-//   }
-// }
-//
-// context "mobile" {
-//   display_name "Mobile Network"
-//
-//   conditions {
-//     public_ip "109.58.0.0/16"    // Direct conditions also supported
-//     env "NETWORK_TYPE" "cellular" // Can mix public_ip and env conditions
-//   }
-//
-//   environment {
-//     TRUST_LEVEL "low"
-//     ALLOW_SSH "false"
-//     REQUIRE_VPN "true"
-//   }
-//
-//   actions {
-//     connect "vpn"
-//     disconnect "home-lab"  // Disconnect these tunnels
-//   }
-// }
+# Context definitions - evaluated in order (first match wins)
+# Contexts can reference locations or use direct conditions
+# context "trusted" {
+#   display_name = "Trusted Network"
+#   locations    = ["home", "office"]
+#
+#   environment = {
+#     "TRUST_LEVEL" = "high"
+#   }
+#
+#   actions {
+#     connect = ["home-lab", "dev-server"]
+#   }
+# }
+#
+# context "mobile" {
+#   display_name = "Mobile Network"
+#
+#   conditions {
+#     public_ip = ["109.58.0.0/16"]
+#   }
+#
+#   environment = {
+#     "TRUST_LEVEL"  = "low"
+#     "REQUIRE_VPN"  = "true"
+#   }
+#
+#   actions {
+#     connect    = ["vpn"]
+#     disconnect = ["home-lab"]
+#   }
+# }
 `
 	return os.WriteFile(path, []byte(defaultConfig), 0644)
 }

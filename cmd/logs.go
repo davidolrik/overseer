@@ -22,9 +22,25 @@ func NewLogsCommand() *cobra.Command {
 		Use:     "logs",
 		Aliases: []string{"log"},
 		Short:   "Stream daemon logs in real-time",
-		Long:    `Stream daemon logs in real-time.
+		Long: `Stream daemon logs in real-time.
 
-Press Ctrl+C to exit. By default, only shows INFO level and above. Use -v to see DEBUG logs.
+Press Ctrl+C to exit. By default, only shows INFO level and above.
+
+Filter categories:
+  sensor  - Sensor readings (TCP, IPv4, IPv6 probes)
+  state   - State transitions (context, location, online changes)
+  effect  - Side effects (env file writes, callbacks)
+  system  - System events (daemon start/stop, config reload)
+  tunnel  - Tunnel-related events
+
+Examples:
+  overseer logs            # Stream INFO and above
+  overseer logs -v         # Include DEBUG logs
+  overseer logs -f sensor  # Filter to sensor readings
+  overseer logs -f state   # Filter to state changes
+  overseer logs -f effect  # Filter to env file writes
+  overseer logs -f online  # Filter by keyword
+
 Automatically reconnects if the daemon is reloaded.`,
 		Args: cobra.NoArgs,
 		Run: func(cmd *cobra.Command, args []string) {
@@ -34,8 +50,10 @@ Automatically reconnects if the daemon is reloaded.`,
 				os.Exit(1)
 			}
 
-			// Get verbose flag
+			// Get flags
 			verbose, _ := cmd.Flags().GetBool("verbose")
+			filter, _ := cmd.Flags().GetString("filter")
+			noColor, _ := cmd.Flags().GetBool("no-color")
 
 			// Set up signal handler for Ctrl+C
 			sigChan := make(chan os.Signal, 1)
@@ -74,10 +92,20 @@ Automatically reconnects if the daemon is reloaded.`,
 						}
 
 						// Filter logs based on verbose flag
-						// Log format: timestamp [LEVEL] message
-						// If not verbose, skip DEBUG logs
-						if !verbose && strings.Contains(line, "DBG") {
+						// Skip DEBUG logs if not verbose
+						// Check both plain "DBG" and ANSI-colored version
+						if !verbose && isDebugLog(line) {
 							continue
+						}
+
+						// Apply filter if specified
+						if filter != "" && !matchesFilter(line, filter) {
+							continue
+						}
+
+						// Strip color codes if --no-color
+						if noColor {
+							line = stripANSI(line)
 						}
 
 						fmt.Print(line)
@@ -117,6 +145,86 @@ Automatically reconnects if the daemon is reloaded.`,
 	}
 
 	logsCmd.Flags().BoolP("verbose", "v", false, "Show DEBUG level logs")
+	logsCmd.Flags().StringP("filter", "f", "", "Filter logs by keyword (e.g., sensor, state, tunnel, context)")
+	logsCmd.Flags().Bool("no-color", false, "Disable colored output")
 
 	return logsCmd
+}
+
+// isDebugLog checks if a log line is a DEBUG level log
+func isDebugLog(line string) bool {
+	// Check for plain DBG
+	if strings.Contains(line, " DBG ") || strings.Contains(line, "\tDBG\t") {
+		return true
+	}
+	// Check for ANSI-colored DBG (gray color: \033[90mDBG\033[0m)
+	if strings.Contains(line, "\033[90mDBG\033[0m") {
+		return true
+	}
+	// Strip ANSI and check again
+	stripped := stripANSI(line)
+	return strings.Contains(stripped, " DBG ") || strings.Contains(stripped, "\tDBG\t")
+}
+
+// matchesFilter checks if a log line matches the filter criteria
+func matchesFilter(line, filter string) bool {
+	filter = strings.ToLower(filter)
+	lineLower := strings.ToLower(line)
+
+	// Check for exact category matches
+	switch filter {
+	case "sensor":
+		// Match sensor category icon (~) or sensor-related keywords
+		return strings.Contains(line, " ~ ") ||
+			strings.Contains(lineLower, "sensor") ||
+			strings.Contains(lineLower, "tcp") ||
+			strings.Contains(lineLower, "public_ip") ||
+			strings.Contains(lineLower, "ipv4") ||
+			strings.Contains(lineLower, "ipv6")
+	case "state":
+		// Match state category icon (*) or state-related keywords
+		return strings.Contains(line, " * ") ||
+			strings.Contains(lineLower, "context") ||
+			strings.Contains(lineLower, "location") ||
+			strings.Contains(lineLower, "online")
+	case "effect":
+		// Match effect category icon (>) or effect-related keywords
+		return strings.Contains(line, " > ") ||
+			strings.Contains(lineLower, "effect") ||
+			strings.Contains(lineLower, "env_write") ||
+			strings.Contains(lineLower, "dotenv")
+	case "system":
+		// Match system category icon (#) or system-related keywords
+		return strings.Contains(line, " # ") ||
+			strings.Contains(lineLower, "orchestrator") ||
+			strings.Contains(lineLower, "daemon")
+	case "tunnel":
+		return strings.Contains(lineLower, "tunnel") ||
+			strings.Contains(lineLower, "ssh")
+	default:
+		// General substring match
+		return strings.Contains(lineLower, filter)
+	}
+}
+
+// stripANSI removes ANSI escape codes from a string
+func stripANSI(s string) string {
+	var result strings.Builder
+	inEscape := false
+
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\033' {
+			inEscape = true
+			continue
+		}
+		if inEscape {
+			if s[i] == 'm' {
+				inEscape = false
+			}
+			continue
+		}
+		result.WriteByte(s[i])
+	}
+
+	return result.String()
 }

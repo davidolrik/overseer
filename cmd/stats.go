@@ -3,12 +3,15 @@ package cmd
 import (
 	"fmt"
 	"hash/fnv"
+	"net"
 	"os"
 	"path/filepath"
 	"time"
 
 	"github.com/spf13/cobra"
+	"overseer.olrik.dev/internal/core"
 	"overseer.olrik.dev/internal/db"
+	"overseer.olrik.dev/internal/awareness"
 )
 
 // ANSI color codes
@@ -46,8 +49,10 @@ var ipColors = []struct{ r, g, b uint8 }{
 }
 
 // ipColorCache stores assigned colors for IPs
-var ipColorCache = make(map[string]string)
-var ipColorIndex = 0
+var (
+	ipColorCache = make(map[string]string)
+	ipColorIndex = 0
+)
 
 // getIPColor returns a consistent 24-bit color for an IP address
 func getIPColor(ip string) string {
@@ -135,10 +140,69 @@ type OnlineSession struct {
 // IPStats holds statistics for a specific IP/network
 type IPStats struct {
 	IP            string
+	LocationName  string // Location name from config (if matched)
 	Sessions      []OnlineSession
 	TotalOnline   time.Duration
 	SessionCount  int
 	ShortSessions int // Sessions < 5 minutes
+}
+
+// getLocationForIP finds the location name that matches a given IP address
+// by checking the public_ip conditions in each location's configuration
+func getLocationForIP(ip string, config *core.Configuration) string {
+	if config == nil || ip == "" || ip == "unknown" {
+		return ""
+	}
+
+	parsedIP := net.ParseIP(ip)
+	if parsedIP == nil {
+		return ""
+	}
+
+	for _, location := range config.Locations {
+		if location == nil {
+			continue
+		}
+
+		// Collect IP patterns from both simple Conditions map and structured Condition
+		var ipPatterns []string
+
+		// Check simple conditions map
+		if location.Conditions != nil {
+			if patterns, exists := location.Conditions["public_ip"]; exists {
+				ipPatterns = append(ipPatterns, patterns...)
+			}
+		}
+
+		// Check structured condition (if it's a awareness.Condition)
+		if location.Condition != nil {
+			if cond, ok := location.Condition.(awareness.Condition); ok {
+				patterns := awareness.ExtractPatternsForSensor(cond, "public_ipv4")
+				ipPatterns = append(ipPatterns, patterns...)
+			}
+		}
+
+		// Check if any pattern matches the IP
+		for _, pattern := range ipPatterns {
+			// Check if it's a CIDR range
+			if _, cidr, err := net.ParseCIDR(pattern); err == nil {
+				if cidr.Contains(parsedIP) {
+					if location.DisplayName != "" {
+						return location.DisplayName
+					}
+					return location.Name
+				}
+			} else if pattern == ip {
+				// Exact IP match
+				if location.DisplayName != "" {
+					return location.DisplayName
+				}
+				return location.Name
+			}
+		}
+	}
+
+	return ""
 }
 
 func NewStatsCommand() *cobra.Command {
@@ -146,8 +210,8 @@ func NewStatsCommand() *cobra.Command {
 	var days int
 
 	statsCmd := &cobra.Command{
-		Use:     "stats",
-		Aliases: []string{"statistics", "stat"},
+		Use:     "qa",
+		Aliases: []string{"q", "statistics", "stats", "stat"},
 		Short:   "Show connectivity statistics and session history",
 		Long: `Display statistics about online sessions and network quality.
 
@@ -249,6 +313,10 @@ func runStats(start, end time.Time, label string) {
 	}
 	defer database.Close()
 
+	// Load config to get location names for IPs
+	configPath := filepath.Join(homeDir, ".config", "overseer", "config.hcl")
+	config, _ := core.LoadConfig(configPath) // Ignore error - location names are optional
+
 	// Get online and IP sensor changes
 	onlineChanges, ipChanges, err := getSensorChanges(database, start, end)
 	if err != nil {
@@ -271,7 +339,7 @@ func runStats(start, end time.Time, label string) {
 	printSummary(sessions, start, end)
 
 	// Group sessions by IP and print per-network stats
-	ipStats := groupSessionsByIP(sessions, start, end)
+	ipStats := groupSessionsByIP(sessions, start, end, config)
 	if len(ipStats) > 1 {
 		fmt.Printf("\n%s%sNetwork Quality by IP:%s\n", colorBold, colorWhite, colorReset)
 		printIPStats(ipStats, start, end)
@@ -340,38 +408,20 @@ func getSensorChanges(database *db.DB, start, end time.Time) (online, ip []db.Se
 }
 
 // getIPForSession finds the IP that was active during a session
-// It looks at the session start time with a small window ahead since
-// the IP change often comes shortly after the online status change
+// It looks at all IP changes during the session and returns the most recent valid one
 func getIPForSession(ipChanges []db.SensorChange, sessionStart, sessionEnd time.Time) string {
-	// Look for an IP change within 30 seconds after session start
-	lookAhead := sessionStart.Add(30 * time.Second)
-
 	var lastIP string
-	var foundInWindow bool
 
 	for _, c := range ipChanges {
-		// Track the last known IP before/at session start
-		if !c.Timestamp.After(sessionStart) {
-			if c.NewValue != "169.254.0.0" && c.NewValue != "" {
-				lastIP = c.NewValue
-			}
-		}
-		// Also check for IP within the look-ahead window
-		if c.Timestamp.After(sessionStart) && !c.Timestamp.After(lookAhead) {
-			if c.NewValue != "169.254.0.0" && c.NewValue != "" {
-				lastIP = c.NewValue
-				foundInWindow = true
-			}
-		}
 		// Stop if we're past the session end
 		if c.Timestamp.After(sessionEnd) {
 			break
 		}
-		// If we found IP in window, keep looking for better match during session
-		if foundInWindow && c.Timestamp.After(lookAhead) && !c.Timestamp.After(sessionEnd) {
-			if c.NewValue != "169.254.0.0" && c.NewValue != "" {
-				lastIP = c.NewValue
-			}
+
+		// Track any valid IP that occurred before or during the session
+		// This includes IPs from before the session (as baseline) and during the session
+		if c.NewValue != "169.254.0.0" && c.NewValue != "" {
+			lastIP = c.NewValue
 		}
 	}
 
@@ -438,7 +488,7 @@ func parseOnlineSessions(onlineChanges, ipChanges []db.SensorChange, start, end 
 }
 
 // groupSessionsByIP groups sessions by their IP address
-func groupSessionsByIP(sessions []OnlineSession, start, end time.Time) []IPStats {
+func groupSessionsByIP(sessions []OnlineSession, start, end time.Time, config *core.Configuration) []IPStats {
 	ipMap := make(map[string]*IPStats)
 
 	for _, s := range sessions {
@@ -449,7 +499,10 @@ func groupSessionsByIP(sessions []OnlineSession, start, end time.Time) []IPStats
 
 		stats, exists := ipMap[ip]
 		if !exists {
-			stats = &IPStats{IP: ip}
+			stats = &IPStats{
+				IP:           ip,
+				LocationName: getLocationForIP(ip, config),
+			}
 			ipMap[ip] = stats
 		}
 
@@ -538,11 +591,19 @@ func printIPStats(ipStats []IPStats, start, end time.Time) {
 			qualityColor = colorRed
 		}
 
-		// Print IP header with quality dot
-		fmt.Printf("\n  %s●%s %s%s%s %s%s%s\n",
-			qualityColor, colorReset,
-			getIPColor(stats.IP), stats.IP, colorReset,
-			qualityColor, quality, colorReset)
+		// Print IP header with quality dot and optional location name
+		if stats.LocationName != "" {
+			fmt.Printf("\n  %s●%s %s%s%s %s%s%s %s%s%s\n",
+				qualityColor, colorReset,
+				colorBold, stats.LocationName, colorReset,
+				getIPColor(stats.IP), stats.IP, colorReset,
+				qualityColor, quality, colorReset)
+		} else {
+			fmt.Printf("\n  %s●%s %s%s%s %s%s%s\n",
+				qualityColor, colorReset,
+				getIPColor(stats.IP), stats.IP, colorReset,
+				qualityColor, quality, colorReset)
+		}
 
 		// Print stats (use IP's color for consistency)
 		ipColor := getIPColor(stats.IP)
@@ -638,12 +699,12 @@ func printSummary(sessions []OnlineSession, start, end time.Time) {
 
 // sessionEntry represents a session or part of a session for display in a day
 type sessionEntry struct {
-	session      OnlineSession
-	displayStart time.Time
-	displayEnd   time.Time
+	session       OnlineSession
+	displayStart  time.Time
+	displayEnd    time.Time
 	continuesNext bool // Session continues to next day
 	continuesPrev bool // Session continued from previous day
-	isActive     bool
+	isActive      bool
 }
 
 func printSessions(sessions []OnlineSession) {

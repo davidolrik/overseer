@@ -1,4 +1,4 @@
-package security
+package awareness
 
 import (
 	"context"

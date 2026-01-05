@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -60,10 +61,6 @@ and rules defined in your configuration. Context changes automatically connect o
 					fmt.Println("  (none)")
 				}
 				for _, status := range statuses {
-					// Use LastConnectedTime for age (resets to 0 on reconnection)
-					lastConnected, _ := time.Parse(time.RFC3339, status.LastConnectedTime)
-					age := time.Since(lastConnected)
-
 					// ANSI color codes
 					const (
 						colorGreen  = "\033[32m"
@@ -73,17 +70,37 @@ and rules defined in your configuration. Context changes automatically connect o
 					)
 
 					// Build state indicator with colored icon and alias
-					var icon, color, extraInfo string
+					var icon, color, extraInfo, timeInfo string
 					switch status.State {
 					case "connected":
 						icon = "✓"
 						color = colorGreen
+						// Use LastConnectedTime for age (resets to 0 on reconnection)
+						lastConnected, _ := time.Parse(time.RFC3339, status.LastConnectedTime)
+						age := time.Since(lastConnected)
+						timeInfo = fmt.Sprintf("Age: %s", age.Round(time.Second).String())
 					case "disconnected":
 						icon = "✗"
 						color = colorRed
+						// Show how long it's been disconnected
+						if status.DisconnectedTime != "" {
+							disconnectedAt, _ := time.Parse(time.RFC3339, status.DisconnectedTime)
+							disconnectedFor := time.Since(disconnectedAt)
+							timeInfo = fmt.Sprintf("Disconnected: %s ago", disconnectedFor.Round(time.Second).String())
+						} else {
+							timeInfo = "Disconnected"
+						}
 					case "reconnecting":
 						icon = "⟳"
 						color = colorYellow
+						// Show how long it's been disconnected
+						if status.DisconnectedTime != "" {
+							disconnectedAt, _ := time.Parse(time.RFC3339, status.DisconnectedTime)
+							disconnectedFor := time.Since(disconnectedAt)
+							timeInfo = fmt.Sprintf("Disconnected: %s ago", disconnectedFor.Round(time.Second).String())
+						} else {
+							timeInfo = "Reconnecting"
+						}
 						if status.NextRetry != "" {
 							nextRetry, err := time.Parse(time.RFC3339, status.NextRetry)
 							if err == nil {
@@ -107,10 +124,10 @@ and rules defined in your configuration. Context changes automatically connect o
 					}
 
 					fmt.Printf(
-						"  %s%s%s %s%s%s (PID: %d, Age: %s%s)%s\n",
+						"  %s%s%s %s%s%s (PID: %d, %s%s)%s\n",
 						color, icon, colorReset,
 						color, status.Hostname, colorReset,
-						status.Pid, age.Round(time.Second).String(),
+						status.Pid, timeInfo,
 						reconnectInfo,
 						extraInfo,
 					)
@@ -176,11 +193,23 @@ func displayContextBanner(data interface{}) {
 	// Display compact context info
 	fmt.Printf("%s%s%s%s", location, colorBoldCyan, status.Context, colorReset)
 
-	// Show public IP if available (prefer IPv4, fallback to IPv6)
+	// Show IPs if available
+	var ips []string
+
+	// Local IP
+	if ip, ok := status.Sensors["local_ipv4"]; ok && ip != "" {
+		ips = append(ips, fmt.Sprintf("LAN: %s", ip))
+	}
+
+	// Public IP (prefer IPv4, fallback to IPv6)
 	if ip, ok := status.Sensors["public_ipv4"]; ok && ip != "" && ip != "169.254.0.0" {
-		fmt.Printf(" (IP: %s)", ip)
+		ips = append(ips, fmt.Sprintf("WAN: %s", ip))
 	} else if ip, ok := status.Sensors["public_ipv6"]; ok && ip != "" && ip != "fe80::" {
-		fmt.Printf(" (IP: %s)", ip)
+		ips = append(ips, fmt.Sprintf("WAN: %s", ip))
+	}
+
+	if len(ips) > 0 {
+		fmt.Printf(" (%s)", strings.Join(ips, ", "))
 	}
 
 	fmt.Println()
