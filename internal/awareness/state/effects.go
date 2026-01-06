@@ -279,6 +279,74 @@ func (ep *EffectsProcessor) emitTransitionLogs(t StateTransition) {
 func (ep *EffectsProcessor) logToDatabase(t StateTransition) {
 	start := time.Now()
 
+	// Log online state changes
+	if t.HasChanged("online") {
+		err := ep.config.DatabaseLogger.LogSensorChange(
+			"online",
+			"boolean",
+			fmt.Sprintf("%v", t.From.Online),
+			fmt.Sprintf("%v", t.To.Online),
+		)
+		ep.emitEffectLog("db_log", "online_change", err, time.Since(start))
+	}
+
+	// Log IPv4 changes
+	if t.HasChanged("ipv4") {
+		fromIP := ""
+		toIP := ""
+		if t.From.PublicIPv4 != nil {
+			fromIP = t.From.PublicIPv4.String()
+		}
+		if t.To.PublicIPv4 != nil {
+			toIP = t.To.PublicIPv4.String()
+		}
+		err := ep.config.DatabaseLogger.LogSensorChange(
+			"public_ipv4",
+			"string",
+			fromIP,
+			toIP,
+		)
+		ep.emitEffectLog("db_log", "ipv4_change", err, time.Since(start))
+	}
+
+	// Log IPv6 changes
+	if t.HasChanged("ipv6") {
+		fromIP := ""
+		toIP := ""
+		if t.From.PublicIPv6 != nil {
+			fromIP = t.From.PublicIPv6.String()
+		}
+		if t.To.PublicIPv6 != nil {
+			toIP = t.To.PublicIPv6.String()
+		}
+		err := ep.config.DatabaseLogger.LogSensorChange(
+			"public_ipv6",
+			"string",
+			fromIP,
+			toIP,
+		)
+		ep.emitEffectLog("db_log", "ipv6_change", err, time.Since(start))
+	}
+
+	// Log local IPv4 changes
+	if t.HasChanged("local_ipv4") {
+		fromIP := ""
+		toIP := ""
+		if t.From.LocalIPv4 != nil {
+			fromIP = t.From.LocalIPv4.String()
+		}
+		if t.To.LocalIPv4 != nil {
+			toIP = t.To.LocalIPv4.String()
+		}
+		err := ep.config.DatabaseLogger.LogSensorChange(
+			"local_ipv4",
+			"string",
+			fromIP,
+			toIP,
+		)
+		ep.emitEffectLog("db_log", "local_ipv4_change", err, time.Since(start))
+	}
+
 	// Log context/location changes
 	if t.HasChanged("context") || t.HasChanged("location") {
 		err := ep.config.DatabaseLogger.LogContextChange(
