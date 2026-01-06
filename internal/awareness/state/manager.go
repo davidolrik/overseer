@@ -280,11 +280,11 @@ func (m *StateManager) detectChanges(old, new StateSnapshot) []string {
 	if old.Online != new.Online {
 		changed = append(changed, "online")
 	}
-	if old.Context != new.Context {
-		changed = append(changed, "context")
-	}
 	if old.Location != new.Location {
 		changed = append(changed, "location")
+	}
+	if old.Context != new.Context {
+		changed = append(changed, "context")
 	}
 	if !ipEqual(old.PublicIPv4, new.PublicIPv4) {
 		changed = append(changed, "ipv4")
