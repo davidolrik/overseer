@@ -294,14 +294,14 @@ func (a *databaseLoggerAdapter) LogSensorChange(sensor, sensorType, oldValue, ne
 }
 
 func (a *databaseLoggerAdapter) LogContextChange(fromContext, toContext, fromLocation, toLocation, trigger string) error {
-	// Log context changes as sensor changes (context is tracked as a sensor in the DB)
-	if fromContext != toContext {
-		if err := a.db.LogSensorChange("context", "string", fromContext, toContext); err != nil {
+	// Log location first, then context (location determines context)
+	if fromLocation != toLocation {
+		if err := a.db.LogSensorChange("location", "string", fromLocation, toLocation); err != nil {
 			return err
 		}
 	}
-	if fromLocation != toLocation {
-		if err := a.db.LogSensorChange("location", "string", fromLocation, toLocation); err != nil {
+	if fromContext != toContext {
+		if err := a.db.LogSensorChange("context", "string", fromContext, toContext); err != nil {
 			return err
 		}
 	}

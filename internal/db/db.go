@@ -191,7 +191,7 @@ func (db *DB) GetRecentSensorChanges(limit int) ([]SensorChange, error) {
 	rows, err := db.conn.Query(
 		`SELECT id, sensor_name, sensor_type, old_value, new_value, timestamp
 		 FROM sensor_changes
-		 ORDER BY timestamp DESC
+		 ORDER BY timestamp DESC, id ASC
 		 LIMIT ?`,
 		limit,
 	)
