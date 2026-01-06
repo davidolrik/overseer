@@ -148,6 +148,10 @@ type IPProbe struct {
 	offlineIP string // IP to return when offline
 	logger    *slog.Logger
 
+	// Prefix tracking - when > 0, only track the network prefix (e.g., /64 for IPv6)
+	// This avoids noise from privacy extension address rotation
+	prefixBits int
+
 	// Hysteresis to prevent flapping
 	mu             sync.Mutex
 	lastStableIP   string // Last confirmed stable IP
@@ -210,7 +214,8 @@ func NewIPv6Probe(logger *slog.Logger) *IPProbe {
 		network:        "udp6",
 		offlineIP:      "fe80::",
 		logger:         logger,
-		stabilityCount: 2, // Require 2 consecutive readings before accepting a new IP
+		prefixBits:     64, // Only track /64 prefix to avoid privacy extension noise
+		stabilityCount: 2,  // Require 2 consecutive readings before accepting a new IP
 	}
 }
 
@@ -222,6 +227,35 @@ func (p *IPProbe) Start(ctx context.Context, output chan<- SensorReading) {
 	p.logger.Debug("IP probe ready", "name", p.name)
 }
 
+// normalizeToPrefix extracts the network prefix from an IP address
+// For example, with prefixBits=64: "2a05:f6c3:dd4d:0:1234:5678:9abc:def0" -> "2a05:f6c3:dd4d::"
+func (p *IPProbe) normalizeToPrefix(ipStr string) string {
+	if p.prefixBits <= 0 {
+		return ipStr
+	}
+
+	ip := net.ParseIP(ipStr)
+	if ip == nil {
+		return ipStr
+	}
+
+	// Create a mask for the prefix
+	var mask net.IPMask
+	if ip.To4() != nil {
+		mask = net.CIDRMask(p.prefixBits, 32)
+	} else {
+		mask = net.CIDRMask(p.prefixBits, 128)
+	}
+
+	// Apply the mask to get just the network portion
+	network := ip.Mask(mask)
+	if network == nil {
+		return ipStr
+	}
+
+	return network.String()
+}
+
 func (p *IPProbe) Check(ctx context.Context) SensorReading {
 	start := time.Now()
 
@@ -231,16 +265,25 @@ func (p *IPProbe) Check(ctx context.Context) SensorReading {
 	// Query all resolvers in parallel and use consensus
 	detectedIP := p.checkWithConsensus(ctx)
 
+	// Normalize to prefix if configured (e.g., /64 for IPv6)
+	if detectedIP != "" && p.prefixBits > 0 {
+		detectedIP = p.normalizeToPrefix(detectedIP)
+	}
+
 	// Apply hysteresis for additional stability
 	stableIP := p.applyHysteresis(detectedIP)
 
 	if stableIP == "" {
 		// All resolvers failed - return offline IP
+		offlineIP := p.offlineIP
+		if p.prefixBits > 0 {
+			offlineIP = p.normalizeToPrefix(offlineIP)
+		}
 		return SensorReading{
 			Sensor:    p.name,
 			Timestamp: time.Now(),
-			IP:        net.ParseIP(p.offlineIP),
-			Value:     p.offlineIP,
+			IP:        net.ParseIP(offlineIP),
+			Value:     offlineIP,
 			Latency:   time.Since(start),
 		}
 	}
