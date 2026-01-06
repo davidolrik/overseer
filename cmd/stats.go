@@ -546,50 +546,124 @@ func groupSessionsByIP(sessions []OnlineSession, start, end time.Time, config *c
 	return result
 }
 
-// printIPStats prints statistics for each IP/network
-func printIPStats(ipStats []IPStats, start, end time.Time) {
-	// Calculate total period for per-IP metrics
-	actualEnd := end
-	if end.After(time.Now()) {
-		actualEnd = time.Now()
-	}
-	totalPeriod := actualEnd.Sub(start)
-	days := totalPeriod.Hours() / 24
-	if days < 1 {
-		days = 1
+// countMaxConsecutiveShort returns the maximum streak of consecutive short sessions
+func countMaxConsecutiveShort(sessions []OnlineSession) int {
+	if len(sessions) == 0 {
+		return 0
 	}
 
+	maxStreak := 0
+	currentStreak := 0
+
+	for _, s := range sessions {
+		if s.Duration < 5*time.Minute {
+			currentStreak++
+			if currentStreak > maxStreak {
+				maxStreak = currentStreak
+			}
+		} else {
+			currentStreak = 0
+		}
+	}
+
+	return maxStreak
+}
+
+// assessIPQuality determines the quality rating for a network based on session patterns
+// Returns quality label, color, and any issues detected
+func assessIPQuality(stats IPStats) (quality, qualityColor string, issues []string) {
+	// Calculate base metrics
+	avgDuration := time.Duration(0)
+	if stats.SessionCount > 0 {
+		avgDuration = stats.TotalOnline / time.Duration(stats.SessionCount)
+	}
+
+	// Count consecutive short sessions - the clearest instability indicator
+	maxConsecutiveShort := countMaxConsecutiveShort(stats.Sessions)
+
+	// Calculate reconnect rate per hour of online time
+	// (more meaningful than per calendar day)
+	reconnectsPerHour := float64(0)
+	if stats.TotalOnline >= 30*time.Minute {
+		// Subtract 1 because the first connection isn't a "reconnect"
+		reconnects := stats.SessionCount - 1
+		if reconnects > 0 {
+			reconnectsPerHour = float64(reconnects) / stats.TotalOnline.Hours()
+		}
+	}
+
+	// === SINGLE SESSION - INSUFFICIENT DATA ===
+	if stats.SessionCount == 1 {
+		// Can't assess stability from a single session
+		// Rate based on duration only
+		if avgDuration >= 1*time.Hour {
+			return "Stable", colorGreen, nil
+		}
+		if avgDuration >= 10*time.Minute {
+			return "New", colorWhite, nil
+		}
+		return "New", colorGray, nil
+	}
+
+	// === POOR - Clear instability patterns ===
+
+	// Multiple consecutive short sessions is definitive instability
+	if maxConsecutiveShort >= 3 {
+		issues = append(issues, fmt.Sprintf("%d consecutive brief sessions", maxConsecutiveShort))
+		return "Poor", colorBoldRed, issues
+	}
+
+	// High reconnect rate with meaningful sample size
+	if stats.SessionCount >= 4 && reconnectsPerHour > 2 {
+		issues = append(issues, fmt.Sprintf("High reconnect rate (%.1f/hr)", reconnectsPerHour))
+		return "Poor", colorBoldRed, issues
+	}
+
+	// Many short sessions (absolute count, not percentage)
+	if stats.ShortSessions >= 4 {
+		issues = append(issues, fmt.Sprintf("%d brief sessions", stats.ShortSessions))
+		return "Poor", colorBoldRed, issues
+	}
+
+	// === EXCELLENT - Very stable ===
+	if maxConsecutiveShort == 0 &&
+		stats.ShortSessions <= 1 &&
+		avgDuration >= 30*time.Minute {
+		return "Excellent", colorBoldGreen, nil
+	}
+
+	// === GOOD - Mostly stable ===
+	if maxConsecutiveShort <= 1 &&
+		stats.ShortSessions <= 2 &&
+		avgDuration >= 10*time.Minute {
+		return "Good", colorGreen, nil
+	}
+
+	// === FAIR - Some issues but not terrible ===
+	if maxConsecutiveShort >= 2 {
+		issues = append(issues, fmt.Sprintf("%d consecutive brief sessions", maxConsecutiveShort))
+	}
+	if stats.ShortSessions >= 3 {
+		issues = append(issues, fmt.Sprintf("%d brief sessions", stats.ShortSessions))
+	}
+	if reconnectsPerHour > 1.5 && stats.SessionCount >= 3 {
+		issues = append(issues, fmt.Sprintf("Frequent reconnects (%.1f/hr)", reconnectsPerHour))
+	}
+
+	return "Fair", colorYellow, issues
+}
+
+// printIPStats prints statistics for each IP/network
+func printIPStats(ipStats []IPStats, start, end time.Time) {
 	for _, stats := range ipStats {
-		// Calculate quality metrics for this IP
+		// Calculate average duration for display
 		avgDuration := time.Duration(0)
 		if stats.SessionCount > 0 {
 			avgDuration = stats.TotalOnline / time.Duration(stats.SessionCount)
 		}
 
-		shortPercent := float64(0)
-		if stats.SessionCount > 0 {
-			shortPercent = float64(stats.ShortSessions) / float64(stats.SessionCount) * 100
-		}
-
-		// Calculate uptime percent relative to how long this IP was "in use"
-		// Use sessions per day as a stability metric
-		sessionsPerDay := float64(stats.SessionCount) / days
-
-		// Determine quality level and label
-		var quality, qualityColor string
-		if stats.SessionCount <= 2 && shortPercent < 20 && avgDuration >= 30*time.Minute {
-			quality = "Excellent"
-			qualityColor = colorBoldGreen
-		} else if stats.SessionCount <= 4 && shortPercent < 30 && avgDuration >= 10*time.Minute {
-			quality = "Good"
-			qualityColor = colorGreen
-		} else if shortPercent < 50 && avgDuration >= 5*time.Minute {
-			quality = "Fair"
-			qualityColor = colorYellow
-		} else {
-			quality = "Poor"
-			qualityColor = colorRed
-		}
+		// Assess quality using the new logic
+		quality, qualityColor, issues := assessIPQuality(stats)
 
 		// Print IP header with quality dot and optional location name
 		if stats.LocationName != "" {
@@ -612,18 +686,7 @@ func printIPStats(ipStats []IPStats, start, end time.Time) {
 			ipColor, stats.SessionCount, colorReset,
 			ipColor, formatDuration(avgDuration), colorReset)
 
-		// Identify and print issues for this IP
-		var issues []string
-		if sessionsPerDay > 5 {
-			issues = append(issues, fmt.Sprintf("Frequent reconnects (%.1f/day)", sessionsPerDay))
-		}
-		if shortPercent > 30 {
-			issues = append(issues, fmt.Sprintf("%.0f%% sessions < 5min", shortPercent))
-		}
-		if avgDuration < 5*time.Minute && stats.SessionCount > 1 {
-			issues = append(issues, fmt.Sprintf("Low avg duration (%s)", formatDuration(avgDuration)))
-		}
-
+		// Print any issues detected
 		if len(issues) > 0 {
 			for _, issue := range issues {
 				fmt.Printf("    %s⚠ %s%s\n", colorYellow, issue, colorReset)
@@ -897,6 +960,8 @@ func printNetworkQuality(sessions []OnlineSession, start, end time.Time) {
 	// Calculate metrics for quality assessment (clipped to query period)
 	var totalOnline time.Duration
 	var shortSessions int // Sessions < 5 minutes
+	clippedSessions := make([]OnlineSession, 0, len(sessions))
+
 	for _, s := range sessions {
 		// Clip session to query period
 		sessionStart := s.Start
@@ -915,54 +980,91 @@ func printNetworkQuality(sessions []OnlineSession, start, end time.Time) {
 		if clippedDuration < 5*time.Minute {
 			shortSessions++
 		}
+		// Store clipped session for consecutive analysis
+		clippedSessions = append(clippedSessions, OnlineSession{
+			Start:    sessionStart,
+			End:      sessionEnd,
+			Duration: clippedDuration,
+			IP:       s.IP,
+		})
 	}
 
-	// If end is in the future, use now
-	actualEnd := end
-	if end.After(time.Now()) {
-		actualEnd = time.Now()
-	}
-	totalPeriod := actualEnd.Sub(start)
+	sessionCount := len(sessions)
+	avgDuration := totalOnline / time.Duration(sessionCount)
 
-	// Calculate days as float for sessions per day
-	days := totalPeriod.Hours() / 24
-	if days < 1 {
-		days = 1 // Minimum 1 day for calculation
-	}
-	sessionsPerDay := float64(len(sessions)) / days
-	shortSessionPercent := float64(shortSessions) / float64(len(sessions)) * 100
+	// Count consecutive short sessions
+	maxConsecutiveShort := countMaxConsecutiveShort(clippedSessions)
 
-	// Calculate average session duration
-	avgDuration := totalOnline / time.Duration(len(sessions))
+	// Calculate reconnect rate per hour of online time
+	reconnectsPerHour := float64(0)
+	if totalOnline >= 30*time.Minute {
+		reconnects := sessionCount - 1
+		if reconnects > 0 {
+			reconnectsPerHour = float64(reconnects) / totalOnline.Hours()
+		}
+	}
 
 	// Determine quality level based on session stability
 	var quality string
 	var qualityColor string
 	var issues []string
 
-	if sessionsPerDay <= 3 && shortSessionPercent < 10 && avgDuration >= 30*time.Minute {
-		quality = "Excellent"
-		qualityColor = colorBoldGreen
-	} else if sessionsPerDay <= 6 && shortSessionPercent < 25 && avgDuration >= 10*time.Minute {
-		quality = "Good"
-		qualityColor = colorGreen
-	} else if sessionsPerDay <= 12 && shortSessionPercent < 50 {
-		quality = "Fair"
-		qualityColor = colorYellow
-	} else {
-		quality = "Poor"
-		qualityColor = colorBoldRed
+	// === SINGLE SESSION - INSUFFICIENT DATA ===
+	if sessionCount == 1 {
+		if avgDuration >= 1*time.Hour {
+			quality = "Stable"
+			qualityColor = colorGreen
+		} else if avgDuration >= 10*time.Minute {
+			quality = "New"
+			qualityColor = colorWhite
+		} else {
+			quality = "New"
+			qualityColor = colorGray
+		}
+		fmt.Printf("%s%sOverall Network Quality:%s %s%s%s\n", colorBold, colorWhite, colorReset, qualityColor, quality, colorReset)
+		return
 	}
 
-	// Identify specific issues
-	if sessionsPerDay > 10 {
-		issues = append(issues, fmt.Sprintf("High reconnect frequency (%.1f/day)", sessionsPerDay))
-	}
-	if shortSessionPercent > 30 {
-		issues = append(issues, fmt.Sprintf("Many short sessions (%.0f%% < 5min)", shortSessionPercent))
-	}
-	if avgDuration < 5*time.Minute && len(sessions) > 1 {
-		issues = append(issues, fmt.Sprintf("Low avg session duration (%s)", formatDuration(avgDuration)))
+	// === POOR - Clear instability patterns ===
+
+	// Multiple consecutive short sessions is definitive instability
+	if maxConsecutiveShort >= 3 {
+		issues = append(issues, fmt.Sprintf("%d consecutive brief sessions", maxConsecutiveShort))
+		quality = "Poor"
+		qualityColor = colorBoldRed
+	} else if sessionCount >= 4 && reconnectsPerHour > 2 {
+		// High reconnect rate with meaningful sample
+		issues = append(issues, fmt.Sprintf("High reconnect rate (%.1f/hr)", reconnectsPerHour))
+		quality = "Poor"
+		qualityColor = colorBoldRed
+	} else if shortSessions >= 4 {
+		// Many short sessions (absolute count)
+		issues = append(issues, fmt.Sprintf("%d brief sessions", shortSessions))
+		quality = "Poor"
+		qualityColor = colorBoldRed
+	} else if maxConsecutiveShort == 0 && shortSessions <= 1 && avgDuration >= 30*time.Minute {
+		// === EXCELLENT - Very stable ===
+		quality = "Excellent"
+		qualityColor = colorBoldGreen
+	} else if maxConsecutiveShort <= 1 && shortSessions <= 2 && avgDuration >= 10*time.Minute {
+		// === GOOD - Mostly stable ===
+		quality = "Good"
+		qualityColor = colorGreen
+	} else {
+		// === FAIR - Some issues but not terrible ===
+		quality = "Fair"
+		qualityColor = colorYellow
+
+		// Collect warnings for Fair rating
+		if maxConsecutiveShort >= 2 {
+			issues = append(issues, fmt.Sprintf("%d consecutive brief sessions", maxConsecutiveShort))
+		}
+		if shortSessions >= 3 {
+			issues = append(issues, fmt.Sprintf("%d brief sessions", shortSessions))
+		}
+		if reconnectsPerHour > 1.5 && sessionCount >= 3 {
+			issues = append(issues, fmt.Sprintf("Frequent reconnects (%.1f/hr)", reconnectsPerHour))
+		}
 	}
 
 	fmt.Printf("%s%sOverall Network Quality:%s %s%s%s\n", colorBold, colorWhite, colorReset, qualityColor, quality, colorReset)
