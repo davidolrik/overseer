@@ -16,7 +16,7 @@ import (
 func NewStatusCommand() *cobra.Command {
 	statusCmd := &cobra.Command{
 		Use:     "status",
-		Aliases: []string{"s", "list", "ls", "context", "ctx"},
+		Aliases: []string{"s", "st", "list", "ls", "context", "ctx"},
 		Short:   "Shows current security context, sensors, and active tunnels",
 		Long: `Display comprehensive status including security context, sensor values, and active SSH tunnels.
 
