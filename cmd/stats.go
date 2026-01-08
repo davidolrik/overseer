@@ -340,7 +340,7 @@ func runStats(start, end time.Time, label string) {
 
 	// Group sessions by IP and print per-network stats
 	ipStats := groupSessionsByIP(sessions, start, end, config)
-	if len(ipStats) > 1 {
+	if len(ipStats) > 0 {
 		fmt.Printf("\n%s%sNetwork Quality by IP:%s\n", colorBold, colorWhite, colorReset)
 		printIPStats(ipStats, start, end)
 	}
@@ -592,14 +592,20 @@ func assessIPQuality(stats IPStats) (quality, qualityColor string, issues []stri
 		}
 	}
 
-	// === SINGLE SESSION - INSUFFICIENT DATA ===
+	// === SINGLE SESSION ===
 	if stats.SessionCount == 1 {
-		// Can't assess stability from a single session
-		// Rate based on duration only
-		if avgDuration >= 1*time.Hour {
+		// For single session, use full duration (not clipped) for quality assessment
+		singleSessionDuration := avgDuration
+		if len(stats.Sessions) == 1 {
+			singleSessionDuration = stats.Sessions[0].Duration
+		}
+		if singleSessionDuration >= 4*time.Hour {
+			return "Excellent", colorBoldGreen, nil
+		}
+		if singleSessionDuration >= 1*time.Hour {
 			return "Stable", colorGreen, nil
 		}
-		if avgDuration >= 10*time.Minute {
+		if singleSessionDuration >= 10*time.Minute {
 			return "New", colorWhite, nil
 		}
 		return "New", colorGray, nil
@@ -992,6 +998,14 @@ func printNetworkQuality(sessions []OnlineSession, start, end time.Time) {
 	sessionCount := len(sessions)
 	avgDuration := totalOnline / time.Duration(sessionCount)
 
+	// For single session quality assessment, use the FULL session duration
+	// (not clipped to query period) to properly assess ongoing stability.
+	// A 7-hour session that crosses midnight should be rated based on its
+	// actual duration, not just the portion within "today".
+	if sessionCount == 1 && len(sessions) == 1 {
+		avgDuration = sessions[0].Duration
+	}
+
 	// Count consecutive short sessions
 	maxConsecutiveShort := countMaxConsecutiveShort(clippedSessions)
 
@@ -1009,9 +1023,13 @@ func printNetworkQuality(sessions []OnlineSession, start, end time.Time) {
 	var qualityColor string
 	var issues []string
 
-	// === SINGLE SESSION - INSUFFICIENT DATA ===
+	// === SINGLE SESSION ===
 	if sessionCount == 1 {
-		if avgDuration >= 1*time.Hour {
+		if avgDuration >= 4*time.Hour {
+			// 4+ hours without disconnection is excellent
+			quality = "Excellent"
+			qualityColor = colorBoldGreen
+		} else if avgDuration >= 1*time.Hour {
 			quality = "Stable"
 			qualityColor = colorGreen
 		} else if avgDuration >= 10*time.Minute {
