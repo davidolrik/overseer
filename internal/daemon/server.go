@@ -20,10 +20,10 @@ import (
 
 	"github.com/fsnotify/fsnotify"
 	psnet "github.com/shirou/gopsutil/v3/net"
+	"overseer.olrik.dev/internal/awareness"
 	"overseer.olrik.dev/internal/core"
 	"overseer.olrik.dev/internal/db"
 	"overseer.olrik.dev/internal/keyring"
-	"overseer.olrik.dev/internal/awareness"
 )
 
 // Daemon manages the SSH tunnel processes and security context.
@@ -33,17 +33,19 @@ type Daemon struct {
 	mu            sync.Mutex
 	listener      net.Listener
 	shutdownOnce  sync.Once
-	logBroadcast  *LogBroadcaster // For streaming logs to clients
-	database      *db.DB          // Database for logging
-	isRemote      bool            // Running on remote server (via SSH)
-	parentMonitor *ParentMonitor  // Monitors parent process in remote mode
-	ctx           context.Context // Context for lifecycle management
+	logBroadcast  *LogBroadcaster   // For streaming logs to clients
+	companionMgr  *CompanionManager // For managing companion scripts
+	database      *db.DB            // Database for logging
+	isRemote      bool              // Running on remote server (via SSH)
+	parentMonitor *ParentMonitor    // Monitors parent process in remote mode
+	ctx           context.Context   // Context for lifecycle management
 	cancelFunc    context.CancelFunc
 }
 
 type TunnelState string
 
 const (
+	StateConnecting   TunnelState = "connecting"
 	StateConnected    TunnelState = "connected"
 	StateDisconnected TunnelState = "disconnected"
 	StateReconnecting TunnelState = "reconnecting"
@@ -67,13 +69,21 @@ type Tunnel struct {
 
 func New() *Daemon {
 	ctx, cancel := context.WithCancel(context.Background())
-	return &Daemon{
+	d := &Daemon{
 		tunnels:       make(map[string]Tunnel),
 		askpassTokens: make(map[string]string),
 		logBroadcast:  NewLogBroadcaster(),
+		companionMgr:  NewCompanionManager(),
 		ctx:           ctx,
 		cancelFunc:    cancel,
 	}
+	// Set token registrar so companions can register tokens for validation
+	d.companionMgr.SetTokenRegistrar(func(token, alias string) {
+		d.mu.Lock()
+		d.askpassTokens[token] = alias
+		d.mu.Unlock()
+	})
+	return d
 }
 
 // mergeEnvironment merges user environment variables into default environment
@@ -216,6 +226,11 @@ func (d *Daemon) Run() {
 		if err := d.database.LogDaemonEvent("start", fmt.Sprintf("daemon started - version: %s, PID: %d, remote: %v", version, os.Getpid(), d.isRemote)); err != nil {
 			slog.Error("Failed to log daemon start", "error", err)
 		}
+
+		// Set event logger for companion manager
+		d.companionMgr.SetEventLogger(func(alias, eventType, details string) error {
+			return d.database.LogTunnelEvent(alias, eventType, details)
+		})
 	}
 
 	// Setup PID and socket files and ensure they are cleaned up on exit.
@@ -261,9 +276,12 @@ func (d *Daemon) Run() {
 	// IMPORTANT: This must happen BEFORE initializing security manager
 	// so that when the security manager evaluates context rules, it sees
 	// the adopted tunnels and doesn't try to reconnect them
-	adoptedCount := d.adoptExistingTunnels()
-	if adoptedCount > 0 {
-		slog.Info("Hot reload complete", "adopted_tunnels", adoptedCount)
+	adoptedTunnels := d.adoptExistingTunnels()
+	adoptedCompanions := d.companionMgr.AdoptCompanions()
+	if adoptedTunnels > 0 || adoptedCompanions > 0 {
+		slog.Info("Hot reload complete",
+			"adopted_tunnels", adoptedTunnels,
+			"adopted_companions", adoptedCompanions)
 	}
 
 	// Initialize state orchestrator (new centralized state management)
@@ -355,25 +373,44 @@ func (d *Daemon) handleConnection(conn net.Conn) {
 	switch command {
 	case "SSH_CONNECT":
 		if len(args) > 0 {
-			response = d.startTunnel(args[0])
+			// Use streaming to send progress messages as they occur
+			stream := NewStreamingResponse(conn)
+			response = d.startTunnelStreaming(args[0], stream)
 		}
 	case "SSH_DISCONNECT":
 		if len(args) > 0 {
-			response = d.stopTunnel(args[0])
+			response = d.stopTunnel(args[0], false)
 		}
 	case "SSH_DISCONNECT_ALL":
 		for alias := range d.tunnels {
-			stopResponse := d.stopTunnel(alias)
+			stopResponse := d.stopTunnel(alias, false)
 			response.AddMessage(stopResponse.Messages[0].Message, stopResponse.Messages[0].Status)
 		}
+	case "SSH_RECONNECT":
+		if len(args) > 0 {
+			alias := args[0]
+			// Stop tunnel but preserve companions
+			stopResponse := d.stopTunnel(alias, true)
+			if len(stopResponse.Messages) > 0 && stopResponse.Messages[0].Status == "ERROR" {
+				response = stopResponse
+			} else {
+				// Reconnect using streaming to show progress
+				stream := NewStreamingResponse(conn)
+				response = d.startTunnelStreaming(alias, stream)
+			}
+		}
 	case "RELOAD":
-		// Hot reload: save tunnel and sensor state before stopping
+		// Hot reload: save tunnel, companion, and sensor state before stopping
 		slog.Info("Reload command received. Saving state for hot reload...")
 		if err := d.SaveTunnelState(); err != nil {
 			slog.Error("Failed to save tunnel state", "error", err)
 			response.AddMessage(fmt.Sprintf("Failed to save tunnel state: %v", err), "ERROR")
 			conn.Write([]byte(response.ToJSON()))
 			return
+		}
+		if err := d.companionMgr.SaveCompanionState(); err != nil {
+			slog.Error("Failed to save companion state", "error", err)
+			// Non-fatal - continue with reload
 		}
 		if err := SaveSensorState(); err != nil {
 			slog.Error("Failed to save sensor state", "error", err)
@@ -421,7 +458,7 @@ func (d *Daemon) handleConnection(conn net.Conn) {
 			d.listener.Close()
 		}
 
-		// Exit WITHOUT killing tunnels - they will be adopted by new daemon
+		// Exit WITHOUT killing tunnels/companions - they will be adopted by new daemon
 		os.Exit(0)
 	case "STOP":
 		response = d.stopDaemon()
@@ -464,13 +501,80 @@ func (d *Daemon) handleConnection(conn net.Conn) {
 			}
 		}
 		response = d.getContextStatus(limit)
+	case "COMPANION_STATUS":
+		status := d.companionMgr.GetCompanionStatus()
+		response.Data = map[string]interface{}{"companions": status}
+		response.AddMessage("Companion status retrieved", "INFO")
+	case "COMPANION_INIT":
+		// Internal command for companion wrapper to validate token and get command
+		// Like ASKPASS, validates token and returns useful data
+		if len(args) >= 3 {
+			response = d.handleCompanionInit(args[0], args[1], args[2])
+		} else {
+			response.AddMessage("Usage: COMPANION_INIT <tunnel> <name> <token>", "ERROR")
+		}
+	case "COMPANION_ATTACH":
+		if len(args) >= 2 {
+			// Check for optional no_history flag (used by client on reconnect)
+			showHistory := true
+			if len(args) >= 3 && args[2] == "no_history" {
+				showHistory = false
+			}
+			d.companionMgr.HandleCompanionAttach(conn, args[0], args[1], showHistory)
+			return // Don't send JSON response
+		}
+		response.AddMessage("Usage: COMPANION_ATTACH <tunnel> <name>", "ERROR")
+	case "COMPANION_START":
+		if len(args) >= 2 {
+			// Check if tunnel is running
+			d.mu.Lock()
+			_, tunnelExists := d.tunnels[args[0]]
+			d.mu.Unlock()
+			if !tunnelExists {
+				response.AddMessage(fmt.Sprintf("Tunnel '%s' is not running", args[0]), "ERROR")
+			} else if err := d.companionMgr.StartSingleCompanion(args[0], args[1]); err != nil {
+				response.AddMessage(fmt.Sprintf("Failed to start companion: %v", err), "ERROR")
+			} else {
+				response.AddMessage(fmt.Sprintf("Companion '%s' started for tunnel '%s'", args[1], args[0]), "INFO")
+			}
+		} else {
+			response.AddMessage("Usage: COMPANION_START <tunnel> <name>", "ERROR")
+		}
+	case "COMPANION_STOP":
+		if len(args) >= 2 {
+			if err := d.companionMgr.StopSingleCompanion(args[0], args[1]); err != nil {
+				response.AddMessage(fmt.Sprintf("Failed to stop companion: %v", err), "ERROR")
+			} else {
+				response.AddMessage(fmt.Sprintf("Companion '%s' stopped for tunnel '%s'", args[1], args[0]), "INFO")
+			}
+		} else {
+			response.AddMessage("Usage: COMPANION_STOP <tunnel> <name>", "ERROR")
+		}
+	case "COMPANION_RESTART":
+		if len(args) >= 2 {
+			// Check if tunnel is running
+			d.mu.Lock()
+			_, tunnelExists := d.tunnels[args[0]]
+			d.mu.Unlock()
+			if !tunnelExists {
+				response.AddMessage(fmt.Sprintf("Tunnel '%s' is not running", args[0]), "ERROR")
+			} else if err := d.companionMgr.RestartSingleCompanion(args[0], args[1]); err != nil {
+				response.AddMessage(fmt.Sprintf("Failed to restart companion: %v", err), "ERROR")
+			} else {
+				response.AddMessage(fmt.Sprintf("Companion '%s' restarted for tunnel '%s'", args[1], args[0]), "INFO")
+			}
+		} else {
+			response.AddMessage("Usage: COMPANION_RESTART <tunnel> <name>", "ERROR")
+		}
 	default:
 		response.AddMessage("Unknown command.", "ERROR")
 	}
 	conn.Write([]byte(response.ToJSON()))
 }
 
-func (d *Daemon) startTunnel(alias string) Response {
+// startTunnelStreaming starts a tunnel with optional streaming of progress messages.
+// If stream is non-nil, progress messages are written as they occur.
+func (d *Daemon) startTunnelStreaming(alias string, stream *StreamingResponse) Response {
 	// Note: We cannot use defer d.mu.Unlock() here because we need to unlock
 	// early (before waiting for connection verification) and the function continues
 	// to execute afterward. Using defer would cause a double-unlock panic.
@@ -478,11 +582,20 @@ func (d *Daemon) startTunnel(alias string) Response {
 
 	response := Response{}
 
+	// Helper to send a message - streams if available, otherwise adds to response
+	sendMessage := func(message, status string) {
+		if stream != nil {
+			stream.WriteMessage(message, status)
+		} else {
+			response.AddMessage(message, status)
+		}
+	}
+
 	if existingTunnel, exists := d.tunnels[alias]; exists {
 		// Check if the existing tunnel process is actually still alive
 		if d.checkTunnelHealth(alias, existingTunnel.Pid) {
 			d.mu.Unlock()
-			response.AddMessage(fmt.Sprintf("Tunnel '%s' is already running.", alias), "ERROR")
+			sendMessage(fmt.Sprintf("Tunnel '%s' is already running.", alias), "ERROR")
 			return response
 		}
 
@@ -501,12 +614,41 @@ func (d *Daemon) startTunnel(alias string) Response {
 		}
 	}
 
+	// Start or restart companion scripts before establishing SSH tunnel
+	// Unlock mutex during companion startup since it may take time
+	if tunnelConfig := core.Config.Tunnels[alias]; tunnelConfig != nil && len(tunnelConfig.Companions) > 0 {
+		d.mu.Unlock()
+
+		// Check if companions already exist (reconnect case)
+		if d.companionMgr.HasRunningCompanions(alias) {
+			// Reconnect case - restart existing companions in place to preserve attach connections
+			sendMessage("Restarting companion scripts...", "INFO")
+			if err := d.companionMgr.RestartCompanions(alias); err != nil {
+				sendMessage(fmt.Sprintf("Failed to restart companions: %v", err), "WARN")
+			}
+		} else {
+			// Fresh start - start new companions
+			err := d.companionMgr.StartCompanions(alias, tunnelConfig.Companions, func(p CompanionProgress) {
+				if p.IsError {
+					sendMessage(p.Message, "WARN")
+				} else {
+					sendMessage(p.Message, "INFO")
+				}
+			})
+			if err != nil {
+				sendMessage(fmt.Sprintf("Companion script failed: %v", err), "ERROR")
+				return response
+			}
+		}
+		d.mu.Lock()
+	}
+
 	// Check if a password is stored for this alias
 	hasPassword := keyring.HasPassword(alias)
 
 	// Create SSH command with verbose mode to detect connection status
 	// Build SSH options from config
-	sshArgs := []string{alias, "-N", "-o", "ExitOnForwardFailure=yes", "-v"}
+	sshArgs := []string{alias, "-N", "-P", "overseer daemon", "-o", "ExitOnForwardFailure=yes", "-v"}
 
 	// Add ServerAliveInterval if configured (0 means disabled)
 	if core.Config.SSH.ServerAliveInterval > 0 {
@@ -527,7 +669,7 @@ func (d *Daemon) startTunnel(alias string) Response {
 	stderrPipe, err := cmd.StderrPipe()
 	if err != nil {
 		d.mu.Unlock()
-		response.AddMessage(fmt.Sprintf("Failed to create stderr pipe: %v", err), "ERROR")
+		sendMessage(fmt.Sprintf("Failed to create stderr pipe: %v", err), "ERROR")
 		return response
 	}
 
@@ -537,7 +679,7 @@ func (d *Daemon) startTunnel(alias string) Response {
 		token, err = keyring.ConfigureSSHAskpass(cmd, alias)
 		if err != nil {
 			d.mu.Unlock()
-			response.AddMessage(fmt.Sprintf("Failed to configure askpass: %v", err), "ERROR")
+			sendMessage(fmt.Sprintf("Failed to configure askpass: %v", err), "ERROR")
 			return response
 		}
 
@@ -551,7 +693,7 @@ func (d *Daemon) startTunnel(alias string) Response {
 			delete(d.askpassTokens, token)
 		}
 		d.mu.Unlock()
-		response.AddMessage(fmt.Sprintf("Failed to launch SSH process for '%s': %v", alias, err), "ERROR")
+		sendMessage(fmt.Sprintf("Failed to launch SSH process for '%s': %v", alias, err), "ERROR")
 		return response
 	}
 
@@ -565,7 +707,7 @@ func (d *Daemon) startTunnel(alias string) Response {
 		AskpassToken:      token,
 		RetryCount:        0,
 		AutoReconnect:     core.Config.SSH.ReconnectEnabled, // Use config value
-		State:             StateConnected,             // Initial state is connected
+		State:             StateConnecting,                  // Initial state is connecting, updated to connected after verification
 	}
 	slog.Info(fmt.Sprintf("Attempting to start tunnel for '%s' (PID %d)", alias, cmd.Process.Pid))
 
@@ -580,7 +722,7 @@ func (d *Daemon) startTunnel(alias string) Response {
 	// Wait for either success or failure - no timeout
 	err = <-connectionResult
 	if err != nil {
-		response.AddMessage(fmt.Sprintf("Tunnel '%s' failed to connect: %v", alias, err), "ERROR")
+		sendMessage(fmt.Sprintf("Tunnel '%s' failed to connect: %v", alias, err), "ERROR")
 
 		// Log to database
 		if d.database != nil {
@@ -600,11 +742,24 @@ func (d *Daemon) startTunnel(alias string) Response {
 			delete(d.tunnels, alias)
 		}
 		d.mu.Unlock()
+
+		// Stop companions (unless persistent)
+		d.companionMgr.StopCompanions(alias)
+
 		return response
 	}
 
 	// Log success in daemon
 	slog.Info(fmt.Sprintf("Tunnel '%s' connected successfully (PID %d)", alias, cmd.Process.Pid))
+
+	// Update state to connected now that verification passed
+	d.mu.Lock()
+	if t, exists := d.tunnels[alias]; exists {
+		t.State = StateConnected
+		t.LastConnectedTime = time.Now()
+		d.tunnels[alias] = t
+	}
+	d.mu.Unlock()
 
 	// Log to database
 	if d.database != nil {
@@ -621,12 +776,17 @@ func (d *Daemon) startTunnel(alias string) Response {
 	}
 
 	// Send success message to client
-	response.AddMessage(fmt.Sprintf("Tunnel '%s' connected successfully.", alias), "INFO")
+	sendMessage(fmt.Sprintf("Tunnel '%s' connected successfully.", alias), "INFO")
 
 	// This goroutine monitors the tunnel process and handles reconnection
 	go d.monitorTunnel(alias)
 
 	return response
+}
+
+// startTunnel starts a tunnel without streaming (used for reconnection).
+func (d *Daemon) startTunnel(alias string) Response {
+	return d.startTunnelStreaming(alias, nil)
 }
 
 // monitorTunnel watches a tunnel process and handles reconnection with exponential backoff
@@ -768,7 +928,7 @@ func (d *Daemon) monitorTunnel(alias string) {
 
 		// Create new SSH command
 		// Build SSH options from config
-		sshArgs := []string{alias, "-N", "-o", "ExitOnForwardFailure=yes", "-v"}
+		sshArgs := []string{alias, "-N", "-P", "overseer daemon", "-o", "ExitOnForwardFailure=yes", "-v"}
 
 		// Add ServerAliveInterval if configured (0 means disabled)
 		if core.Config.SSH.ServerAliveInterval > 0 {
@@ -960,7 +1120,38 @@ func (d *Daemon) verifyConnection(stderr io.ReadCloser, alias string, result cha
 	}
 }
 
-func (d *Daemon) stopTunnel(alias string) Response {
+// gracefulTerminate sends SIGTERM first, waits for graceful exit, then falls back to SIGKILL.
+// Returns nil if process terminated gracefully, or the kill error if force kill was needed.
+func gracefulTerminate(process *os.Process, timeout time.Duration, label string) error {
+	// Send SIGTERM for graceful shutdown
+	if err := process.Signal(syscall.SIGTERM); err != nil {
+		// Process may have already exited
+		if err == os.ErrProcessDone {
+			return nil
+		}
+		// Fall back to kill if we can't send SIGTERM
+		slog.Warn(fmt.Sprintf("Failed to send SIGTERM to %s, forcing kill", label), "error", err)
+		return process.Kill()
+	}
+
+	// Wait for process to exit gracefully
+	done := make(chan error, 1)
+	go func() {
+		_, err := process.Wait()
+		done <- err
+	}()
+
+	select {
+	case <-done:
+		slog.Info(fmt.Sprintf("Process %s terminated gracefully", label))
+		return nil
+	case <-time.After(timeout):
+		slog.Warn(fmt.Sprintf("Process %s did not exit within %v, forcing kill", label, timeout))
+		return process.Kill()
+	}
+}
+
+func (d *Daemon) stopTunnel(alias string, forReconnect bool) Response {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
@@ -972,18 +1163,19 @@ func (d *Daemon) stopTunnel(alias string) Response {
 		return response
 	}
 
-	// Kill the tunnel process - handle both normal and adopted tunnels
+	// Gracefully terminate the tunnel process - handle both normal and adopted tunnels
+	const gracefulTimeout = 5 * time.Second
 	var killErr error
 	if tunnel.Cmd != nil && tunnel.Cmd.Process != nil {
 		// Normal tunnel spawned by this daemon
-		killErr = tunnel.Cmd.Process.Kill()
+		killErr = gracefulTerminate(tunnel.Cmd.Process, gracefulTimeout, alias)
 	} else if tunnel.Pid > 0 {
-		// Adopted tunnel from hot reload - kill by PID
+		// Adopted tunnel from hot reload - terminate by PID
 		process, err := os.FindProcess(tunnel.Pid)
 		if err != nil {
 			killErr = err
 		} else {
-			killErr = process.Kill()
+			killErr = gracefulTerminate(process, gracefulTimeout, alias)
 		}
 	} else {
 		killErr = fmt.Errorf("tunnel has no process reference")
@@ -1013,6 +1205,16 @@ func (d *Daemon) stopTunnel(alias string) Response {
 		}
 	}
 
+	// Stop companion scripts unless this is for a reconnect
+	if !forReconnect {
+		// Permanent stop - stop companions
+		d.companionMgr.StopCompanions(alias)
+	} else {
+		// For reconnect, companions stay in the map but clear history
+		// to prevent showing stale output on reattach
+		d.companionMgr.ClearCompanionHistory(alias)
+	}
+
 	response.AddMessage(fmt.Sprintf("Tunnel process for '%s' stopped.", alias), "INFO")
 	return response
 }
@@ -1020,8 +1222,8 @@ func (d *Daemon) stopTunnel(alias string) Response {
 type DaemonStatus struct {
 	Hostname          string      `json:"hostname"`
 	Pid               int         `json:"pid"`
-	StartDate         string      `json:"start_date"`          // Original tunnel creation time
-	LastConnectedTime string      `json:"last_connected_time"` // Time of last successful connection
+	StartDate         string      `json:"start_date"`                  // Original tunnel creation time
+	LastConnectedTime string      `json:"last_connected_time"`         // Time of last successful connection
 	DisconnectedTime  string      `json:"disconnected_time,omitempty"` // Time when connection was lost
 	RetryCount        int         `json:"retry_count,omitempty"`
 	TotalReconnects   int         `json:"total_reconnects"` // Total successful reconnections
@@ -1128,6 +1330,46 @@ func (d *Daemon) handleAskpass(alias, token string) Response {
 	return response
 }
 
+// handleCompanionInit validates the token and returns the command to execute
+// This is like ASKPASS - validates token and returns useful data in one call
+func (d *Daemon) handleCompanionInit(alias, name, token string) Response {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	response := Response{}
+
+	// Validate token matches the stored alias
+	storedAlias, exists := d.askpassTokens[token]
+	if !exists || storedAlias != alias {
+		response.AddMessage("Invalid token", "ERROR")
+		return response
+	}
+
+	// Look up the companion command from config
+	tunnelConfig, exists := core.Config.Tunnels[alias]
+	if !exists {
+		response.AddMessage(fmt.Sprintf("Tunnel '%s' not found in config", alias), "ERROR")
+		return response
+	}
+
+	var command string
+	for _, comp := range tunnelConfig.Companions {
+		if comp.Name == name {
+			command = comp.Command
+			break
+		}
+	}
+
+	if command == "" {
+		response.AddMessage(fmt.Sprintf("Companion '%s' not found in tunnel '%s'", name, alias), "ERROR")
+		return response
+	}
+
+	// Return the command to execute
+	response.AddMessage(command, "INFO")
+	return response
+}
+
 // resetRetries resets retry counters for all tunnels to zero
 func (d *Daemon) resetRetries() Response {
 	d.mu.Lock()
@@ -1174,6 +1416,10 @@ func (d *Daemon) shutdown() {
 		// Stop state orchestrator
 		stopStateOrchestrator()
 
+		// Stop all companion scripts
+		slog.Debug("Stopping all companion scripts...")
+		d.companionMgr.StopAllCompanions()
+
 		// Cancel context to stop all background tasks
 		if d.cancelFunc != nil {
 			d.cancelFunc()
@@ -1195,33 +1441,30 @@ func (d *Daemon) shutdown() {
 				}
 			}
 
-			// Kill the tunnel process
+			// Gracefully terminate the tunnel process
 			// Handle both normal tunnels (with Cmd) and adopted tunnels (PID only)
+			const shutdownTimeout = 5 * time.Second
 			if tunnel.Cmd != nil && tunnel.Cmd.Process != nil {
 				// Normal tunnel spawned by this daemon
 				pid := tunnel.Cmd.Process.Pid
-				slog.Debug("Killing tunnel process", "alias", alias, "pid", pid)
-				if err := tunnel.Cmd.Process.Kill(); err != nil {
-					slog.Error("Failed to kill tunnel process", "error", err, "alias", alias, "pid", pid)
-				} else {
-					slog.Debug("Successfully killed tunnel process", "alias", alias, "pid", pid)
+				slog.Debug("Terminating tunnel process", "alias", alias, "pid", pid)
+				if err := gracefulTerminate(tunnel.Cmd.Process, shutdownTimeout, alias); err != nil {
+					slog.Error("Failed to terminate tunnel process", "error", err, "alias", alias, "pid", pid)
 				}
 			} else if tunnel.Pid > 0 {
-				// Adopted tunnel from hot reload - kill by PID
+				// Adopted tunnel from hot reload - terminate by PID
 				pid := tunnel.Pid
-				slog.Debug("Killing adopted tunnel process", "alias", alias, "pid", pid)
+				slog.Debug("Terminating adopted tunnel process", "alias", alias, "pid", pid)
 				process, err := os.FindProcess(pid)
 				if err != nil {
 					slog.Error("Failed to find tunnel process", "error", err, "alias", alias, "pid", pid)
 				} else {
-					if err := process.Kill(); err != nil {
-						slog.Error("Failed to kill adopted tunnel process", "error", err, "alias", alias, "pid", pid)
-					} else {
-						slog.Debug("Successfully killed adopted tunnel process", "alias", alias, "pid", pid)
+					if err := gracefulTerminate(process, shutdownTimeout, alias); err != nil {
+						slog.Error("Failed to terminate adopted tunnel process", "error", err, "alias", alias, "pid", pid)
 					}
 				}
 			} else {
-				slog.Warn("Tunnel has no process reference, cannot kill", "alias", alias)
+				slog.Warn("Tunnel has no process reference, cannot terminate", "alias", alias)
 			}
 		}
 
@@ -1253,7 +1496,6 @@ func (d *Daemon) shutdown() {
 		d.tunnels = make(map[string]Tunnel)
 	})
 }
-
 
 // checkOnlineStatus checks if we're currently online
 func (d *Daemon) checkOnlineStatus() bool {
@@ -1370,7 +1612,6 @@ func (d *Daemon) handleOnlineChange(wasOnline, isOnline bool) {
 		d.checkAllTunnelHealth("back_online")
 	}
 }
-
 
 // ContextStatus represents the current security context information
 type ContextStatus struct {

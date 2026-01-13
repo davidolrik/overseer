@@ -233,7 +233,7 @@ func (d *Daemon) handleNewContextChange(from, to state.StateSnapshot, rule *stat
 			slog.Info("Auto-disconnecting tunnel due to context change",
 				"tunnel", alias,
 				"context", to.Context)
-			d.stopTunnel(alias)
+			d.stopTunnel(alias, false)
 		}
 	}
 
@@ -257,7 +257,7 @@ func (d *Daemon) handleNewContextChange(from, to state.StateSnapshot, rule *stat
 					"context", to.Context,
 					"previous_state", tunnel.State,
 					"previous_retry_count", tunnel.RetryCount)
-				d.stopTunnel(alias)
+				d.stopTunnel(alias, true) // forReconnect=true to preserve companions
 			} else {
 				slog.Debug("Skipping tunnel - already connected",
 					"tunnel", alias,
@@ -381,6 +381,22 @@ func mergeStateRule(defaultRule, userRule state.Rule) state.Rule {
 // collectTrackedEnvVars extracts all env var names from rules and locations
 func collectTrackedEnvVars(rules []state.Rule, locations map[string]state.Location) []string {
 	vars := make(map[string]bool)
+
+	// Built-in OVERSEER_* variables that may be set in dotenv files
+	builtinVars := []string{
+		"OVERSEER_CONTEXT",
+		"OVERSEER_CONTEXT_DISPLAY_NAME",
+		"OVERSEER_LOCATION",
+		"OVERSEER_LOCATION_DISPLAY_NAME",
+		"OVERSEER_PUBLIC_IP",
+		"OVERSEER_PUBLIC_IPV4",
+		"OVERSEER_PUBLIC_IPV6",
+		"OVERSEER_LOCAL_IP",
+		"OVERSEER_LOCAL_IPV4",
+	}
+	for _, v := range builtinVars {
+		vars[v] = true
+	}
 
 	for _, rule := range rules {
 		for k := range rule.Environment {

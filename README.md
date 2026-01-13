@@ -2,15 +2,19 @@
 
 # Overseer - Contextual Computing
 
-Detect security context based on sensors and manage SSH tunnels using your existing OpenSSH config.
+Automate your network connectivity based on where you are.
+Overseer detects your context based upon your surroundings and manages SSH tunnels, VPN clients, and helper scripts automagically.
 
-Configure connection reuse, SOCKS proxies, port forwarding and jump hosts in `~/.ssh/config` and use
-`overseer` to manage your SSH tunnels automatically based on your network location.
+Define contexts like "home", "office", or "public wifi" with detection rules based on your public IP.
+When your context changes, overseer connects the right tunnels and starts the right companion scripts, VPN clients, SOCKS proxies, authentication helpers.
+
+Whatever your workflow needs.
 
 ## Features
 
 - **Full OpenSSH Integration**: Supports everything OpenSSH can do (connection reuse, SOCKS proxies, port forwarding, jump hosts)
-- **Security Context Awareness**: Automatically detect your logical location and connect/disconnect SSH tunnels based on your context
+- **Context Awareness**: Automatically detect your logical location and connect/disconnect SSH tunnels based on your context
+- **Companion Scripts**: Run helper scripts alongside tunnels (VPN clients, proxies, setup scripts) with automatic restart on failure
 - **Connectivity Statistics**: Track network stability with session history and quality ratings
 - **Automatic Reconnection**: Tunnels automatically reconnect with exponential backoff when connections fail
 - **Secure Password Storage**: Store passwords in your system keyring (Keychain/Secret Service)
@@ -96,7 +100,7 @@ sudo mv overseer /usr/local/bin/
 
 | Command            | Aliases                             | Description                              |
 | ------------------ | ----------------------------------- | ---------------------------------------- |
-| `overseer status`  | `s`, `list`, `ls`, `context`, `ctx` | Show context, sensors, and tunnels       |
+| `overseer status`  | `s`, `st`, `list`, `ls`, `context`, `ctx` | Show context, sensors, and tunnels       |
 | `overseer qa`      | `q`, `stats`, `statistics`          | Show connectivity statistics and quality |
 | `overseer logs`    | `log`                               | Stream daemon logs in real-time          |
 | `overseer version` |                                     | Show version information                 |
@@ -108,6 +112,17 @@ sudo mv overseer /usr/local/bin/
 | `overseer password set <alias>`    | Store password in system keyring |
 | `overseer password delete <alias>` | Delete stored password           |
 | `overseer password list`           | List hosts with stored passwords |
+
+### Companion Management
+
+| Command                                         | Description                          |
+| ----------------------------------------------- | ------------------------------------ |
+| `overseer companion list`                       | List all companions and their status |
+| `overseer companion status -T <tunnel>`         | Show detailed companion status       |
+| `overseer companion start -T <tunnel> -N <name>`| Start a specific companion           |
+| `overseer companion stop -T <tunnel> -N <name>` | Stop a specific companion            |
+| `overseer companion restart -T <tunnel> -N <name>` | Restart a specific companion      |
+| `overseer companion attach -T <tunnel> -N <name>`  | Attach to companion output (Ctrl+C to detach) |
 
 ### Utility Commands
 
@@ -233,6 +248,205 @@ location "corporate" {
   }
 }
 ```
+
+### Companion Scripts
+
+Companion scripts are helper processes that run alongside tunnels.
+They start before the tunnel connects and are terminated when the tunnel disconnects. Common use cases include:
+
+- Starting a VPN client before connecting through it
+- Running a HTTP proxy alongside a tunnel
+- Executing setup scripts (starting Docker containers, etc.)
+- Running authentication helpers
+
+#### Basic Configuration
+
+```hcl
+tunnel "my-server" {
+  companion "setup-script" {
+    command = "~/scripts/prepare-connection.sh"
+    timeout = "30s"
+  }
+}
+```
+
+#### Configuration Options
+
+| Option        | Type     | Default      | Description                                           |
+| ------------- | -------- | ------------ | ----------------------------------------------------- |
+| `command`     | string   | *required*   | Command to execute (supports `~` expansion)           |
+| `workdir`     | string   | -            | Working directory for the command                     |
+| `environment` | map      | `{}`         | Environment variables to set                          |
+| `wait_mode`   | string   | `completion` | How to determine readiness: `completion` or `string`  |
+| `wait_for`    | string   | -            | String to wait for (required when `wait_mode = "string"`) |
+| `timeout`     | duration | `30s`        | Maximum time to wait for readiness                    |
+| `on_failure`  | string   | `block`      | Action on failure: `block` (abort tunnel) or `continue` |
+| `keep_alive`  | bool     | `true`       | Keep running after tunnel connects                    |
+| `auto_restart`| bool     | `false`      | Automatically restart if the companion exits unexpectedly |
+| `ready_delay` | duration | -            | Delay after ready before proceeding (e.g., `2s` for network stabilization) |
+| `persistent`  | bool     | `false`      | Keep running when tunnel disconnects (survives reconnect cycles) |
+| `stop_signal` | string   | `INT`        | Signal to send on stop: `INT`, `TERM`, or `HUP` |
+
+#### PTY-Based Process Control
+
+Companion scripts run inside a pseudo-terminal (PTY) which provides:
+
+- **Reliable Signal Delivery**: Ctrl+C is delivered via the terminal driver, ensuring signals reach even privileged processes (like `sudo openconnect`)
+- **Process Group Handling**: The entire process group receives signals, properly terminating child processes
+- **Unified Output**: stdout and stderr are merged into a single output stream
+
+#### Wait Modes
+
+**`completion`** - Wait for the script to exit successfully (exit code 0):
+
+```hcl
+companion "start-docker" {
+  command = "docker compose up -d postgres"
+  wait_mode = "completion"
+  timeout = "120s"
+}
+```
+
+**`string`** - Wait for a specific string in the output:
+
+```hcl
+companion "socks-proxy" {
+  command = "ssh -D 1080 -N proxy-host"
+  wait_mode = "string"
+  wait_for = "Entering interactive session"
+  timeout = "60s"
+}
+```
+
+#### Long-Running Companions
+
+For companions that need to stay running (proxies, VPN clients), use `keep_alive = true` (the default).
+Add `auto_restart = true` to automatically restart if they crash:
+
+```hcl
+tunnel "corporate" {
+  companion "vpn-client" {
+    command = "~/bin/start-vpn.sh"
+    wait_mode = "string"
+    wait_for = "Connected"
+    timeout = "60s"
+    keep_alive = true       # Keep running (default)
+    auto_restart = true     # Restart if it crashes
+  }
+}
+```
+
+#### Persistent Companions
+
+Use `persistent = true` for companions that should keep running even when the tunnel disconnects.
+This is useful for services that take a long time to start (VPNs, proxies) and should survive tunnel reconnect cycles:
+
+```hcl
+tunnel "home-server" {
+  companion "socks-proxy" {
+    command = "ssh -D 1080 -N proxy-host"
+    wait_mode = "string"
+    wait_for = "Entering interactive session"
+    keep_alive = true
+    persistent = true    # Survives tunnel disconnect/reconnect
+  }
+}
+```
+
+#### One-Shot Scripts
+
+For setup scripts that should complete and exit, use `keep_alive = false`:
+
+```hcl
+tunnel "dev-server" {
+  companion "db-migrate" {
+    command = "~/scripts/run-migrations.sh"
+    wait_mode = "completion"
+    timeout = "60s"
+    keep_alive = false      # Exit after completion is expected
+    on_failure = "continue" # Connect anyway if migrations fail
+  }
+}
+```
+
+#### Multiple Companions
+
+Companions run sequentially in the order defined. Use this for dependencies:
+
+```hcl
+tunnel "database-tunnel" {
+  # First: Start the database container
+  companion "start-db" {
+    command = "docker compose up -d postgres"
+    wait_mode = "completion"
+    timeout = "120s"
+    on_failure = "block"
+  }
+
+  # Second: Wait for it to be healthy
+  companion "wait-healthy" {
+    command = "docker compose exec postgres pg_isready"
+    wait_mode = "completion"
+    timeout = "30s"
+    on_failure = "continue"  # Proceed even if health check fails
+  }
+
+  # Third: Start a proxy that stays running
+  companion "db-proxy" {
+    command = "~/bin/db-proxy.sh"
+    wait_mode = "string"
+    wait_for = "Listening on port 5432"
+    keep_alive = true
+    auto_restart = true
+  }
+}
+```
+
+#### Environment Variables
+
+Pass custom environment variables to companions:
+
+```hcl
+companion "vpn-client" {
+  command = "~/bin/vpn-connect.sh"
+  environment = {
+    VPN_PROFILE = "corporate"
+    VPN_SERVER = "vpn.example.com"
+  }
+}
+```
+
+The tunnel alias is passed as the first argument to the command, so your script can access it as `$1`.
+
+#### Managing Companions
+
+```bash
+# List all companions and their status
+overseer companion list
+
+# Show detailed status for a tunnel's companions
+overseer companion status -T my-tunnel
+
+# Manually start/stop/restart a companion
+overseer companion start -T my-tunnel -N vpn-client
+overseer companion stop -T my-tunnel -N vpn-client
+overseer companion restart -T my-tunnel -N vpn-client
+
+# Attach to companion output (useful for debugging)
+overseer companion attach -T my-tunnel -N vpn-client
+```
+
+#### Companion States
+
+| State      | Description                                      |
+| ---------- | ------------------------------------------------ |
+| `starting` | Companion is being started                       |
+| `waiting`  | Waiting for readiness (completion or string)     |
+| `ready`    | Became ready (for `keep_alive = false`)          |
+| `running`  | Running and monitored (for `keep_alive = true`)  |
+| `exited`   | Exited (normally or with error)                  |
+| `failed`   | Failed to start or auto-restart failed           |
+| `stopped`  | Stopped intentionally                            |
 
 ## Sensors
 
@@ -450,7 +664,16 @@ overseer status
 overseer status --format json
 
 # Show more events
-overseer status -n 50
+overseer status -N 50
+```
+
+The status output displays companions in a tree format beneath their tunnels:
+
+```
+Tunnels:
+  ✓ corporate        Connected: 2h 15m
+    ├── ✓ vpn-client [running]
+    └── ✓ socks-proxy [running]
 ```
 
 ## Shell Completion

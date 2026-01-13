@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -42,6 +43,57 @@ func SendCommand(command string) (Response, error) {
 	}
 
 	return response, nil
+}
+
+// SendCommandStreaming connects to the daemon, sends a command, and streams response messages.
+// Each message is logged as it arrives, allowing real-time progress feedback.
+// Returns an error if the connection or command fails.
+func SendCommandStreaming(command string) error {
+	conn, err := net.Dial("unix", core.GetSocketPath())
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+
+	if _, err := conn.Write([]byte(command + "\n")); err != nil {
+		return fmt.Errorf("failed to send command to daemon: %w", err)
+	}
+
+	// Read response line by line - each line is a JSON message
+	reader := bufio.NewReader(conn)
+	for {
+		line, err := reader.ReadBytes('\n')
+		if err != nil {
+			if err == io.EOF {
+				return nil // Normal end of stream
+			}
+			return fmt.Errorf("failed to read response from daemon: %w", err)
+		}
+
+		// Skip empty lines
+		if len(line) <= 1 {
+			continue
+		}
+
+		// Parse and log the message
+		var msg ResponseMessage
+		if err := json.Unmarshal(line, &msg); err != nil {
+			// If it's not a valid ResponseMessage, might be the final empty response
+			continue
+		}
+
+		// Log the message based on status
+		switch msg.Status {
+		case "INFO":
+			slog.Info(msg.Message)
+		case "WARN":
+			slog.Warn(msg.Message)
+		case "ERROR":
+			slog.Error(msg.Message)
+		default:
+			slog.Info(msg.Message)
+		}
+	}
 }
 
 // EnsureDaemonIsRunning handles the auto-start logic.

@@ -497,17 +497,8 @@ func NewDotenvWriter(path string) (*DotenvWriter, error) {
 func (w *DotenvWriter) Name() string { return "dotenv" }
 func (w *DotenvWriter) Path() string { return w.path }
 
-func (w *DotenvWriter) Write(data EnvExportData, varsToUnset []string) error {
-	var lines []string
-
-	// Step 1: Unset all tracked variables first
-	if len(varsToUnset) > 0 {
-		lines = append(lines, "# Unset all tracked variables from contexts/locations")
-		lines = append(lines, fmt.Sprintf("unset %s", strings.Join(varsToUnset, " ")))
-		lines = append(lines, "")
-	}
-
-	// Step 2: Collect and export current context's environment variables
+func (w *DotenvWriter) Write(data EnvExportData, trackedVars []string) error {
+	// Step 1: Collect environment variables we're going to set
 	envVars := make(map[string]string)
 
 	// Add OVERSEER_ prefixed variables
@@ -542,7 +533,25 @@ func (w *DotenvWriter) Write(data EnvExportData, varsToUnset []string) error {
 		envVars[key] = value
 	}
 
-	// Sort keys alphabetically
+	// Step 2: Find tracked vars that we're NOT setting (need to unset)
+	var varsToUnset []string
+	for _, v := range trackedVars {
+		if _, willSet := envVars[v]; !willSet {
+			varsToUnset = append(varsToUnset, v)
+		}
+	}
+	sort.Strings(varsToUnset)
+
+	// Step 3: Build output
+	var lines []string
+
+	if len(varsToUnset) > 0 {
+		lines = append(lines, "# Unset variables not set in current context")
+		lines = append(lines, fmt.Sprintf("unset %s", strings.Join(varsToUnset, " ")))
+		lines = append(lines, "")
+	}
+
+	// Sort keys alphabetically for export
 	keys := make([]string, 0, len(envVars))
 	for key := range envVars {
 		keys = append(keys, key)

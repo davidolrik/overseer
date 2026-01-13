@@ -145,7 +145,7 @@ Automatically reconnects if the daemon is reloaded.`,
 	}
 
 	logsCmd.Flags().BoolP("verbose", "v", false, "Show DEBUG level logs")
-	logsCmd.Flags().StringP("filter", "f", "", "Filter logs by keyword (e.g., sensor, state, tunnel, context)")
+	logsCmd.Flags().StringP("filter", "F", "", "Filter logs by keyword (e.g., sensor, state, tunnel, context)")
 	logsCmd.Flags().Bool("no-color", false, "Disable colored output")
 
 	return logsCmd

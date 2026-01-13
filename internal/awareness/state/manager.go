@@ -216,6 +216,19 @@ func (m *StateManager) processReading(reading SensorReading) {
 		Environment:         ruleResult.Environment,
 	}
 
+	// When online but IP unknown, set to 0.0.0.0/:: to distinguish from offline
+	if online {
+		if newSnapshot.PublicIPv4 == nil {
+			newSnapshot.PublicIPv4 = net.ParseIP("0.0.0.0")
+		}
+		if newSnapshot.PublicIPv6 == nil {
+			newSnapshot.PublicIPv6 = net.ParseIP("::")
+		}
+		if newSnapshot.LocalIPv4 == nil {
+			newSnapshot.LocalIPv4 = net.ParseIP("0.0.0.0")
+		}
+	}
+
 	// 5. Determine what changed
 	changedFields := m.detectChanges(m.current, newSnapshot)
 

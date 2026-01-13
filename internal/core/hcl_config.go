@@ -3,6 +3,8 @@ package core
 import (
 	"fmt"
 	"os"
+	"strings"
+	"time"
 
 	"github.com/hashicorp/hcl/v2/hclsimple"
 	"overseer.olrik.dev/internal/awareness"
@@ -26,6 +28,7 @@ type Configuration struct {
 	SSH         SSHConfig               // SSH connection settings (including reconnect)
 	Locations   map[string]*Location    // Location definitions keyed by location name
 	Contexts    []*ContextRule          // Context rules in evaluation order (first match wins)
+	Tunnels     map[string]*TunnelConfig // Per-tunnel configurations keyed by tunnel name
 	// Context behavior settings
 	CheckOnStartup       bool
 	CheckOnNetworkChange bool
@@ -68,6 +71,29 @@ type ContextActions struct {
 	Disconnect []string // Tunnels to disconnect
 }
 
+// TunnelConfig represents per-tunnel configuration
+type TunnelConfig struct {
+	Name       string            // Tunnel name (matches SSH alias)
+	Companions []CompanionConfig // Companion scripts to run before tunnel starts
+}
+
+// CompanionConfig represents a companion script configuration
+type CompanionConfig struct {
+	Name        string            // Unique identifier within tunnel
+	Command     string            // Command to execute
+	Workdir     string            // Working directory
+	Environment map[string]string // Environment variables
+	WaitMode    string            // "completion" or "string"
+	WaitFor     string            // String to wait for (if WaitMode = "string")
+	Timeout     time.Duration     // Wait timeout
+	ReadyDelay  time.Duration     // Delay after ready before proceeding with tunnel startup
+	OnFailure   string            // "block" or "continue"
+	KeepAlive   bool              // Keep running after tunnel connects
+	AutoRestart bool              // Automatically restart if exits unexpectedly
+	Persistent  bool              // Keep running when tunnel stops (don't stop with tunnel)
+	StopSignal  string            // Signal to send on stop: "INT" (default), "TERM", "HUP"
+}
+
 // HCL parsing structs
 
 type hclConfig struct {
@@ -76,6 +102,7 @@ type hclConfig struct {
 	SSH       *hclSSH        `hcl:"ssh,block"`
 	Locations []hclLocation  `hcl:"location,block"`
 	Contexts  []hclContext   `hcl:"context,block"`
+	Tunnels   []hclTunnel    `hcl:"tunnel,block"`
 }
 
 type hclExports struct {
@@ -125,6 +152,27 @@ type hclActions struct {
 	Disconnect []string `hcl:"disconnect,optional"`
 }
 
+type hclTunnel struct {
+	Name       string         `hcl:"name,label"`
+	Companions []hclCompanion `hcl:"companion,block"`
+}
+
+type hclCompanion struct {
+	Name        string            `hcl:"name,label"`
+	Command     string            `hcl:"command"`
+	Workdir     string            `hcl:"workdir,optional"`
+	Environment map[string]string `hcl:"environment,optional"`
+	WaitMode    string            `hcl:"wait_mode,optional"`
+	WaitFor     string            `hcl:"wait_for,optional"`
+	Timeout     string            `hcl:"timeout,optional"`
+	ReadyDelay  string            `hcl:"ready_delay,optional"`
+	OnFailure   string            `hcl:"on_failure,optional"`
+	KeepAlive   *bool             `hcl:"keep_alive,optional"`
+	AutoRestart *bool             `hcl:"auto_restart,optional"`
+	Persistent  *bool             `hcl:"persistent,optional"`
+	StopSignal  string            `hcl:"stop_signal,optional"`
+}
+
 // LoadConfig loads the HCL configuration file and returns a Configuration struct
 func LoadConfig(filename string) (*Configuration, error) {
 	var hclCfg hclConfig
@@ -142,6 +190,7 @@ func LoadConfig(filename string) (*Configuration, error) {
 		CheckOnNetworkChange: true,   // Default
 		Locations:            make(map[string]*Location),
 		Contexts:             make([]*ContextRule, 0),
+		Tunnels:              make(map[string]*TunnelConfig),
 		Exports:              make([]ExportConfig, 0),
 	}
 
@@ -266,6 +315,121 @@ func LoadConfig(filename string) (*Configuration, error) {
 		cfg.Contexts = append(cfg.Contexts, rule)
 	}
 
+	// Convert tunnel configurations
+	for _, hclTun := range hclCfg.Tunnels {
+		tunnel := &TunnelConfig{
+			Name:       hclTun.Name,
+			Companions: make([]CompanionConfig, 0, len(hclTun.Companions)),
+		}
+
+		// Track companion names for uniqueness validation
+		companionNames := make(map[string]bool)
+
+		for _, hclComp := range hclTun.Companions {
+			// Validate companion name uniqueness
+			if companionNames[hclComp.Name] {
+				return nil, fmt.Errorf("tunnel %q: duplicate companion name %q", hclTun.Name, hclComp.Name)
+			}
+			companionNames[hclComp.Name] = true
+
+			// Validate command is required
+			if len(hclComp.Command) == 0 {
+				return nil, fmt.Errorf("tunnel %q companion %q: command is required", hclTun.Name, hclComp.Name)
+			}
+
+			// Parse wait mode and validate
+			waitMode := hclComp.WaitMode
+			if waitMode == "" {
+				waitMode = "completion" // Default
+			}
+			if waitMode != "completion" && waitMode != "string" {
+				return nil, fmt.Errorf("tunnel %q companion %q: wait_mode must be 'completion' or 'string', got %q", hclTun.Name, hclComp.Name, waitMode)
+			}
+
+			// Validate wait_for is required when wait_mode = "string"
+			if waitMode == "string" && hclComp.WaitFor == "" {
+				return nil, fmt.Errorf("tunnel %q companion %q: wait_for is required when wait_mode is 'string'", hclTun.Name, hclComp.Name)
+			}
+
+			// Parse timeout
+			timeout := 30 * time.Second // Default
+			if hclComp.Timeout != "" {
+				var err error
+				timeout, err = time.ParseDuration(hclComp.Timeout)
+				if err != nil {
+					return nil, fmt.Errorf("tunnel %q companion %q: invalid timeout %q: %w", hclTun.Name, hclComp.Name, hclComp.Timeout, err)
+				}
+			}
+
+			// Parse ready_delay (delay after companion is ready before proceeding)
+			var readyDelay time.Duration // Default: 0 (no delay)
+			if hclComp.ReadyDelay != "" {
+				var err error
+				readyDelay, err = time.ParseDuration(hclComp.ReadyDelay)
+				if err != nil {
+					return nil, fmt.Errorf("tunnel %q companion %q: invalid ready_delay %q: %w", hclTun.Name, hclComp.Name, hclComp.ReadyDelay, err)
+				}
+			}
+
+			// Parse on_failure
+			onFailure := hclComp.OnFailure
+			if onFailure == "" {
+				onFailure = "block" // Default
+			}
+			if onFailure != "block" && onFailure != "continue" {
+				return nil, fmt.Errorf("tunnel %q companion %q: on_failure must be 'block' or 'continue', got %q", hclTun.Name, hclComp.Name, onFailure)
+			}
+
+			// Parse keep_alive
+			keepAlive := true // Default
+			if hclComp.KeepAlive != nil {
+				keepAlive = *hclComp.KeepAlive
+			}
+
+			// Parse auto_restart
+			autoRestart := false // Default
+			if hclComp.AutoRestart != nil {
+				autoRestart = *hclComp.AutoRestart
+			}
+
+			// Parse persistent
+			persistent := false // Default
+			if hclComp.Persistent != nil {
+				persistent = *hclComp.Persistent
+			}
+
+			// Parse stop_signal (default: INT - better for foreground processes)
+			stopSignal := "INT"
+			if hclComp.StopSignal != "" {
+				stopSignal = strings.ToUpper(hclComp.StopSignal)
+			}
+
+			companion := CompanionConfig{
+				Name:        hclComp.Name,
+				Command:     hclComp.Command,
+				Workdir:     hclComp.Workdir,
+				Environment: hclComp.Environment,
+				WaitMode:    waitMode,
+				WaitFor:     hclComp.WaitFor,
+				Timeout:     timeout,
+				ReadyDelay:  readyDelay,
+				OnFailure:   onFailure,
+				KeepAlive:   keepAlive,
+				AutoRestart: autoRestart,
+				Persistent:  persistent,
+				StopSignal:  stopSignal,
+			}
+
+			if companion.Environment == nil {
+				companion.Environment = make(map[string]string)
+			}
+
+			tunnel.Companions = append(tunnel.Companions, companion)
+		}
+
+		cfg.Tunnels[hclTun.Name] = tunnel
+	}
+
 	return cfg, nil
 }
 
@@ -343,6 +507,7 @@ func GetDefaultConfig() *Configuration {
 		},
 		Locations: make(map[string]*Location),
 		Contexts:  make([]*ContextRule, 0),
+		Tunnels:   make(map[string]*TunnelConfig),
 	}
 }
 

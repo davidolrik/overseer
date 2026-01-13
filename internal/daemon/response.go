@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"encoding/json"
+	"io"
 	"log/slog"
 )
 
@@ -13,6 +14,27 @@ type Response struct {
 type ResponseMessage struct {
 	Message string `json:"message"`
 	Status  string `json:"status"`
+}
+
+// StreamingResponse wraps a writer for streaming individual messages
+type StreamingResponse struct {
+	w io.Writer
+}
+
+// NewStreamingResponse creates a new streaming response writer
+func NewStreamingResponse(w io.Writer) *StreamingResponse {
+	return &StreamingResponse{w: w}
+}
+
+// WriteMessage writes a single message to the stream as a JSON line
+func (sr *StreamingResponse) WriteMessage(message, status string) error {
+	msg := ResponseMessage{Message: message, Status: status}
+	data, err := json.Marshal(msg)
+	if err != nil {
+		return err
+	}
+	_, err = sr.w.Write(append(data, '\n'))
+	return err
 }
 
 func (r *Response) AddMessage(message string, status string) {

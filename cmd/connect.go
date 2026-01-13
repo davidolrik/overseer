@@ -20,12 +20,11 @@ func NewConnectCommand() *cobra.Command {
 			alias := args[0]
 			daemon.EnsureDaemonIsRunning()
 			daemon.CheckVersionMismatch()
-			response, err := daemon.SendCommand("SSH_CONNECT " + alias)
-			if err != nil {
+			// Use streaming to show companion startup progress in real-time
+			if err := daemon.SendCommandStreaming("SSH_CONNECT " + alias); err != nil {
 				slog.Error(err.Error())
 				os.Exit(1)
 			}
-			response.LogMessages()
 		},
 	}
 

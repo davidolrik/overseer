@@ -21,21 +21,11 @@ func NewReconnectCommand() *cobra.Command {
 			daemon.EnsureDaemonIsRunning()
 			daemon.CheckVersionMismatch()
 
-			// First disconnect
-			response, err := daemon.SendCommand("SSH_DISCONNECT " + alias)
-			if err != nil {
-				slog.Error("Failed to disconnect", "error", err)
+			// Use SSH_RECONNECT to preserve companion attach connections
+			if err := daemon.SendCommandStreaming("SSH_RECONNECT " + alias); err != nil {
+				slog.Error("Failed to reconnect", "error", err)
 				os.Exit(1)
 			}
-			response.LogMessages()
-
-			// Then connect
-			response, err = daemon.SendCommand("SSH_CONNECT " + alias)
-			if err != nil {
-				slog.Error("Failed to connect", "error", err)
-				os.Exit(1)
-			}
-			response.LogMessages()
 		},
 	}
 

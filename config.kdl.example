@@ -38,6 +38,70 @@ exports {
 }
 
 // ============================================================================
+// TUNNELS - Per-tunnel configuration with companion scripts
+// ============================================================================
+// Tunnel names must match SSH config aliases.
+// Companion scripts run before the tunnel connects and are terminated when
+// the tunnel disconnects.
+
+// Simple companion - wait for script to complete before connecting
+tunnel "work-vpn" {
+    companion "vpn-client" {
+        command = ["/usr/local/bin/start-vpn.sh", "--profile", "work"]
+        workdir = "~/.config/vpn"
+        wait_mode = "completion"     // Wait for script to exit successfully
+        timeout = "30s"
+        on_failure = "block"         // Don't connect tunnel if companion fails
+    }
+}
+
+// Companion that stays running - wait for specific output string
+tunnel "home-server" {
+    companion "socks-proxy" {
+        command = ["ssh", "-D", "1080", "-N", "proxy-host"]
+        wait_mode = "string"         // Wait for specific string in output
+        wait_for = "Entering interactive session"
+        timeout = "60s"
+        on_failure = "block"
+        keep_alive = true            // Keep running after tunnel connects (default)
+        persistent = true            // Keep running when tunnel stops (survives disconnect)
+        environment = {
+            "SSH_AUTH_SOCK" = "/tmp/ssh-agent.sock"
+        }
+    }
+}
+
+// Companion with background daemon - use SIGTERM for clean shutdown
+tunnel "vpn-tunnel" {
+    companion "daemon" {
+        command = ["/usr/local/bin/start-daemon.sh"]
+        wait_mode = "string"
+        wait_for = "Ready"
+        timeout = "30s"
+        on_failure = "block"
+        keep_alive = true
+        stop_signal = "TERM"         // Send SIGTERM instead of SIGINT (default is INT)
+    }
+}
+
+// Multiple companions - run sequentially
+tunnel "database-tunnel" {
+    companion "start-docker" {
+        command = ["docker", "compose", "up", "-d", "postgres"]
+        wait_mode = "completion"
+        timeout = "120s"
+        on_failure = "block"
+    }
+
+    companion "wait-healthy" {
+        command = ["docker", "compose", "exec", "postgres", "pg_isready"]
+        wait_mode = "completion"
+        timeout = "30s"
+        on_failure = "continue"      // Proceed even if health check fails
+    }
+}
+
+// ============================================================================
 // LOCATIONS - Reusable network/physical location definitions
 // ============================================================================
 

@@ -17,6 +17,8 @@ import (
 // LogBroadcaster manages streaming logs to multiple clients
 type LogBroadcaster struct {
 	clients map[chan string]bool
+	history []string // Ring buffer for recent messages
+	maxHist int      // Maximum history size
 	mu      sync.RWMutex
 }
 
@@ -24,6 +26,8 @@ type LogBroadcaster struct {
 func NewLogBroadcaster() *LogBroadcaster {
 	return &LogBroadcaster{
 		clients: make(map[chan string]bool),
+		history: make([]string, 0, 100),
+		maxHist: 100, // Keep last 100 lines
 	}
 }
 
@@ -37,6 +41,29 @@ func (lb *LogBroadcaster) Subscribe() chan string {
 	return ch
 }
 
+// SubscribeWithHistory adds a new client and returns recent history
+// The history slice is returned separately to avoid blocking the channel
+func (lb *LogBroadcaster) SubscribeWithHistory(historyLines int) (chan string, []string) {
+	lb.mu.Lock()
+	defer lb.mu.Unlock()
+
+	ch := make(chan string, 100) // Buffer to prevent blocking
+	lb.clients[ch] = true
+
+	// Return the last N lines from history
+	var history []string
+	if historyLines > 0 && len(lb.history) > 0 {
+		start := len(lb.history) - historyLines
+		if start < 0 {
+			start = 0
+		}
+		history = make([]string, len(lb.history)-start)
+		copy(history, lb.history[start:])
+	}
+
+	return ch, history
+}
+
 // Unsubscribe removes a client from receiving broadcasts
 func (lb *LogBroadcaster) Unsubscribe(ch chan string) {
 	lb.mu.Lock()
@@ -48,9 +75,17 @@ func (lb *LogBroadcaster) Unsubscribe(ch chan string) {
 
 // Broadcast sends a log message to all subscribed clients
 func (lb *LogBroadcaster) Broadcast(message string) {
-	lb.mu.RLock()
-	defer lb.mu.RUnlock()
+	lb.mu.Lock()
+	defer lb.mu.Unlock()
 
+	// Add to history buffer
+	if len(lb.history) >= lb.maxHist {
+		// Remove oldest entry
+		lb.history = lb.history[1:]
+	}
+	lb.history = append(lb.history, message)
+
+	// Broadcast to all clients
 	for ch := range lb.clients {
 		select {
 		case ch <- message:
@@ -58,6 +93,25 @@ func (lb *LogBroadcaster) Broadcast(message string) {
 			// Channel buffer full, skip this client to prevent blocking
 		}
 	}
+}
+
+// AddToHistory adds a message to history without broadcasting to subscribers
+// Used for history replay from wrapper reconnection
+func (lb *LogBroadcaster) AddToHistory(message string) {
+	lb.mu.Lock()
+	defer lb.mu.Unlock()
+
+	if len(lb.history) >= lb.maxHist {
+		lb.history = lb.history[1:]
+	}
+	lb.history = append(lb.history, message)
+}
+
+// ClearHistory clears the history buffer
+func (lb *LogBroadcaster) ClearHistory() {
+	lb.mu.Lock()
+	defer lb.mu.Unlock()
+	lb.history = lb.history[:0]
 }
 
 // LogWriter is an io.Writer that broadcasts log messages

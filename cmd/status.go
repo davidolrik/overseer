@@ -48,6 +48,10 @@ and rules defined in your configuration. Context changes automatically connect o
 
 			format, _ := cmd.Flags().GetString("format")
 
+			// Get companion status for tree display
+			companionResponse, _ := daemon.SendCommand("COMPANION_STATUS")
+			companionMap := getCompanionMap(companionResponse)
+
 			switch format {
 			case "text":
 				// Show comprehensive context information
@@ -66,12 +70,19 @@ and rules defined in your configuration. Context changes automatically connect o
 						colorGreen  = "\033[32m"
 						colorYellow = "\033[33m"
 						colorRed    = "\033[31m"
+						colorGray   = "\033[90m"
 						colorReset  = "\033[0m"
 					)
 
 					// Build state indicator with colored icon and alias
 					var icon, color, extraInfo, timeInfo string
 					switch status.State {
+					case "connecting":
+						icon = "⟳"
+						color = colorYellow
+						startTime, _ := time.Parse(time.RFC3339, status.StartDate)
+						elapsed := time.Since(startTime)
+						timeInfo = fmt.Sprintf("Connecting: %s", elapsed.Round(time.Second).String())
 					case "connected":
 						icon = "✓"
 						color = colorGreen
@@ -131,6 +142,43 @@ and rules defined in your configuration. Context changes automatically connect o
 						reconnectInfo,
 						extraInfo,
 					)
+
+					// Show companions for this tunnel in tree format
+					if companions, ok := companionMap[status.Hostname]; ok && len(companions) > 0 {
+						for i, comp := range companions {
+							// Tree connector: └── for last item, ├── for others
+							connector := "├──"
+							if i == len(companions)-1 {
+								connector = "└──"
+							}
+
+							// Choose color based on state
+							var compColor, compIcon string
+							switch comp.State {
+							case "running", "ready":
+								compColor = colorGreen
+								compIcon = "✓"
+							case "waiting", "starting":
+								compColor = colorYellow
+								compIcon = "⟳"
+							case "stopped", "exited":
+								compColor = colorGray
+								compIcon = "○"
+							case "failed":
+								compColor = colorRed
+								compIcon = "✗"
+							default:
+								compColor = colorReset
+								compIcon = "?"
+							}
+
+							fmt.Printf("      %s %s%s%s %s %s[%s]%s\n",
+								connector,
+								compColor, compIcon, colorReset,
+								comp.Name,
+								compColor, comp.State, colorReset)
+						}
+					}
 				}
 
 				// Show recent events after tunnels in verbose mode
@@ -153,9 +201,66 @@ and rules defined in your configuration. Context changes automatically connect o
 		},
 	}
 	statusCmd.Flags().StringP("format", "F", "text", "Format to use (text/json)")
-	statusCmd.Flags().IntP("events", "n", 20, "Number of recent events to show")
+	statusCmd.Flags().IntP("events", "N", 20, "Number of recent events to show")
 
 	return statusCmd
+}
+
+// companionInfo holds parsed companion information for display
+type companionInfo struct {
+	Name  string
+	State string
+	PID   int
+}
+
+// getCompanionMap parses companion response into a map of tunnel -> companions
+func getCompanionMap(response daemon.Response) map[string][]companionInfo {
+	result := make(map[string][]companionInfo)
+
+	if response.Data == nil {
+		return result
+	}
+
+	dataMap, ok := response.Data.(map[string]interface{})
+	if !ok {
+		return result
+	}
+
+	companions, ok := dataMap["companions"]
+	if !ok {
+		return result
+	}
+
+	companionMap, ok := companions.(map[string]interface{})
+	if !ok {
+		return result
+	}
+
+	for tunnel, comps := range companionMap {
+		compList, ok := comps.([]interface{})
+		if !ok {
+			continue
+		}
+
+		for _, c := range compList {
+			comp, ok := c.(map[string]interface{})
+			if !ok {
+				continue
+			}
+
+			name, _ := comp["name"].(string)
+			state, _ := comp["state"].(string)
+			pid, _ := comp["pid"].(float64) // JSON numbers are float64
+
+			result[tunnel] = append(result[tunnel], companionInfo{
+				Name:  name,
+				State: state,
+				PID:   int(pid),
+			})
+		}
+	}
+
+	return result
 }
 
 // displayContextBanner shows a compact context banner at the top of status output
@@ -348,6 +453,7 @@ func displayRecentEvents(data interface{}) {
 		colorBlue    = "\033[34m"
 		colorGreen   = "\033[32m"
 		colorRed     = "\033[31m"
+		colorOrange  = "\033[38;2;255;165;0m" // True 24-bit orange
 	)
 
 	// Collect all events into a single list for unified display
@@ -416,7 +522,13 @@ func displayRecentEvents(data interface{}) {
 		if te.Details != "" {
 			eventDesc = fmt.Sprintf("%s - %s", te.EventType, te.Details)
 		}
-		msg = fmt.Sprintf("%s%s:%s %s", colorYellow, te.TunnelAlias, colorReset, eventDesc)
+
+		// Use orange for companion events, yellow for tunnel events
+		aliasColor := colorYellow
+		if strings.HasPrefix(te.EventType, "companion_") {
+			aliasColor = colorOrange
+		}
+		msg = fmt.Sprintf("%s%s:%s %s", aliasColor, te.TunnelAlias, colorReset, eventDesc)
 
 		events = append(events, logEvent{timestamp: ts, message: msg})
 	}
@@ -455,3 +567,4 @@ func displayRecentEvents(data interface{}) {
 
 	fmt.Println()
 }
+

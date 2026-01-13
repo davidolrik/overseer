@@ -18,7 +18,7 @@ func NewAskpassCommand() *cobra.Command {
 		Run: func(cmd *cobra.Command, args []string) {
 			// Get alias and token from environment variables
 			alias := os.Getenv("OVERSEER_ASKPASS_ALIAS")
-			token := os.Getenv("OVERSEER_ASKPASS_TOKEN")
+			token := os.Getenv("OVERSEER_TUNNEL_TOKEN")
 
 			if alias == "" || token == "" {
 				// Not called correctly

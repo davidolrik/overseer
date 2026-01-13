@@ -40,7 +40,7 @@ func ConfigureSSHAskpass(cmd *exec.Cmd, alias string) (string, error) {
 	cmd.Env = append(cmd.Env, fmt.Sprintf("OVERSEER_ASKPASS_ALIAS=%s", alias))
 
 	// Set the authentication token that daemon will validate
-	cmd.Env = append(cmd.Env, fmt.Sprintf("OVERSEER_ASKPASS_TOKEN=%s", token))
+	cmd.Env = append(cmd.Env, fmt.Sprintf("OVERSEER_TUNNEL_TOKEN=%s", token))
 
 	// For OpenSSH 8.4+, use SSH_ASKPASS_REQUIRE=force
 	cmd.Env = append(cmd.Env, "SSH_ASKPASS_REQUIRE=force")

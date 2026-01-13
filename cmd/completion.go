@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+	"overseer.olrik.dev/internal/core"
 )
 
 // extractHostAliases is a simple, robust parser that only looks for the `Host` keyword
@@ -122,4 +123,54 @@ func sshHostCompletionFunc(cmd *cobra.Command, args []string, toComplete string)
 	// 3. Sort and return the results.
 	sort.Strings(hosts)
 	return hosts, cobra.ShellCompDirectiveNoFileComp
+}
+
+// tunnelCompletionFunc returns configured tunnel aliases from overseer config
+func tunnelCompletionFunc(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	tunnels := getConfiguredTunnels()
+	sort.Strings(tunnels)
+	return tunnels, cobra.ShellCompDirectiveNoFileComp
+}
+
+// companionCompletionFunc returns companion names for the tunnel specified by --tunnel flag
+func companionCompletionFunc(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	tunnel, _ := cmd.Flags().GetString("tunnel")
+	if tunnel == "" {
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+
+	companions := getConfiguredCompanions(tunnel)
+	sort.Strings(companions)
+	return companions, cobra.ShellCompDirectiveNoFileComp
+}
+
+// getConfiguredTunnels returns all tunnel aliases from the overseer config
+func getConfiguredTunnels() []string {
+	if core.Config == nil || core.Config.Tunnels == nil {
+		return nil
+	}
+
+	tunnels := make([]string, 0, len(core.Config.Tunnels))
+	for alias := range core.Config.Tunnels {
+		tunnels = append(tunnels, alias)
+	}
+	return tunnels
+}
+
+// getConfiguredCompanions returns all companion names for a given tunnel
+func getConfiguredCompanions(tunnel string) []string {
+	if core.Config == nil || core.Config.Tunnels == nil {
+		return nil
+	}
+
+	tunnelConfig, exists := core.Config.Tunnels[tunnel]
+	if !exists || tunnelConfig == nil {
+		return nil
+	}
+
+	companions := make([]string, 0, len(tunnelConfig.Companions))
+	for _, comp := range tunnelConfig.Companions {
+		companions = append(companions, comp.Name)
+	}
+	return companions
 }
