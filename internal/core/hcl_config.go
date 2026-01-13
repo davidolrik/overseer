@@ -74,6 +74,7 @@ type ContextActions struct {
 // TunnelConfig represents per-tunnel configuration
 type TunnelConfig struct {
 	Name       string            // Tunnel name (matches SSH alias)
+	Tags       []string          // SSH tags for config matching (passed as -P arguments)
 	Companions []CompanionConfig // Companion scripts to run before tunnel starts
 }
 
@@ -154,6 +155,7 @@ type hclActions struct {
 
 type hclTunnel struct {
 	Name       string         `hcl:"name,label"`
+	Tags       []string       `hcl:"tags,optional"`
 	Companions []hclCompanion `hcl:"companion,block"`
 }
 
@@ -319,6 +321,7 @@ func LoadConfig(filename string) (*Configuration, error) {
 	for _, hclTun := range hclCfg.Tunnels {
 		tunnel := &TunnelConfig{
 			Name:       hclTun.Name,
+			Tags:       hclTun.Tags,
 			Companions: make([]CompanionConfig, 0, len(hclTun.Companions)),
 		}
 

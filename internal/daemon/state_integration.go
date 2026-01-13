@@ -266,7 +266,7 @@ func (d *Daemon) handleNewContextChange(from, to state.StateSnapshot, rule *stat
 			}
 
 			if shouldConnect {
-				resp := d.startTunnel(alias)
+				resp := d.startTunnel(alias, nil) // Config tags are applied inside startTunnel
 				for _, msg := range resp.Messages {
 					if msg.Status == "ERROR" {
 						slog.Error("Failed to start tunnel during context change",

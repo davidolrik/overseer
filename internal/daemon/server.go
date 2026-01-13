@@ -65,6 +65,7 @@ type Tunnel struct {
 	AutoReconnect     bool        // Whether to auto-reconnect on failure
 	State             TunnelState // Current connection state
 	NextRetryTime     time.Time   // When the next retry will occur
+	Tags              []string    // Custom SSH tags for -P arguments (used with Match tagged in ssh_config)
 }
 
 func New() *Daemon {
@@ -373,9 +374,23 @@ func (d *Daemon) handleConnection(conn net.Conn) {
 	switch command {
 	case "SSH_CONNECT":
 		if len(args) > 0 {
+			alias := args[0]
+			var tags []string
+
+			// Parse optional tags argument (format: --tags=tag1,tag2,tag3)
+			for _, arg := range args[1:] {
+				if strings.HasPrefix(arg, "--tags=") {
+					tagStr := strings.TrimPrefix(arg, "--tags=")
+					if tagStr != "" {
+						tags = strings.Split(tagStr, ",")
+					}
+					break
+				}
+			}
+
 			// Use streaming to send progress messages as they occur
 			stream := NewStreamingResponse(conn)
-			response = d.startTunnelStreaming(args[0], stream)
+			response = d.startTunnelStreaming(alias, tags, stream)
 		}
 	case "SSH_DISCONNECT":
 		if len(args) > 0 {
@@ -389,14 +404,23 @@ func (d *Daemon) handleConnection(conn net.Conn) {
 	case "SSH_RECONNECT":
 		if len(args) > 0 {
 			alias := args[0]
+
+			// Get existing tags before stopping (to preserve them on reconnect)
+			d.mu.Lock()
+			var tags []string
+			if tunnel, exists := d.tunnels[alias]; exists {
+				tags = tunnel.Tags
+			}
+			d.mu.Unlock()
+
 			// Stop tunnel but preserve companions
 			stopResponse := d.stopTunnel(alias, true)
 			if len(stopResponse.Messages) > 0 && stopResponse.Messages[0].Status == "ERROR" {
 				response = stopResponse
 			} else {
-				// Reconnect using streaming to show progress
+				// Reconnect using streaming to show progress (with preserved tags)
 				stream := NewStreamingResponse(conn)
-				response = d.startTunnelStreaming(alias, stream)
+				response = d.startTunnelStreaming(alias, tags, stream)
 			}
 		}
 	case "RELOAD":
@@ -574,7 +598,8 @@ func (d *Daemon) handleConnection(conn net.Conn) {
 
 // startTunnelStreaming starts a tunnel with optional streaming of progress messages.
 // If stream is non-nil, progress messages are written as they occur.
-func (d *Daemon) startTunnelStreaming(alias string, stream *StreamingResponse) Response {
+// Tags are passed to SSH as additional -P arguments for use with Match tagged in ssh_config.
+func (d *Daemon) startTunnelStreaming(alias string, tags []string, stream *StreamingResponse) Response {
 	// Note: We cannot use defer d.mu.Unlock() here because we need to unlock
 	// early (before waiting for connection verification) and the function continues
 	// to execute afterward. Using defer would cause a double-unlock panic.
@@ -646,9 +671,19 @@ func (d *Daemon) startTunnelStreaming(alias string, stream *StreamingResponse) R
 	// Check if a password is stored for this alias
 	hasPassword := keyring.HasPassword(alias)
 
+	// Merge config tags with CLI tags (config tags first, then CLI tags)
+	if tunnelConfig := core.Config.Tunnels[alias]; tunnelConfig != nil && len(tunnelConfig.Tags) > 0 {
+		tags = append(tunnelConfig.Tags, tags...)
+	}
+
 	// Create SSH command with verbose mode to detect connection status
 	// Build SSH options from config
 	sshArgs := []string{alias, "-N", "-P", "overseer daemon", "-o", "ExitOnForwardFailure=yes", "-v"}
+
+	// Add custom tags for SSH config matching (Match tagged)
+	for _, tag := range tags {
+		sshArgs = append(sshArgs, "-P", tag)
+	}
 
 	// Add ServerAliveInterval if configured (0 means disabled)
 	if core.Config.SSH.ServerAliveInterval > 0 {
@@ -708,6 +743,7 @@ func (d *Daemon) startTunnelStreaming(alias string, stream *StreamingResponse) R
 		RetryCount:        0,
 		AutoReconnect:     core.Config.SSH.ReconnectEnabled, // Use config value
 		State:             StateConnecting,                  // Initial state is connecting, updated to connected after verification
+		Tags:              tags,                             // Store tags for reconnection
 	}
 	slog.Info(fmt.Sprintf("Attempting to start tunnel for '%s' (PID %d)", alias, cmd.Process.Pid))
 
@@ -785,8 +821,8 @@ func (d *Daemon) startTunnelStreaming(alias string, stream *StreamingResponse) R
 }
 
 // startTunnel starts a tunnel without streaming (used for reconnection).
-func (d *Daemon) startTunnel(alias string) Response {
-	return d.startTunnelStreaming(alias, nil)
+func (d *Daemon) startTunnel(alias string, tags []string) Response {
+	return d.startTunnelStreaming(alias, tags, nil)
 }
 
 // monitorTunnel watches a tunnel process and handles reconnection with exponential backoff
@@ -929,6 +965,11 @@ func (d *Daemon) monitorTunnel(alias string) {
 		// Create new SSH command
 		// Build SSH options from config
 		sshArgs := []string{alias, "-N", "-P", "overseer daemon", "-o", "ExitOnForwardFailure=yes", "-v"}
+
+		// Add custom tags (preserved from original connection)
+		for _, tag := range tunnel.Tags {
+			sshArgs = append(sshArgs, "-P", tag)
+		}
 
 		// Add ServerAliveInterval if configured (0 means disabled)
 		if core.Config.SSH.ServerAliveInterval > 0 {
@@ -2234,11 +2275,13 @@ func (d *Daemon) monitorAdoptedTunnel(alias string, pid int) {
 
 				// Remove tunnel from map before calling startTunnel()
 				// startTunnel() will create a fresh entry with proper monitoring
+				// Preserve tags from the existing tunnel
+				tags := tunnel.Tags
 				delete(d.tunnels, alias)
 				d.mu.Unlock()
 
 				// Start the tunnel (this creates a new SSH process)
-				response := d.startTunnel(alias)
+				response := d.startTunnel(alias, tags)
 
 				// Check if reconnection succeeded
 				hasError := false

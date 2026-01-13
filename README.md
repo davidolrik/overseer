@@ -92,7 +92,7 @@ sudo mv overseer /usr/local/bin/
 
 | Command                       | Aliases | Description                            |
 | ----------------------------- | ------- | -------------------------------------- |
-| `overseer connect <alias>`    | `c`     | Connect to an SSH host                 |
+| `overseer connect <alias> [--tag TAG]...` | `c` | Connect to an SSH host (tags for SSH config matching) |
 | `overseer disconnect [alias]` | `d`     | Disconnect tunnel (or all if no alias) |
 | `overseer reconnect <alias>`  | `r`     | Reconnect a tunnel                     |
 
@@ -248,6 +248,29 @@ location "corporate" {
   }
 }
 ```
+
+### Tunnel Configuration
+
+Configure per-tunnel settings including SSH tags and companion scripts:
+
+```hcl
+tunnel "my-server" {
+  tags = ["production", "monitoring"]  # SSH tags for config matching
+
+  companion "setup-script" {
+    command = "~/scripts/prepare-connection.sh"
+  }
+}
+```
+
+SSH tags are passed as `-P` arguments and can be used with `Match tagged` in your `~/.ssh/config`:
+
+```
+Match tagged production
+  ProxyJump bastion.example.com
+```
+
+Tags from the config file are merged with any tags passed via `--tag` on the command line.
 
 ### Companion Scripts
 
