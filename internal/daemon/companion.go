@@ -721,9 +721,22 @@ func (cm *CompanionManager) waitForCompletion(proc *CompanionProcess, timeout ti
 
 // waitForString monitors output for a specific string by subscribing to LogBroadcaster
 func (cm *CompanionManager) waitForString(proc *CompanionProcess, waitFor string, timeout time.Duration) error {
-	// Subscribe to output
-	outputChan := proc.output.Subscribe()
+	// Subscribe with history to catch strings that arrived before subscription
+	outputChan, history := proc.output.SubscribeWithHistory(100)
 	defer proc.output.Unsubscribe(outputChan)
+
+	// Check history first - the string may have already arrived
+	// Only check lines from after this process started (timestamp filtering)
+	for _, line := range history {
+		if lineTime, ok := parseOutputTimestamp(line); ok {
+			if lineTime.Before(proc.StartTime) {
+				continue // Skip lines from previous connection
+			}
+		}
+		if strings.Contains(line, waitFor) {
+			return nil
+		}
+	}
 
 	timeoutChan := time.After(timeout)
 
@@ -743,6 +756,18 @@ func (cm *CompanionManager) waitForString(proc *CompanionProcess, waitFor string
 			return fmt.Errorf("cancelled")
 		}
 	}
+}
+
+// parseOutputTimestamp extracts timestamp from output line format: "2006-01-02 15:04:05 [output] ..."
+func parseOutputTimestamp(line string) (time.Time, bool) {
+	if len(line) < 19 {
+		return time.Time{}, false
+	}
+	t, err := time.ParseInLocation("2006-01-02 15:04:05", line[:19], time.Local)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return t, true
 }
 
 // monitorCompanion watches a companion process after it's ready
