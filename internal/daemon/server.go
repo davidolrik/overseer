@@ -360,11 +360,29 @@ func (d *Daemon) handleConnection(conn net.Conn) {
 	}
 	command, args := parts[0], parts[1:]
 
-	// Log the command execution (skip VERSION and ASKPASS as they're internal)
-	// VERSION: automatic version check, ASKPASS: contains sensitive auth token
-	if command != "VERSION" && command != "ASKPASS" {
-		if len(args) > 0 {
-			slog.Info(fmt.Sprintf("Executing command: %s %v", command, args))
+	// Log the command execution (skip VERSION as it's automatic, mask tokens in sensitive commands)
+	if command != "VERSION" {
+		logArgs := args
+		// Mask tokens in commands that contain sensitive auth data
+		switch command {
+		case "ASKPASS":
+			// ASKPASS <alias> <token> - mask token at index 1
+			if len(args) >= 2 {
+				logArgs = make([]string, len(args))
+				copy(logArgs, args)
+				logArgs[1] = "[MASKED]"
+			}
+		case "COMPANION_INIT":
+			// COMPANION_INIT <tunnel> <name> <token> - mask token at index 2
+			if len(args) >= 3 {
+				logArgs = make([]string, len(args))
+				copy(logArgs, args)
+				logArgs[2] = "[MASKED]"
+			}
+		}
+
+		if len(logArgs) > 0 {
+			slog.Info(fmt.Sprintf("Executing command: %s %v", command, logArgs))
 		} else {
 			slog.Info(fmt.Sprintf("Executing command: %s", command))
 		}
