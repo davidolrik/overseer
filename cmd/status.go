@@ -201,7 +201,7 @@ and rules defined in your configuration. Context changes automatically connect o
 		},
 	}
 	statusCmd.Flags().StringP("format", "F", "text", "Format to use (text/json)")
-	statusCmd.Flags().IntP("events", "N", 20, "Number of recent events to show")
+	statusCmd.Flags().IntP("events", "E", 20, "Number of recent events to show")
 
 	return statusCmd
 }

@@ -234,8 +234,8 @@ Examples:
 		},
 	}
 
-	statsCmd.Flags().StringVarP(&sinceStr, "since", "s", "today", "Start date: today, yesterday, or YYYY-MM-DD")
-	statsCmd.Flags().IntVarP(&days, "days", "d", 1, "Number of days to include")
+	statsCmd.Flags().StringVarP(&sinceStr, "since", "S", "today", "Start date: today, yesterday, or YYYY-MM-DD")
+	statsCmd.Flags().IntVarP(&days, "days", "D", 1, "Number of days to include")
 
 	return statsCmd
 }
