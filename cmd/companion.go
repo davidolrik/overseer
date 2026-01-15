@@ -230,6 +230,7 @@ Press Ctrl+C to detach.`,
 		Run: func(cmd *cobra.Command, args []string) {
 			tunnel, _ := cmd.Flags().GetString("tunnel")
 			name, _ := cmd.Flags().GetString("name")
+			lines, _ := cmd.Flags().GetInt("lines")
 
 			daemon.EnsureDaemonIsRunning()
 
@@ -247,12 +248,12 @@ Press Ctrl+C to detach.`,
 					os.Exit(1)
 				}
 
-				// Send COMPANION_ATTACH command (with no_history flag on reconnect)
+				// Send COMPANION_ATTACH command with lines count (0 + no_history on reconnect)
 				var command string
 				if isReconnect {
-					command = fmt.Sprintf("COMPANION_ATTACH %s %s no_history\n", tunnel, name)
+					command = fmt.Sprintf("COMPANION_ATTACH %s %s 0 no_history\n", tunnel, name)
 				} else {
-					command = fmt.Sprintf("COMPANION_ATTACH %s %s\n", tunnel, name)
+					command = fmt.Sprintf("COMPANION_ATTACH %s %s %d\n", tunnel, name, lines)
 				}
 				if _, err := conn.Write([]byte(command)); err != nil {
 					conn.Close()
@@ -343,6 +344,7 @@ Press Ctrl+C to detach.`,
 
 	cmd.Flags().StringP("tunnel", "T", "", "Tunnel alias")
 	cmd.Flags().StringP("name", "N", "", "Companion name")
+	cmd.Flags().IntP("lines", "L", 20, "Number of history lines to show on attach")
 	cmd.MarkFlagRequired("tunnel")
 	cmd.MarkFlagRequired("name")
 	cmd.RegisterFlagCompletionFunc("tunnel", tunnelCompletionFunc)

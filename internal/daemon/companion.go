@@ -494,7 +494,7 @@ func (cm *CompanionManager) runCompanion(alias string, config core.CompanionConf
 	}
 
 	// Create log broadcaster for output streaming
-	broadcaster := NewLogBroadcaster()
+	broadcaster := NewLogBroadcaster(core.Config.Companion.HistorySize)
 
 	// Run companion via environment variable injection (like askpass)
 	// The wrapper command is invoked with "daemon" arg for easy identification as "overseer daemon" in the process list
@@ -1097,7 +1097,8 @@ type CompanionStatus struct {
 
 // HandleCompanionAttach streams companion output to client via LogBroadcaster
 // showHistory controls whether to send recent history on attach (false for reconnects)
-func (cm *CompanionManager) HandleCompanionAttach(conn net.Conn, alias string, name string, showHistory bool) {
+// historyLines controls how many lines of history to show (default 20)
+func (cm *CompanionManager) HandleCompanionAttach(conn net.Conn, alias string, name string, showHistory bool, historyLines int) {
 	defer conn.Close()
 
 	cm.mu.Lock()
@@ -1159,7 +1160,7 @@ func (cm *CompanionManager) HandleCompanionAttach(conn net.Conn, alias string, n
 			Name:        name,
 			Config:      *companionConfig,
 			State:       CompanionStateStopped,
-			output:      NewLogBroadcaster(),
+			output:      NewLogBroadcaster(core.Config.Companion.HistorySize),
 			ctx:         ctx,
 			cancel:      cancel,
 		}
@@ -1195,7 +1196,7 @@ func (cm *CompanionManager) HandleCompanionAttach(conn net.Conn, alias string, n
 	var outputChan chan string
 	if showHistory && (state == CompanionStateRunning || state == CompanionStateReady) {
 		var history []string
-		outputChan, history = proc.output.SubscribeWithHistory(50)
+		outputChan, history = proc.output.SubscribeWithHistory(historyLines)
 		// Send history before streaming live output
 		for _, line := range history {
 			if _, err := conn.Write([]byte(line)); err != nil {
@@ -1601,7 +1602,7 @@ func (cm *CompanionManager) AdoptCompanions() int {
 
 			// Create adopted companion process
 			ctx, cancel := context.WithCancel(context.Background())
-			broadcaster := NewLogBroadcaster()
+			broadcaster := NewLogBroadcaster(core.Config.Companion.HistorySize)
 
 			proc := &CompanionProcess{
 				TunnelAlias:  tunnelInfo.Alias,

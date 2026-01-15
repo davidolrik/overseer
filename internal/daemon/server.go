@@ -73,7 +73,7 @@ func New() *Daemon {
 	d := &Daemon{
 		tunnels:       make(map[string]Tunnel),
 		askpassTokens: make(map[string]string),
-		logBroadcast:  NewLogBroadcaster(),
+		logBroadcast:  NewLogBroadcaster(core.Config.Companion.HistorySize),
 		companionMgr:  NewCompanionManager(),
 		ctx:           ctx,
 		cancelFunc:    cancel,
@@ -539,15 +539,22 @@ func (d *Daemon) handleConnection(conn net.Conn) {
 		}
 	case "COMPANION_ATTACH":
 		if len(args) >= 2 {
-			// Check for optional no_history flag (used by client on reconnect)
+			// Parse optional lines count and no_history flag
+			historyLines := 20 // default
 			showHistory := true
-			if len(args) >= 3 && args[2] == "no_history" {
-				showHistory = false
+			if len(args) >= 3 {
+				if n, err := strconv.Atoi(args[2]); err == nil {
+					historyLines = n
+				}
+				// Check for no_history flag (in 3rd or 4th position)
+				if args[2] == "no_history" || (len(args) >= 4 && args[3] == "no_history") {
+					showHistory = false
+				}
 			}
-			d.companionMgr.HandleCompanionAttach(conn, args[0], args[1], showHistory)
+			d.companionMgr.HandleCompanionAttach(conn, args[0], args[1], showHistory, historyLines)
 			return // Don't send JSON response
 		}
-		response.AddMessage("Usage: COMPANION_ATTACH <tunnel> <name>", "ERROR")
+		response.AddMessage("Usage: COMPANION_ATTACH <tunnel> <name> [lines]", "ERROR")
 	case "COMPANION_START":
 		if len(args) >= 2 {
 			// Check if tunnel is running

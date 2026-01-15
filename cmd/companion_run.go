@@ -157,8 +157,8 @@ func executeCompanionWrapper(socketPath, alias, command string) {
 		close(outputChan)
 	}()
 
-	// Create output cache for replay after daemon restart (100 lines)
-	outputCache := NewOutputCache(100)
+	// Create output cache for replay after daemon restart (1000 lines)
+	outputCache := NewOutputCache(1000)
 
 	// Output streaming goroutine - connects to daemon socket and streams output
 	streamingDone := make(chan struct{})

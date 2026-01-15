@@ -22,12 +22,15 @@ type LogBroadcaster struct {
 	mu      sync.RWMutex
 }
 
-// NewLogBroadcaster creates a new log broadcaster
-func NewLogBroadcaster() *LogBroadcaster {
+// NewLogBroadcaster creates a new log broadcaster with the specified history size
+func NewLogBroadcaster(historySize int) *LogBroadcaster {
+	if historySize <= 0 {
+		historySize = 1000 // default
+	}
 	return &LogBroadcaster{
 		clients: make(map[chan string]bool),
-		history: make([]string, 0, 100),
-		maxHist: 100, // Keep last 100 lines
+		history: make([]string, 0, historySize),
+		maxHist: historySize,
 	}
 }
 

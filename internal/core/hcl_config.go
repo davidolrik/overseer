@@ -21,13 +21,14 @@ type ExportConfig struct {
 
 // Configuration represents the complete Overseer configuration
 type Configuration struct {
-	ConfigPath  string                  // Directory containing config files
-	Verbose     int                     // Verbosity level
-	Exports     []ExportConfig          // Export configurations
-	PreferredIP string                  // Preferred IP version for OVERSEER_PUBLIC_IP: "ipv4" (default) or "ipv6"
-	SSH         SSHConfig               // SSH connection settings (including reconnect)
-	Locations   map[string]*Location    // Location definitions keyed by location name
-	Contexts    []*ContextRule          // Context rules in evaluation order (first match wins)
+	ConfigPath  string                   // Directory containing config files
+	Verbose     int                      // Verbosity level
+	Exports     []ExportConfig           // Export configurations
+	PreferredIP string                   // Preferred IP version for OVERSEER_PUBLIC_IP: "ipv4" (default) or "ipv6"
+	SSH         SSHConfig                // SSH connection settings (including reconnect)
+	Companion   CompanionSettings        // Global companion script settings
+	Locations   map[string]*Location     // Location definitions keyed by location name
+	Contexts    []*ContextRule           // Context rules in evaluation order (first match wins)
 	Tunnels     map[string]*TunnelConfig // Per-tunnel configurations keyed by tunnel name
 	// Context behavior settings
 	CheckOnStartup       bool
@@ -43,6 +44,11 @@ type SSHConfig struct {
 	MaxBackoff          string // Maximum delay between retries
 	BackoffFactor       int    // Multiplier for each retry
 	MaxRetries          int    // Give up after this many attempts
+}
+
+// CompanionSettings represents global companion script settings
+type CompanionSettings struct {
+	HistorySize int // Ring buffer size for output history (default 1000)
 }
 
 // Location represents a physical or network location with sensor conditions
@@ -98,12 +104,13 @@ type CompanionConfig struct {
 // HCL parsing structs
 
 type hclConfig struct {
-	Verbose   int            `hcl:"verbose,optional"`
-	Exports   *hclExports    `hcl:"exports,block"`
-	SSH       *hclSSH        `hcl:"ssh,block"`
-	Locations []hclLocation  `hcl:"location,block"`
-	Contexts  []hclContext   `hcl:"context,block"`
-	Tunnels   []hclTunnel    `hcl:"tunnel,block"`
+	Verbose   int                   `hcl:"verbose,optional"`
+	Exports   *hclExports           `hcl:"exports,block"`
+	SSH       *hclSSH               `hcl:"ssh,block"`
+	Companion *hclCompanionSettings `hcl:"companion,block"`
+	Locations []hclLocation         `hcl:"location,block"`
+	Contexts  []hclContext          `hcl:"context,block"`
+	Tunnels   []hclTunnel           `hcl:"tunnel,block"`
 }
 
 type hclExports struct {
@@ -122,6 +129,10 @@ type hclSSH struct {
 	MaxBackoff          string `hcl:"max_backoff,optional"`
 	BackoffFactor       int    `hcl:"backoff_factor,optional"`
 	MaxRetries          int    `hcl:"max_retries,optional"`
+}
+
+type hclCompanionSettings struct {
+	HistorySize int `hcl:"history_size,optional"`
 }
 
 type hclLocation struct {
@@ -260,6 +271,12 @@ func LoadConfig(filename string) (*Configuration, error) {
 			BackoffFactor:       2,
 			MaxRetries:          10,
 		}
+	}
+
+	// Convert companion settings
+	cfg.Companion = CompanionSettings{HistorySize: 1000} // Default
+	if hclCfg.Companion != nil && hclCfg.Companion.HistorySize > 0 {
+		cfg.Companion.HistorySize = hclCfg.Companion.HistorySize
 	}
 
 	// Convert location definitions
@@ -508,6 +525,7 @@ func GetDefaultConfig() *Configuration {
 			BackoffFactor:       2,
 			MaxRetries:          10,
 		},
+		Companion: CompanionSettings{HistorySize: 1000},
 		Locations: make(map[string]*Location),
 		Contexts:  make([]*ContextRule, 0),
 		Tunnels:   make(map[string]*TunnelConfig),
