@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -653,10 +654,10 @@ func (p *EnvProbe) Start(ctx context.Context, output chan<- SensorReading) {
 }
 
 func (p *EnvProbe) Check(ctx context.Context) SensorReading {
-	// Implementation would read os.Getenv(p.varName)
-	// For now, return empty reading
+	value := os.Getenv(p.varName)
 	return SensorReading{
 		Sensor:    p.name,
+		Value:     value,
 		Timestamp: time.Now(),
 	}
 }

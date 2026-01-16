@@ -53,11 +53,12 @@ type Orchestrator struct {
 	ruleEngine *RuleEngine
 
 	// Probes
-	tcpProbe      *TCPProbe
-	ipv4Probe     *IPProbe
-	ipv6Probe     *IPProbe
+	tcpProbe       *TCPProbe
+	ipv4Probe      *IPProbe
+	ipv6Probe      *IPProbe
 	localIPv4Probe *LocalIPProbe
-	networkProbe  *NetworkMonitorProbe
+	networkProbe   *NetworkMonitorProbe
+	envProbes      []*EnvProbe
 
 	// Readings channel - all probes emit to this
 	readings chan SensorReading
@@ -139,6 +140,12 @@ func NewOrchestrator(config OrchestratorConfig) *Orchestrator {
 	o.localIPv4Probe = NewLocalIPv4Probe(config.Logger)
 	o.networkProbe = NewNetworkMonitorProbe(o.ipv4Probe, o.ipv6Probe, o.localIPv4Probe, config.Logger)
 
+	// Create env probes for any env conditions in the config
+	envVarNames := CollectEnvSensors(config.Rules, config.Locations)
+	for _, varName := range envVarNames {
+		o.envProbes = append(o.envProbes, NewEnvProbe(varName))
+	}
+
 	// Subscribe to state changes to track current rule
 	manager.Subscribe(func(snapshot StateSnapshot) {
 		if snapshot.MatchedRule != "" {
@@ -184,6 +191,12 @@ func (o *Orchestrator) Start() {
 	// Start probes
 	o.tcpProbe.Start(o.ctx, o.readings)
 	o.networkProbe.Start(o.ctx, o.readings)
+
+	// Check env probes once at startup (env vars don't change during process lifetime)
+	for _, envProbe := range o.envProbes {
+		reading := envProbe.Check(o.ctx)
+		o.manager.SubmitReading(reading)
+	}
 
 	o.logger.Info("State orchestrator started")
 }
@@ -346,6 +359,19 @@ func (o *Orchestrator) Reload(rules []Rule, locations map[string]Location) {
 	o.ruleEngine = NewRuleEngine(rules, locations)
 	o.config.Rules = rules
 	o.config.Locations = locations
+
+	// Recreate env probes for new config
+	o.envProbes = nil
+	envVarNames := CollectEnvSensors(rules, locations)
+	for _, varName := range envVarNames {
+		o.envProbes = append(o.envProbes, NewEnvProbe(varName))
+	}
+
+	// Check env probes and submit readings
+	for _, envProbe := range o.envProbes {
+		reading := envProbe.Check(o.ctx)
+		o.manager.SubmitReading(reading)
+	}
 
 	o.streamer.Emit(LogEntry{
 		Timestamp: time.Now(),

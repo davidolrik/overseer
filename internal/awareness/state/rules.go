@@ -467,6 +467,63 @@ func extractSensorsRecursive(cond Condition, sensors map[string]bool) {
 	}
 }
 
+// CollectEnvSensors extracts all env sensor names from rules and locations.
+// It returns a unique list of environment variable names (without the "env:" prefix).
+func CollectEnvSensors(rules []Rule, locations map[string]Location) []string {
+	sensors := make(map[string]bool)
+
+	// Collect from rules
+	for i := range rules {
+		rule := &rules[i]
+		if rule.Condition != nil {
+			collectEnvSensorsFromCondition(rule.Condition, sensors)
+		}
+		if len(rule.Conditions) > 0 {
+			cond := ConditionFromMap(rule.Conditions)
+			collectEnvSensorsFromCondition(cond, sensors)
+		}
+	}
+
+	// Collect from locations
+	for _, loc := range locations {
+		if loc.Condition != nil {
+			collectEnvSensorsFromCondition(loc.Condition, sensors)
+		}
+		if len(loc.Conditions) > 0 {
+			cond := ConditionFromMap(loc.Conditions)
+			collectEnvSensorsFromCondition(cond, sensors)
+		}
+	}
+
+	// Convert to slice of var names (strip "env:" prefix)
+	result := make([]string, 0, len(sensors))
+	for sensorName := range sensors {
+		if strings.HasPrefix(sensorName, "env:") {
+			varName := strings.TrimPrefix(sensorName, "env:")
+			result = append(result, varName)
+		}
+	}
+	return result
+}
+
+// collectEnvSensorsFromCondition recursively extracts env sensor names from a condition
+func collectEnvSensorsFromCondition(cond Condition, sensors map[string]bool) {
+	if cond == nil {
+		return
+	}
+
+	switch c := cond.(type) {
+	case *SensorCondition:
+		if strings.HasPrefix(c.SensorName, "env:") {
+			sensors[c.SensorName] = true
+		}
+	case *GroupCondition:
+		for _, child := range c.Conditions {
+			collectEnvSensorsFromCondition(child, sensors)
+		}
+	}
+}
+
 // isNetworkSensor returns true for sensors that require network connectivity
 // to provide valid readings. When offline, these sensors' cached values
 // should not be trusted for location/context matching.
