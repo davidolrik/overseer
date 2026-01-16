@@ -19,6 +19,11 @@ func main() {
 		os.Args = []string{os.Args[0], "askpass"}
 	}
 
+	// If no command specified, default to status
+	if len(os.Args) == 1 {
+		os.Args = []string{os.Args[0], "status"}
+	}
+
 	root := cmd.NewRootCommand()
 	if err := root.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
