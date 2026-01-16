@@ -5,7 +5,15 @@ import (
 	"os"
 	"testing"
 	"time"
+
+	"overseer.olrik.dev/internal/core"
 )
+
+func TestMain(m *testing.M) {
+	// Initialize core.Config with defaults so daemon.New() doesn't panic
+	core.Config = core.GetDefaultConfig()
+	os.Exit(m.Run())
+}
 
 // TestParentMonitorCreation tests that a parent monitor can be created
 func TestParentMonitorCreation(t *testing.T) {
