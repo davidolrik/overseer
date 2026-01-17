@@ -10,6 +10,7 @@ import (
 
 func NewStartCommand() *cobra.Command {
 	var quiet bool
+	var background bool
 
 	cmd := &cobra.Command{
 		Use:   "start",
@@ -54,6 +55,13 @@ If the daemon is already running, this command will report its status.`,
 				return
 			}
 
+			if background {
+				if !quiet {
+					slog.Info("Daemon starting in background")
+				}
+				return
+			}
+
 			// Wait for daemon to be ready
 			if err := daemon.WaitForDaemon(); err != nil {
 				if !quiet {
@@ -69,6 +77,7 @@ If the daemon is already running, this command will report its status.`,
 	}
 
 	cmd.Flags().BoolVarP(&quiet, "quiet", "q", false, "Suppress output (useful for shell initialization)")
+	cmd.Flags().BoolVarP(&background, "background", "B", false, "Start daemon in background without waiting for readiness")
 
 	return cmd
 }
