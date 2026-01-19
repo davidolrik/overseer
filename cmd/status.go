@@ -503,6 +503,8 @@ func displayRecentEvents(data interface{}) {
 			msg = fmt.Sprintf("%scontext: %s → %s%s", colorMagenta, sc.OldValue, sc.NewValue, colorReset)
 		} else if sc.SensorName == "location" {
 			msg = fmt.Sprintf("%slocation: %s → %s%s", colorBlue, sc.OldValue, sc.NewValue, colorReset)
+		} else if sc.SensorName == "online" {
+			msg = fmt.Sprintf("%s%sonline:%s %s → %s", colorBold, colorGreen, colorReset, oldValue, newValue)
 		} else {
 			msg = fmt.Sprintf("%s%s:%s %s → %s", colorCyan, sc.SensorName, colorReset, oldValue, newValue)
 		}
