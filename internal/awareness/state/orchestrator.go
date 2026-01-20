@@ -38,6 +38,18 @@ type OrchestratorConfig struct {
 
 	// Logger for all components
 	Logger *slog.Logger
+
+	// LocationHooks maps location names to their hook configurations
+	LocationHooks map[string]*HooksConfig
+
+	// ContextHooks maps context names to their hook configurations
+	ContextHooks map[string]*HooksConfig
+
+	// GlobalLocationHooks are hooks that run for ALL location changes
+	GlobalLocationHooks *HooksConfig
+
+	// GlobalContextHooks are hooks that run for ALL context changes
+	GlobalContextHooks *HooksConfig
 }
 
 // Orchestrator ties together all the state management components.
@@ -126,10 +138,14 @@ func NewOrchestrator(config OrchestratorConfig) *Orchestrator {
 				config.OnContextChange(from, to, rule)
 			}
 		},
-		OnOnlineChange: config.OnOnlineChange,
-		DatabaseLogger: config.DatabaseLogger,
-		LogStreamer:    streamer,
-		Logger:         config.Logger,
+		OnOnlineChange:      config.OnOnlineChange,
+		DatabaseLogger:      config.DatabaseLogger,
+		LogStreamer:         streamer,
+		Logger:              config.Logger,
+		LocationHooks:       config.LocationHooks,
+		ContextHooks:        config.ContextHooks,
+		GlobalLocationHooks: config.GlobalLocationHooks,
+		GlobalContextHooks:  config.GlobalContextHooks,
 	})
 	o.effects = effects
 
@@ -340,6 +356,11 @@ func (o *Orchestrator) IsOnline() bool {
 // GetLogStreamer returns the log streamer for direct access
 func (o *Orchestrator) GetLogStreamer() *LogStreamer {
 	return o.streamer
+}
+
+// SetHookEventLogger sets the callback function for logging hook events to the database
+func (o *Orchestrator) SetHookEventLogger(logger func(identifier, eventType, details string) error) {
+	o.effects.SetHookEventLogger(logger)
 }
 
 // GetRuleEngine returns the rule engine

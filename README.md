@@ -15,6 +15,7 @@ Whatever your workflow needs.
 - **Full OpenSSH Integration**: Supports everything OpenSSH can do (connection reuse, SOCKS proxies, port forwarding, jump hosts)
 - **Context Awareness**: Automatically detect your logical location and connect/disconnect SSH tunnels based on your context
 - **Companion Scripts**: Run helper scripts alongside tunnels (VPN clients, proxies, setup scripts) with automatic restart on failure
+- **Location/Context Hooks**: Execute scripts automatically when entering or leaving locations or contexts
 - **Connectivity Statistics**: Track network stability with session history and quality ratings
 - **Automatic Reconnection**: Tunnels automatically reconnect with exponential backoff when connections fail
 - **Secure Password Storage**: Store passwords in your system keyring (Keychain/Secret Service)
@@ -470,6 +471,181 @@ overseer companion attach -T my-tunnel -N vpn-client
 | `exited`   | Exited (normally or with error)                  |
 | `failed`   | Failed to start or auto-restart failed           |
 | `stopped`  | Stopped intentionally                            |
+
+## Hooks
+
+Hooks are scripts that run automatically when you enter or leave a location or context. Unlike companion scripts which are tied to specific tunnels, hooks respond to state transitions and are useful for:
+
+- Running setup/teardown scripts when entering/leaving locations
+- Triggering notifications on context changes
+- Mounting/unmounting network drives
+- Starting/stopping services based on location
+
+### Location Hooks
+
+Define hooks that run when entering or leaving specific locations:
+
+```hcl
+location "office" {
+  display_name = "Office Network"
+
+  conditions {
+    public_ip = ["198.51.100.0/24"]
+  }
+
+  hooks {
+    on_enter {
+      command = "~/scripts/office-setup.sh"
+      timeout = "30s"
+    }
+
+    on_leave {
+      command = "~/scripts/office-teardown.sh"
+    }
+  }
+}
+```
+
+### Context Hooks
+
+Define hooks that run when entering or leaving specific contexts:
+
+```hcl
+context "trusted" {
+  display_name = "Trusted Network"
+  locations = ["home", "office"]
+
+  hooks {
+    on_enter {
+      command = "notify-send 'Entered trusted network'"
+    }
+
+    on_leave {
+      command = "notify-send 'Left trusted network'"
+    }
+  }
+}
+```
+
+### Global Hooks
+
+Run hooks for ALL location or context changes using top-level blocks:
+
+```hcl
+# Runs for every location change
+location_hooks {
+  on_enter {
+    command = "~/scripts/log-location.sh"
+  }
+
+  on_leave {
+    command = "~/scripts/cleanup.sh"
+  }
+}
+
+# Runs for every context change
+context_hooks {
+  on_enter {
+    command = "~/scripts/context-changed.sh"
+  }
+}
+```
+
+### Hook Configuration Options
+
+| Option    | Type     | Default | Description                                 |
+| --------- | -------- | ------- | ------------------------------------------- |
+| `command` | string   | *required* | Command to execute (supports `~` expansion) |
+| `timeout` | duration | `30s`   | Maximum execution time before killing       |
+
+### Hook Environment Variables
+
+Hooks receive these environment variables:
+
+| Variable                   | Description                              |
+| -------------------------- | ---------------------------------------- |
+| `OVERSEER_HOOK_TYPE`       | `enter` or `leave`                       |
+| `OVERSEER_HOOK_TARGET_TYPE`| `location` or `context`                  |
+| `OVERSEER_HOOK_TARGET`     | Name of the location or context          |
+| `OVERSEER_CONTEXT`         | Current context name                     |
+| `OVERSEER_LOCATION`        | Current location name                    |
+| `OVERSEER_PUBLIC_IP`       | Public IP address (if available)         |
+| `OVERSEER_LOCAL_IP`        | Local IP address (if available)          |
+| Custom variables           | Any variables from context/location `environment` blocks |
+
+### Hook Execution Order
+
+When state changes, hooks execute in this order:
+
+1. **Leave hooks** (if location/context changed):
+   - Specific location/context leave hooks first
+   - Global location/context leave hooks second
+
+2. **Enter hooks** (if location/context changed):
+   - Global location/context enter hooks first
+   - Specific location/context enter hooks second
+
+This LIFO (last-in-first-out) pattern ensures proper setup/teardown ordering.
+
+### Hook Events in Status
+
+Hook execution is logged and appears in `overseer status -E 20` output with amber/gold coloring. Event types include:
+
+- `hook_executed` - Successful execution (shows duration)
+- `hook_failed` - Failed execution (shows error)
+- `hook_timeout` - Execution timed out
+
+### Example: Complete Hook Setup
+
+```hcl
+# Global hooks for logging
+location_hooks {
+  on_enter {
+    command = "logger 'Overseer: entered location'"
+  }
+}
+
+location "home" {
+  display_name = "Home"
+  conditions {
+    public_ip = ["203.0.113.42"]
+  }
+
+  hooks {
+    on_enter {
+      command = "~/scripts/mount-nas.sh"
+      timeout = "60s"
+    }
+
+    on_leave {
+      command = "~/scripts/unmount-nas.sh"
+    }
+  }
+}
+
+location "office" {
+  display_name = "Office"
+  conditions {
+    public_ip = ["198.51.100.0/24"]
+  }
+
+  hooks {
+    on_enter {
+      command = "~/scripts/connect-printer.sh"
+    }
+  }
+}
+
+context "trusted" {
+  locations = ["home", "office"]
+
+  hooks {
+    on_enter {
+      command = "notify-send 'Welcome to trusted network'"
+    }
+  }
+}
+```
 
 ## Sensors
 

@@ -37,6 +37,18 @@ type EffectsProcessorConfig struct {
 
 	// Logger for the processor
 	Logger *slog.Logger
+
+	// LocationHooks maps location names to their hook configurations
+	LocationHooks map[string]*HooksConfig
+
+	// ContextHooks maps context names to their hook configurations
+	ContextHooks map[string]*HooksConfig
+
+	// GlobalLocationHooks are hooks that run for ALL location changes
+	GlobalLocationHooks *HooksConfig
+
+	// GlobalContextHooks are hooks that run for ALL context changes
+	GlobalContextHooks *HooksConfig
 }
 
 // EnvWriter writes environment data to a file
@@ -83,6 +95,13 @@ type EffectsProcessor struct {
 	// Input channel - transitions to process
 	transitions <-chan StateTransition
 
+	// Hook executor
+	hookExecutor        *HookExecutor
+	locationHooks       map[string]*HooksConfig
+	contextHooks        map[string]*HooksConfig
+	globalLocationHooks *HooksConfig
+	globalContextHooks  *HooksConfig
+
 	// Lifecycle
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -100,13 +119,33 @@ func NewEffectsProcessor(transitions <-chan StateTransition, config EffectsProce
 
 	ctx, cancel := context.WithCancel(context.Background())
 
-	return &EffectsProcessor{
-		config:      config,
-		logger:      config.Logger,
-		transitions: transitions,
-		ctx:         ctx,
-		cancel:      cancel,
+	// Initialize hook maps if nil
+	locationHooks := config.LocationHooks
+	if locationHooks == nil {
+		locationHooks = make(map[string]*HooksConfig)
 	}
+	contextHooks := config.ContextHooks
+	if contextHooks == nil {
+		contextHooks = make(map[string]*HooksConfig)
+	}
+
+	return &EffectsProcessor{
+		config:              config,
+		logger:              config.Logger,
+		transitions:         transitions,
+		hookExecutor:        NewHookExecutor(config.Logger, config.LogStreamer),
+		locationHooks:       locationHooks,
+		contextHooks:        contextHooks,
+		globalLocationHooks: config.GlobalLocationHooks,
+		globalContextHooks:  config.GlobalContextHooks,
+		ctx:                 ctx,
+		cancel:              cancel,
+	}
+}
+
+// SetHookEventLogger sets the callback function for logging hook events to the database
+func (ep *EffectsProcessor) SetHookEventLogger(logger func(identifier, eventType, details string) error) {
+	ep.hookExecutor.SetEventLogger(logger)
 }
 
 // Start begins processing transitions
@@ -150,20 +189,26 @@ func (ep *EffectsProcessor) processTransition(t StateTransition) {
 		"trigger", t.Trigger,
 		"changed", t.ChangedFields)
 
-	// 1. Emit log entries for state changes
+	// 1. Execute LEAVE hooks first (if location/context changed)
+	ep.executeLeaveHooks(t)
+
+	// 2. Emit log entries for state changes
 	ep.emitTransitionLogs(t)
 
-	// 2. Log to database
+	// 3. Log to database
 	if ep.config.DatabaseLogger != nil {
 		ep.logToDatabase(t)
 	}
 
-	// 3. Write environment files
+	// 4. Write environment files
 	if len(ep.config.EnvWriters) > 0 {
 		ep.writeEnvFiles(t)
 	}
 
-	// 4. Execute callbacks
+	// 5. Execute ENTER hooks (if location/context changed)
+	ep.executeEnterHooks(t)
+
+	// 6. Execute callbacks
 	ep.executeCallbacks(t)
 
 	ep.logger.Debug("Transition processed",
@@ -434,6 +479,144 @@ func (ep *EffectsProcessor) executeCallbacks(t StateTransition) {
 		ep.config.OnContextChange(t.From, t.To)
 		ep.emitEffectLog("callback", "on_context_change", nil, time.Since(start))
 	}
+}
+
+// executeLeaveHooks runs leave hooks when location or context changes
+func (ep *EffectsProcessor) executeLeaveHooks(t StateTransition) {
+	// Build environment for hooks
+	env := ep.buildHookEnv(t.From)
+
+	// Location leave hooks (if location changed)
+	// LIFO order: specific hooks first (inner), then global hooks (outer)
+	if t.HasChanged("location") && t.From.Location != "" {
+		// Specific location leave hooks first (inner unwinding)
+		if hooks, ok := ep.locationHooks[t.From.Location]; ok && hooks != nil && len(hooks.OnLeave) > 0 {
+			ep.hookExecutor.Execute(ep.ctx, HookEvent{
+				Type:       "leave",
+				TargetType: "location",
+				TargetName: t.From.Location,
+				Hooks:      hooks.OnLeave,
+				Env:        env,
+			})
+		}
+		// Global location leave hooks second (outer unwinding)
+		if ep.globalLocationHooks != nil && len(ep.globalLocationHooks.OnLeave) > 0 {
+			ep.hookExecutor.Execute(ep.ctx, HookEvent{
+				Type:       "leave",
+				TargetType: "location",
+				TargetName: "*",
+				Hooks:      ep.globalLocationHooks.OnLeave,
+				Env:        env,
+			})
+		}
+	}
+
+	// Context leave hooks (if context changed)
+	// LIFO order: specific hooks first (inner), then global hooks (outer)
+	if t.HasChanged("context") && t.From.Context != "" {
+		// Specific context leave hooks first (inner unwinding)
+		if hooks, ok := ep.contextHooks[t.From.Context]; ok && hooks != nil && len(hooks.OnLeave) > 0 {
+			ep.hookExecutor.Execute(ep.ctx, HookEvent{
+				Type:       "leave",
+				TargetType: "context",
+				TargetName: t.From.Context,
+				Hooks:      hooks.OnLeave,
+				Env:        env,
+			})
+		}
+		// Global context leave hooks second (outer unwinding)
+		if ep.globalContextHooks != nil && len(ep.globalContextHooks.OnLeave) > 0 {
+			ep.hookExecutor.Execute(ep.ctx, HookEvent{
+				Type:       "leave",
+				TargetType: "context",
+				TargetName: "*",
+				Hooks:      ep.globalContextHooks.OnLeave,
+				Env:        env,
+			})
+		}
+	}
+}
+
+// executeEnterHooks runs enter hooks when location or context changes
+func (ep *EffectsProcessor) executeEnterHooks(t StateTransition) {
+	// Build environment for hooks
+	env := ep.buildHookEnv(t.To)
+
+	// Location enter hooks (if location changed)
+	if t.HasChanged("location") && t.To.Location != "" {
+		// Global location enter hooks first
+		if ep.globalLocationHooks != nil && len(ep.globalLocationHooks.OnEnter) > 0 {
+			ep.hookExecutor.Execute(ep.ctx, HookEvent{
+				Type:       "enter",
+				TargetType: "location",
+				TargetName: "*",
+				Hooks:      ep.globalLocationHooks.OnEnter,
+				Env:        env,
+			})
+		}
+		// Specific location enter hooks second
+		if hooks, ok := ep.locationHooks[t.To.Location]; ok && hooks != nil && len(hooks.OnEnter) > 0 {
+			ep.hookExecutor.Execute(ep.ctx, HookEvent{
+				Type:       "enter",
+				TargetType: "location",
+				TargetName: t.To.Location,
+				Hooks:      hooks.OnEnter,
+				Env:        env,
+			})
+		}
+	}
+
+	// Context enter hooks (if context changed)
+	if t.HasChanged("context") && t.To.Context != "" {
+		// Global context enter hooks first
+		if ep.globalContextHooks != nil && len(ep.globalContextHooks.OnEnter) > 0 {
+			ep.hookExecutor.Execute(ep.ctx, HookEvent{
+				Type:       "enter",
+				TargetType: "context",
+				TargetName: "*",
+				Hooks:      ep.globalContextHooks.OnEnter,
+				Env:        env,
+			})
+		}
+		// Specific context enter hooks second
+		if hooks, ok := ep.contextHooks[t.To.Context]; ok && hooks != nil && len(hooks.OnEnter) > 0 {
+			ep.hookExecutor.Execute(ep.ctx, HookEvent{
+				Type:       "enter",
+				TargetType: "context",
+				TargetName: t.To.Context,
+				Hooks:      hooks.OnEnter,
+				Env:        env,
+			})
+		}
+	}
+}
+
+// buildHookEnv creates the environment map for hook execution
+func (ep *EffectsProcessor) buildHookEnv(state StateSnapshot) map[string]string {
+	env := make(map[string]string)
+
+	// Add standard OVERSEER_ variables
+	env["OVERSEER_CONTEXT"] = state.Context
+	env["OVERSEER_LOCATION"] = state.Location
+
+	if state.PublicIPv4 != nil {
+		env["OVERSEER_PUBLIC_IP"] = state.PublicIPv4.String()
+		env["OVERSEER_PUBLIC_IPV4"] = state.PublicIPv4.String()
+	}
+	if state.PublicIPv6 != nil {
+		env["OVERSEER_PUBLIC_IPV6"] = state.PublicIPv6.String()
+	}
+	if state.LocalIPv4 != nil {
+		env["OVERSEER_LOCAL_IP"] = state.LocalIPv4.String()
+		env["OVERSEER_LOCAL_IPV4"] = state.LocalIPv4.String()
+	}
+
+	// Add custom environment from state
+	for k, v := range state.Environment {
+		env[k] = v
+	}
+
+	return env
 }
 
 // emitEffectLog emits a log entry for an effect execution

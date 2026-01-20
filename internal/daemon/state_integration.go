@@ -133,6 +133,32 @@ func (d *Daemon) initStateOrchestrator() error {
 	// Collect tracked env vars from all rules and locations
 	trackedVars := collectTrackedEnvVars(rules, locations)
 
+	// Extract location hooks
+	locationHooks := make(map[string]*state.HooksConfig)
+	for name, loc := range core.Config.Locations {
+		if loc.Hooks != nil {
+			locationHooks[name] = convertHooksConfig(loc.Hooks)
+		}
+	}
+
+	// Extract context hooks
+	contextHooks := make(map[string]*state.HooksConfig)
+	for _, ctx := range core.Config.Contexts {
+		if ctx.Hooks != nil {
+			contextHooks[ctx.Name] = convertHooksConfig(ctx.Hooks)
+		}
+	}
+
+	// Extract global hooks
+	var globalLocationHooks *state.HooksConfig
+	if core.Config.GlobalLocationHooks != nil {
+		globalLocationHooks = convertHooksConfig(core.Config.GlobalLocationHooks)
+	}
+	var globalContextHooks *state.HooksConfig
+	if core.Config.GlobalContextHooks != nil {
+		globalContextHooks = convertHooksConfig(core.Config.GlobalContextHooks)
+	}
+
 	// Create database logger adapter if database is available
 	var dbLogger state.DatabaseLogger
 	if d.database != nil {
@@ -149,11 +175,22 @@ func (d *Daemon) initStateOrchestrator() error {
 		OnContextChange: func(from, to state.StateSnapshot, rule *state.Rule) {
 			d.handleNewContextChange(from, to, rule)
 		},
-		OnOnlineChange: d.handleOnlineChange,
-		DatabaseLogger: dbLogger,
-		HistorySize:    200,
-		Logger:         slog.Default(),
+		OnOnlineChange:      d.handleOnlineChange,
+		DatabaseLogger:      dbLogger,
+		HistorySize:         200,
+		Logger:              slog.Default(),
+		LocationHooks:       locationHooks,
+		ContextHooks:        contextHooks,
+		GlobalLocationHooks: globalLocationHooks,
+		GlobalContextHooks:  globalContextHooks,
 	})
+
+	// Set up hook event logger if database is available
+	if d.database != nil {
+		stateOrchestrator.SetHookEventLogger(func(identifier, eventType, details string) error {
+			return d.database.LogTunnelEvent(identifier, eventType, details)
+		})
+	}
 
 	// Restore sensor state from hot reload if available
 	if sensorState, err := LoadSensorState(); err != nil {
@@ -512,4 +549,32 @@ func (d *Daemon) getContextStatusNew() (context, location string) {
 		return state.Context, state.Location
 	}
 	return "", ""
+}
+
+// convertHooksConfig converts from core.HooksConfig to state.HooksConfig
+func convertHooksConfig(hooks *core.HooksConfig) *state.HooksConfig {
+	if hooks == nil {
+		return nil
+	}
+
+	result := &state.HooksConfig{
+		OnEnter: make([]state.HookConfig, len(hooks.OnEnter)),
+		OnLeave: make([]state.HookConfig, len(hooks.OnLeave)),
+	}
+
+	for i, h := range hooks.OnEnter {
+		result.OnEnter[i] = state.HookConfig{
+			Command: h.Command,
+			Timeout: h.Timeout,
+		}
+	}
+
+	for i, h := range hooks.OnLeave {
+		result.OnLeave[i] = state.HookConfig{
+			Command: h.Command,
+			Timeout: h.Timeout,
+		}
+	}
+
+	return result
 }

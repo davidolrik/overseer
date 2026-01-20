@@ -453,7 +453,8 @@ func displayRecentEvents(data interface{}) {
 		colorBlue    = "\033[34m"
 		colorGreen   = "\033[32m"
 		colorRed     = "\033[31m"
-		colorOrange  = "\033[38;2;255;165;0m" // True 24-bit orange
+		colorOrange  = "\033[38;2;255;165;0m" // Companion scripts - true 24-bit orange
+		colorAmber   = "\033[38;2;255;191;0m" // Hook scripts - golden amber
 	)
 
 	// Collect all events into a single list for unified display
@@ -525,10 +526,12 @@ func displayRecentEvents(data interface{}) {
 			eventDesc = fmt.Sprintf("%s - %s", te.EventType, te.Details)
 		}
 
-		// Use orange for companion events, yellow for tunnel events
+		// Use orange for companion events, amber for hook events, yellow for tunnel events
 		aliasColor := colorYellow
 		if strings.HasPrefix(te.EventType, "companion_") {
 			aliasColor = colorOrange
+		} else if strings.HasPrefix(te.EventType, "hook_") {
+			aliasColor = colorAmber
 		}
 		msg = fmt.Sprintf("%s%s:%s %s", aliasColor, te.TunnelAlias, colorReset, eventDesc)
 

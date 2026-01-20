@@ -30,6 +30,9 @@ type Configuration struct {
 	Locations   map[string]*Location     // Location definitions keyed by location name
 	Contexts    []*ContextRule           // Context rules in evaluation order (first match wins)
 	Tunnels     map[string]*TunnelConfig // Per-tunnel configurations keyed by tunnel name
+	// Global hooks for all location/context transitions
+	GlobalLocationHooks *HooksConfig // Global hooks for all locations
+	GlobalContextHooks  *HooksConfig // Global hooks for all contexts
 	// Context behavior settings
 	CheckOnStartup       bool
 	CheckOnNetworkChange bool
@@ -58,6 +61,7 @@ type Location struct {
 	Conditions  map[string][]string // Simple sensor conditions (e.g., "public_ip": ["1.2.3.4", "5.6.7.0/24"])
 	Condition   interface{}         // Structured condition (supports nesting with any/all) - will be awareness.Condition
 	Environment map[string]string   // Custom environment variables to export
+	Hooks       *HooksConfig        // Enter/leave hooks
 }
 
 // ContextRule represents a context rule
@@ -69,6 +73,7 @@ type ContextRule struct {
 	Condition   interface{}         // Structured condition (supports nesting with any/all) - will be awareness.Condition
 	Actions     ContextActions      // Actions to take when entering this context
 	Environment map[string]string   // Custom environment variables to export
+	Hooks       *HooksConfig        // Enter/leave hooks
 }
 
 // ContextActions represents actions for a context
@@ -101,16 +106,30 @@ type CompanionConfig struct {
 	StopSignal  string            // Signal to send on stop: "INT" (default), "TERM", "HUP"
 }
 
+// HookConfig represents a single hook command
+type HookConfig struct {
+	Command string        // Command to execute (via shell)
+	Timeout time.Duration // Execution timeout
+}
+
+// HooksConfig represents hooks for a location or context
+type HooksConfig struct {
+	OnEnter []HookConfig // Commands to run when entering
+	OnLeave []HookConfig // Commands to run when leaving
+}
+
 // HCL parsing structs
 
 type hclConfig struct {
-	Verbose   int                   `hcl:"verbose,optional"`
-	Exports   *hclExports           `hcl:"exports,block"`
-	SSH       *hclSSH               `hcl:"ssh,block"`
-	Companion *hclCompanionSettings `hcl:"companion,block"`
-	Locations []hclLocation         `hcl:"location,block"`
-	Contexts  []hclContext          `hcl:"context,block"`
-	Tunnels   []hclTunnel           `hcl:"tunnel,block"`
+	Verbose       int                   `hcl:"verbose,optional"`
+	Exports       *hclExports           `hcl:"exports,block"`
+	SSH           *hclSSH               `hcl:"ssh,block"`
+	Companion     *hclCompanionSettings `hcl:"companion,block"`
+	LocationHooks *hclHooks             `hcl:"location_hooks,block"`
+	ContextHooks  *hclHooks             `hcl:"context_hooks,block"`
+	Locations     []hclLocation         `hcl:"location,block"`
+	Contexts      []hclContext          `hcl:"context,block"`
+	Tunnels       []hclTunnel           `hcl:"tunnel,block"`
 }
 
 type hclExports struct {
@@ -135,11 +154,18 @@ type hclCompanionSettings struct {
 	HistorySize int `hcl:"history_size,optional"`
 }
 
+type hclHooks struct {
+	OnEnter []string `hcl:"on_enter,optional"`
+	OnLeave []string `hcl:"on_leave,optional"`
+	Timeout string   `hcl:"timeout,optional"`
+}
+
 type hclLocation struct {
 	Name        string            `hcl:"name,label"`
 	DisplayName string            `hcl:"display_name,optional"`
 	Conditions  *hclConditions    `hcl:"conditions,block"`
 	Environment map[string]string `hcl:"environment,optional"`
+	Hooks       *hclHooks         `hcl:"hooks,block"`
 }
 
 type hclContext struct {
@@ -149,6 +175,7 @@ type hclContext struct {
 	Conditions  *hclConditions    `hcl:"conditions,block"`
 	Actions     *hclActions       `hcl:"actions,block"`
 	Environment map[string]string `hcl:"environment,optional"`
+	Hooks       *hclHooks         `hcl:"hooks,block"`
 }
 
 type hclConditions struct {
@@ -279,6 +306,24 @@ func LoadConfig(filename string) (*Configuration, error) {
 		cfg.Companion.HistorySize = hclCfg.Companion.HistorySize
 	}
 
+	// Convert global location hooks
+	if hclCfg.LocationHooks != nil {
+		hooks, err := parseHCLHooks(hclCfg.LocationHooks)
+		if err != nil {
+			return nil, fmt.Errorf("location_hooks: %w", err)
+		}
+		cfg.GlobalLocationHooks = hooks
+	}
+
+	// Convert global context hooks
+	if hclCfg.ContextHooks != nil {
+		hooks, err := parseHCLHooks(hclCfg.ContextHooks)
+		if err != nil {
+			return nil, fmt.Errorf("context_hooks: %w", err)
+		}
+		cfg.GlobalContextHooks = hooks
+	}
+
 	// Convert location definitions
 	for _, hclLoc := range hclCfg.Locations {
 		loc := &Location{
@@ -297,6 +342,15 @@ func LoadConfig(filename string) (*Configuration, error) {
 			if cond != nil {
 				loc.Condition = cond
 			}
+		}
+
+		// Parse hooks
+		if hclLoc.Hooks != nil {
+			hooks, err := parseHCLHooks(hclLoc.Hooks)
+			if err != nil {
+				return nil, fmt.Errorf("location %q: %w", hclLoc.Name, err)
+			}
+			loc.Hooks = hooks
 		}
 
 		cfg.Locations[hclLoc.Name] = loc
@@ -329,6 +383,15 @@ func LoadConfig(filename string) (*Configuration, error) {
 				Connect:    hclCtx.Actions.Connect,
 				Disconnect: hclCtx.Actions.Disconnect,
 			}
+		}
+
+		// Parse hooks
+		if hclCtx.Hooks != nil {
+			hooks, err := parseHCLHooks(hclCtx.Hooks)
+			if err != nil {
+				return nil, fmt.Errorf("context %q: %w", hclCtx.Name, err)
+			}
+			rule.Hooks = hooks
 		}
 
 		cfg.Contexts = append(cfg.Contexts, rule)
@@ -508,6 +571,43 @@ func parseHCLConditions(cond *hclConditions) awareness.Condition {
 	}
 	// Multiple conditions at same level = OR (any)
 	return awareness.NewAnyCondition(conditions...)
+}
+
+// parseHCLHooks converts HCL hooks block to HooksConfig
+func parseHCLHooks(hooks *hclHooks) (*HooksConfig, error) {
+	if hooks == nil {
+		return nil, nil
+	}
+
+	// Parse timeout (default 30s)
+	timeout := 30 * time.Second
+	if hooks.Timeout != "" {
+		var err error
+		timeout, err = time.ParseDuration(hooks.Timeout)
+		if err != nil {
+			return nil, fmt.Errorf("invalid timeout %q: %w", hooks.Timeout, err)
+		}
+	}
+
+	result := &HooksConfig{}
+
+	// Convert on_enter hooks
+	for _, cmd := range hooks.OnEnter {
+		result.OnEnter = append(result.OnEnter, HookConfig{
+			Command: cmd,
+			Timeout: timeout,
+		})
+	}
+
+	// Convert on_leave hooks
+	for _, cmd := range hooks.OnLeave {
+		result.OnLeave = append(result.OnLeave, HookConfig{
+			Command: cmd,
+			Timeout: timeout,
+		})
+	}
+
+	return result, nil
 }
 
 // GetDefaultConfig returns a Configuration with default values

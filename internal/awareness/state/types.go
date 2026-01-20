@@ -133,6 +133,7 @@ const (
 	CategoryState                     // State transitions
 	CategoryEffect                    // Side effects (env writes, callbacks)
 	CategorySystem                    // System events (daemon start/stop)
+	CategoryHook                      // Hook script execution
 )
 
 func (c LogCategory) String() string {
@@ -145,6 +146,8 @@ func (c LogCategory) String() string {
 		return "effect"
 	case CategorySystem:
 		return "system"
+	case CategoryHook:
+		return "hook"
 	default:
 		return "unknown"
 	}
@@ -160,6 +163,8 @@ func (c LogCategory) Icon() string {
 		return ">" // effect/write
 	case CategorySystem:
 		return "#" // system
+	case CategoryHook:
+		return "!" // hook execution
 	default:
 		return "?"
 	}
@@ -191,6 +196,9 @@ type LogEntry struct {
 
 	// System is set for system events
 	System *SystemLogData
+
+	// Hook is set for hook script executions
+	Hook *HookLogData
 }
 
 // SensorLogData contains details about a sensor reading
@@ -224,4 +232,16 @@ type EffectLogData struct {
 type SystemLogData struct {
 	Event   string // "daemon_start", "daemon_stop", "config_reload", "client_connect"
 	Details string
+}
+
+// HookLogData contains details about a hook execution
+type HookLogData struct {
+	Type       string        // "enter" or "leave"
+	Target     string        // Location or context name
+	TargetType string        // "location" or "context"
+	Command    string        // Command that was executed
+	Success    bool          // Whether the hook succeeded
+	Duration   time.Duration // How long the hook took
+	Output     string        // Captured stdout/stderr (truncated)
+	Error      string        // Error message if failed
 }

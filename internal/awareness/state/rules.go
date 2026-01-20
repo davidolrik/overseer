@@ -3,7 +3,20 @@ package state
 import (
 	"net"
 	"strings"
+	"time"
 )
+
+// HookConfig represents a single hook command
+type HookConfig struct {
+	Command string        // Command to execute (via shell)
+	Timeout time.Duration // Execution timeout
+}
+
+// HooksConfig represents hooks for a location or context
+type HooksConfig struct {
+	OnEnter []HookConfig // Commands to run when entering
+	OnLeave []HookConfig // Commands to run when leaving
+}
 
 // Location represents a physical or network location
 type Location struct {
@@ -12,6 +25,7 @@ type Location struct {
 	Conditions  map[string][]string // Simple sensor conditions
 	Condition   Condition           // Structured condition (supports nesting)
 	Environment map[string]string   // Custom environment variables
+	Hooks       *HooksConfig        // Enter/leave hooks
 }
 
 // Rule represents a context rule that maps conditions to actions
@@ -23,6 +37,7 @@ type Rule struct {
 	Condition   Condition           // Structured condition (supports nesting)
 	Actions     RuleActions         // Actions to take when matched
 	Environment map[string]string   // Custom environment variables
+	Hooks       *HooksConfig        // Enter/leave hooks
 }
 
 // RuleActions defines what to do when a rule matches

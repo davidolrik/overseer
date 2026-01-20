@@ -3,6 +3,7 @@ package state
 import (
 	"fmt"
 	"io"
+	"strings"
 	"sync"
 	"time"
 )
@@ -178,6 +179,8 @@ func (r *LogRenderer) Render(entry LogEntry) {
 		r.renderEffect(ts, level, icon, entry.Effect)
 	case entry.System != nil:
 		r.renderSystem(ts, level, icon, entry.Message, entry.System)
+	case entry.Hook != nil:
+		r.renderHook(ts, level, icon, entry.Hook)
 	default:
 		fmt.Fprintf(r.out, "%s %s %s %s\n", ts, level, icon, entry.Message)
 	}
@@ -294,6 +297,79 @@ func (r *LogRenderer) renderSystem(ts, level, icon, message string, s *SystemLog
 	}
 
 	fmt.Fprintln(r.out)
+}
+
+func (r *LogRenderer) renderHook(ts, level, icon string, h *HookLogData) {
+	// Format: "15:04:05.000 INF ! enter location: home [ok] 150ms"
+	hookType := h.Type
+	targetType := h.TargetType
+	if !r.noColor {
+		// Color the hook type
+		switch h.Type {
+		case "enter":
+			hookType = "\033[32menter\033[0m" // Green
+		case "leave":
+			hookType = "\033[33mleave\033[0m" // Yellow
+		}
+		// Color the target type
+		switch h.TargetType {
+		case "location":
+			targetType = "\033[34mlocation\033[0m" // Blue
+		case "context":
+			targetType = "\033[35mcontext\033[0m" // Magenta
+		}
+	}
+
+	fmt.Fprintf(r.out, "%s %s %s %s %s: %s",
+		ts, level, icon, hookType, targetType, h.Target)
+
+	// Status
+	status := "ok"
+	if !h.Success {
+		status = "failed"
+		if !r.noColor {
+			status = "\033[31mfailed\033[0m"
+		}
+	} else if !r.noColor {
+		status = "\033[32mok\033[0m"
+	}
+	fmt.Fprintf(r.out, " [%s]", status)
+
+	// Duration
+	if h.Duration > 0 {
+		fmt.Fprintf(r.out, " %s", h.Duration.Round(time.Millisecond))
+	}
+
+	// Error
+	if h.Error != "" {
+		fmt.Fprintf(r.out, " - %s", h.Error)
+	}
+
+	fmt.Fprintln(r.out)
+
+	// Show command (dimmed)
+	if h.Command != "" {
+		if r.noColor {
+			fmt.Fprintf(r.out, "    cmd: %s\n", h.Command)
+		} else {
+			fmt.Fprintf(r.out, "    \033[90mcmd: %s\033[0m\n", h.Command)
+		}
+	}
+
+	// Show output if present (truncated, dimmed)
+	if h.Output != "" {
+		lines := strings.Split(h.Output, "\n")
+		for _, line := range lines {
+			if line == "" {
+				continue
+			}
+			if r.noColor {
+				fmt.Fprintf(r.out, "    | %s\n", line)
+			} else {
+				fmt.Fprintf(r.out, "    \033[90m| %s\033[0m\n", line)
+			}
+		}
+	}
 }
 
 // RenderSeparator renders a visual separator
