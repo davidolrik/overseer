@@ -171,19 +171,19 @@ type IPResolver struct {
 // DefaultIPv4Resolvers returns the default resolvers for IPv4 detection
 func DefaultIPv4Resolvers() []IPResolver {
 	return []IPResolver{
-		{ResolverAddr: "resolver1.opendns.com.:53", Hostname: "myip.opendns.com.", QueryType: "A"},
-		{ResolverAddr: "resolver2.opendns.com.:53", Hostname: "myip.opendns.com.", QueryType: "A"},
-		{ResolverAddr: "ns1.google.com.:53", Hostname: "o-o.myaddr.l.google.com.", QueryType: "TXT"},
-		{ResolverAddr: "ns1-1.akamaitech.net.:53", Hostname: "whoami.akamai.net.", QueryType: "A"},
+		{ResolverAddr: "208.67.222.222:53", Hostname: "myip.opendns.com.", QueryType: "A"},            // resolver1.opendns.com
+		{ResolverAddr: "208.67.220.220:53", Hostname: "myip.opendns.com.", QueryType: "A"},            // resolver2.opendns.com
+		{ResolverAddr: "216.239.32.10:53", Hostname: "o-o.myaddr.l.google.com.", QueryType: "TXT"},    // ns1.google.com
+		{ResolverAddr: "193.108.88.1:53", Hostname: "whoami.akamai.net.", QueryType: "A"},             // ns1-1.akamaitech.net
 	}
 }
 
 // DefaultIPv6Resolvers returns the default resolvers for IPv6 detection
 func DefaultIPv6Resolvers() []IPResolver {
 	return []IPResolver{
-		{ResolverAddr: "resolver1.opendns.com.:53", Hostname: "myip.opendns.com.", QueryType: "AAAA"},
-		{ResolverAddr: "resolver2.opendns.com.:53", Hostname: "myip.opendns.com.", QueryType: "AAAA"},
-		{ResolverAddr: "ns1.google.com.:53", Hostname: "o-o.myaddr.l.google.com.", QueryType: "TXT"},
+		{ResolverAddr: "[2620:119:35::35]:53", Hostname: "myip.opendns.com.", QueryType: "AAAA"},          // resolver1.opendns.com IPv6
+		{ResolverAddr: "[2620:119:53::53]:53", Hostname: "myip.opendns.com.", QueryType: "AAAA"},          // resolver2.opendns.com IPv6
+		{ResolverAddr: "[2001:4860:4802:32::a]:53", Hostname: "o-o.myaddr.l.google.com.", QueryType: "TXT"}, // ns1.google.com IPv6
 	}
 }
 
