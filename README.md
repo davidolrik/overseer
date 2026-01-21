@@ -6,7 +6,8 @@ Automate your network connectivity based on where you are.
 Overseer detects your context based upon your surroundings and manages SSH tunnels, VPN clients, and helper scripts automagically.
 
 Define contexts like "home", "office", or "public wifi" with detection rules based on your public IP.
-When your context changes, overseer connects the right tunnels and starts the right companion scripts, VPN clients, SOCKS proxies, authentication helpers.
+When your context changes, overseer connects the right tunnels and starts the right companion scripts,
+VPN clients, SOCKS proxies, authentication helpers.
 
 Whatever your workflow needs.
 
@@ -91,20 +92,20 @@ sudo mv overseer /usr/local/bin/
 
 ### Tunnel Management
 
-| Command                       | Aliases | Description                            |
-| ----------------------------- | ------- | -------------------------------------- |
-| `overseer connect <alias> [--tag TAG]...` | `c` | Connect to an SSH host (tags for SSH config matching) |
-| `overseer disconnect [alias]` | `d`     | Disconnect tunnel (or all if no alias) |
-| `overseer reconnect <alias>`  | `r`     | Reconnect a tunnel                     |
+| Command                                   | Aliases | Description                                           |
+| ----------------------------------------- | ------- | ----------------------------------------------------- |
+| `overseer connect <alias> [--tag TAG]...` | `c`     | Connect to an SSH host (tags for SSH config matching) |
+| `overseer disconnect [alias]`             | `d`     | Disconnect tunnel (or all if no alias)                |
+| `overseer reconnect <alias>`              | `r`     | Reconnect a tunnel                                    |
 
 ### Status & Information
 
-| Command            | Aliases                             | Description                              |
-| ------------------ | ----------------------------------- | ---------------------------------------- |
+| Command            | Aliases                                   | Description                              |
+| ------------------ | ----------------------------------------- | ---------------------------------------- |
 | `overseer status`  | `s`, `st`, `list`, `ls`, `context`, `ctx` | Show context, sensors, and tunnels       |
-| `overseer qa`      | `q`, `stats`, `statistics`          | Show connectivity statistics and quality |
-| `overseer logs`    | `log`                               | Stream daemon logs in real-time          |
-| `overseer version` |                                     | Show version information                 |
+| `overseer qa`      | `q`, `stats`, `statistics`                | Show connectivity statistics and quality |
+| `overseer logs`    | `log`                                     | Stream daemon logs in real-time          |
+| `overseer version` |                                           | Show version information                 |
 
 ### Password Management
 
@@ -116,13 +117,13 @@ sudo mv overseer /usr/local/bin/
 
 ### Companion Management
 
-| Command                                         | Description                          |
-| ----------------------------------------------- | ------------------------------------ |
-| `overseer companion list`                       | List all companions and their status |
-| `overseer companion status -T <tunnel>`         | Show detailed companion status       |
-| `overseer companion start -T <tunnel> -N <name>`| Start a specific companion           |
-| `overseer companion stop -T <tunnel> -N <name>` | Stop a specific companion            |
-| `overseer companion restart -T <tunnel> -N <name>` | Restart a specific companion      |
+| Command                                            | Description                                   |
+| -------------------------------------------------- | --------------------------------------------- |
+| `overseer companion list`                          | List all companions and their status          |
+| `overseer companion status -T <tunnel>`            | Show detailed companion status                |
+| `overseer companion start -T <tunnel> -N <name>`   | Start a specific companion                    |
+| `overseer companion stop -T <tunnel> -N <name>`    | Stop a specific companion                     |
+| `overseer companion restart -T <tunnel> -N <name>` | Restart a specific companion                  |
 | `overseer companion attach -T <tunnel> -N <name>`  | Attach to companion output (Ctrl+C to detach) |
 
 ### Utility Commands
@@ -266,7 +267,7 @@ tunnel "my-server" {
 
 SSH tags are passed as `-P` arguments and can be used with `Match tagged` in your `~/.ssh/config`:
 
-```
+```plain
 Match tagged production
   ProxyJump bastion.example.com
 ```
@@ -296,20 +297,20 @@ tunnel "my-server" {
 
 #### Configuration Options
 
-| Option        | Type     | Default      | Description                                           |
-| ------------- | -------- | ------------ | ----------------------------------------------------- |
-| `command`     | string   | *required*   | Command to execute (supports `~` expansion)           |
-| `workdir`     | string   | -            | Working directory for the command                     |
-| `environment` | map      | `{}`         | Environment variables to set                          |
-| `wait_mode`   | string   | `completion` | How to determine readiness: `completion` or `string`  |
-| `wait_for`    | string   | -            | String to wait for (required when `wait_mode = "string"`) |
-| `timeout`     | duration | `30s`        | Maximum time to wait for readiness                    |
-| `on_failure`  | string   | `block`      | Action on failure: `block` (abort tunnel) or `continue` |
-| `keep_alive`  | bool     | `true`       | Keep running after tunnel connects                    |
-| `auto_restart`| bool     | `false`      | Automatically restart if the companion exits unexpectedly |
-| `ready_delay` | duration | -            | Delay after ready before proceeding (e.g., `2s` for network stabilization) |
-| `persistent`  | bool     | `false`      | Keep running when tunnel disconnects (survives reconnect cycles) |
-| `stop_signal` | string   | `INT`        | Signal to send on stop: `INT`, `TERM`, or `HUP` |
+| Option         | Type     | Default      | Description                                                                |
+| -------------- | -------- | ------------ | -------------------------------------------------------------------------- |
+| `command`      | string   | *required*   | Command to execute (supports `~` expansion)                                |
+| `workdir`      | string   | -            | Working directory for the command                                          |
+| `environment`  | map      | `{}`         | Environment variables to set                                               |
+| `wait_mode`    | string   | `completion` | How to determine readiness: `completion` or `string`                       |
+| `wait_for`     | string   | -            | String to wait for (required when `wait_mode = "string"`)                  |
+| `timeout`      | duration | `30s`        | Maximum time to wait for readiness                                         |
+| `on_failure`   | string   | `block`      | Action on failure: `block` (abort tunnel) or `continue`                    |
+| `keep_alive`   | bool     | `true`       | Keep running after tunnel connects                                         |
+| `auto_restart` | bool     | `false`      | Automatically restart if the companion exits unexpectedly                  |
+| `ready_delay`  | duration | -            | Delay after ready before proceeding (e.g., `2s` for network stabilization) |
+| `persistent`   | bool     | `false`      | Keep running when tunnel disconnects (survives reconnect cycles)           |
+| `stop_signal`  | string   | `INT`        | Signal to send on stop: `INT`, `TERM`, or `HUP`                            |
 
 #### PTY-Based Process Control
 
@@ -474,7 +475,8 @@ overseer companion attach -T my-tunnel -N vpn-client
 
 ## Hooks
 
-Hooks are scripts that run automatically when you enter or leave a location or context. Unlike companion scripts which are tied to specific tunnels, hooks respond to state transitions and are useful for:
+Hooks are scripts that run automatically when you enter or leave a location or context.
+Unlike companion scripts which are tied to specific tunnels, hooks respond to state transitions and are useful for:
 
 - Running setup/teardown scripts when entering/leaving locations
 - Triggering notifications on context changes
@@ -553,24 +555,24 @@ context_hooks {
 
 ### Hook Configuration Options
 
-| Option    | Type     | Default | Description                                 |
-| --------- | -------- | ------- | ------------------------------------------- |
-| `command` | string   | *required* | Command to execute (supports `~` expansion) |
-| `timeout` | duration | `30s`   | Maximum execution time before killing       |
+| Option    | Type     | Default    | Description                                    |
+| --------- | -------- | ---------- | ---------------------------------------------- |
+| `command` | string   | *required* | Command to execute (supports `~` expansion)    |
+| `timeout` | duration | `30s`      | Maximum execution time before killing          |
 
 ### Hook Environment Variables
 
 Hooks receive these environment variables:
 
-| Variable                   | Description                              |
-| -------------------------- | ---------------------------------------- |
-| `OVERSEER_HOOK_TYPE`       | `enter` or `leave`                       |
-| `OVERSEER_HOOK_TARGET_TYPE`| `location` or `context`                  |
-| `OVERSEER_HOOK_TARGET`     | Name of the location or context          |
-| `OVERSEER_CONTEXT`         | Current context name                     |
-| `OVERSEER_LOCATION`        | Current location name                    |
-| `OVERSEER_PUBLIC_IP`       | Public IP address (if available)         |
-| `OVERSEER_LOCAL_IP`        | Local IP address (if available)          |
+| Variable                   | Description                                              |
+| -------------------------- | -------------------------------------------------------- |
+| `OVERSEER_HOOK_TYPE`       | `enter` or `leave`                                       |
+| `OVERSEER_HOOK_TARGET_TYPE`| `location` or `context`                                  |
+| `OVERSEER_HOOK_TARGET`     | Name of the location or context                          |
+| `OVERSEER_CONTEXT`         | Current context name                                     |
+| `OVERSEER_LOCATION`        | Current location name                                    |
+| `OVERSEER_PUBLIC_IP`       | Public IP address (if available)                         |
+| `OVERSEER_LOCAL_IP`        | Local IP address (if available)                          |
 | Custom variables           | Any variables from context/location `environment` blocks |
 
 ### Hook Execution Order
@@ -649,9 +651,11 @@ context "trusted" {
 
 ### Tunnel Hooks
 
-Tunnel hooks run at specific points during the tunnel connection lifecycle. Unlike location/context hooks which respond to state transitions, tunnel hooks are tied to the SSH connection process itself.
+Tunnel hooks run at specific points during the tunnel connection lifecycle.
+Unlike location/context hooks which respond to state transitions, tunnel hooks are tied to the SSH connection process itself.
 
 **Hook Types:**
+
 - `before_connect` - Runs after companions are ready, but before SSH connection attempt
 - `after_connect` - Runs after SSH connection is verified and established
 
@@ -678,17 +682,17 @@ tunnel "my-server" {
 
 **Tunnel Hook Environment Variables:**
 
-| Variable                   | Description                              |
-| -------------------------- | ---------------------------------------- |
-| `OVERSEER_HOOK_TYPE`       | `before_connect` or `after_connect`      |
-| `OVERSEER_HOOK_TARGET_TYPE`| `tunnel`                                 |
-| `OVERSEER_HOOK_TARGET`     | Tunnel alias                             |
-| `OVERSEER_TUNNEL_ALIAS`    | Tunnel alias (explicit)                  |
+| Variable                   | Description                                        |
+| -------------------------- | -------------------------------------------------- |
+| `OVERSEER_HOOK_TYPE`       | `before_connect` or `after_connect`                |
+| `OVERSEER_HOOK_TARGET_TYPE`| `tunnel`                                           |
+| `OVERSEER_HOOK_TARGET`     | Tunnel alias                                       |
+| `OVERSEER_TUNNEL_ALIAS`    | Tunnel alias (explicit)                            |
 | `OVERSEER_TUNNEL_STATE`    | Current tunnel state (`connecting` or `connected`) |
 
 **Execution Flow:**
 
-```
+```plain
 startTunnelStreaming(alias)
 │
 ├─ Start companion scripts
@@ -708,6 +712,7 @@ startTunnelStreaming(alias)
 ```
 
 **Design Notes:**
+
 - Hooks are **fire-and-forget** - failures do NOT block tunnel connection
 - Hook events appear in `overseer status -E 20` with amber coloring
 - Only connect hooks are supported (no disconnect hooks at this time)
@@ -973,7 +978,7 @@ overseer status -N 50
 
 The status output displays companions in a tree format beneath their tunnels:
 
-```
+```plain
 Tunnels:
   ✓ corporate        Connected: 2h 15m
     ├── ✓ vpn-client [running]
