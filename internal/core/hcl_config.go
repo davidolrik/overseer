@@ -30,9 +30,10 @@ type Configuration struct {
 	Locations   map[string]*Location     // Location definitions keyed by location name
 	Contexts    []*ContextRule           // Context rules in evaluation order (first match wins)
 	Tunnels     map[string]*TunnelConfig // Per-tunnel configurations keyed by tunnel name
-	// Global hooks for all location/context transitions
-	GlobalLocationHooks *HooksConfig // Global hooks for all locations
-	GlobalContextHooks  *HooksConfig // Global hooks for all contexts
+	// Global hooks for all location/context/tunnel transitions
+	GlobalLocationHooks *HooksConfig       // Global hooks for all locations
+	GlobalContextHooks  *HooksConfig       // Global hooks for all contexts
+	GlobalTunnelHooks   *TunnelHooksConfig // Global hooks for all tunnels
 	// Context behavior settings
 	CheckOnStartup       bool
 	CheckOnNetworkChange bool
@@ -84,9 +85,16 @@ type ContextActions struct {
 
 // TunnelConfig represents per-tunnel configuration
 type TunnelConfig struct {
-	Name       string            // Tunnel name (matches SSH alias)
-	Tags       []string          // SSH tags for config matching (passed as -P arguments)
-	Companions []CompanionConfig // Companion scripts to run before tunnel starts
+	Name       string             // Tunnel name (matches SSH alias)
+	Tags       []string           // SSH tags for config matching (passed as -P arguments)
+	Companions []CompanionConfig  // Companion scripts to run before tunnel starts
+	Hooks      *TunnelHooksConfig // Lifecycle hooks for tunnel connection
+}
+
+// TunnelHooksConfig represents hooks for tunnel lifecycle events
+type TunnelHooksConfig struct {
+	BeforeConnect []HookConfig // Commands to run before SSH connection attempt
+	AfterConnect  []HookConfig // Commands to run after successful connection
 }
 
 // CompanionConfig represents a companion script configuration
@@ -127,6 +135,7 @@ type hclConfig struct {
 	Companion     *hclCompanionSettings `hcl:"companion,block"`
 	LocationHooks *hclHooks             `hcl:"location_hooks,block"`
 	ContextHooks  *hclHooks             `hcl:"context_hooks,block"`
+	TunnelHooks   *hclTunnelHooks       `hcl:"tunnel_hooks,block"`
 	Locations     []hclLocation         `hcl:"location,block"`
 	Contexts      []hclContext          `hcl:"context,block"`
 	Tunnels       []hclTunnel           `hcl:"tunnel,block"`
@@ -192,9 +201,20 @@ type hclActions struct {
 }
 
 type hclTunnel struct {
-	Name       string         `hcl:"name,label"`
-	Tags       []string       `hcl:"tags,optional"`
-	Companions []hclCompanion `hcl:"companion,block"`
+	Name       string           `hcl:"name,label"`
+	Tags       []string         `hcl:"tags,optional"`
+	Companions []hclCompanion   `hcl:"companion,block"`
+	Hooks      *hclTunnelHooks  `hcl:"hooks,block"`
+}
+
+type hclTunnelHooks struct {
+	BeforeConnect []hclTunnelHook `hcl:"before_connect,block"`
+	AfterConnect  []hclTunnelHook `hcl:"after_connect,block"`
+}
+
+type hclTunnelHook struct {
+	Command string `hcl:"command"`
+	Timeout string `hcl:"timeout,optional"`
 }
 
 type hclCompanion struct {
@@ -322,6 +342,15 @@ func LoadConfig(filename string) (*Configuration, error) {
 			return nil, fmt.Errorf("context_hooks: %w", err)
 		}
 		cfg.GlobalContextHooks = hooks
+	}
+
+	// Convert global tunnel hooks
+	if hclCfg.TunnelHooks != nil {
+		hooks, err := parseHCLTunnelHooks(hclCfg.TunnelHooks)
+		if err != nil {
+			return nil, fmt.Errorf("tunnel_hooks: %w", err)
+		}
+		cfg.GlobalTunnelHooks = hooks
 	}
 
 	// Convert location definitions
@@ -510,6 +539,15 @@ func LoadConfig(filename string) (*Configuration, error) {
 			tunnel.Companions = append(tunnel.Companions, companion)
 		}
 
+		// Parse tunnel hooks
+		if hclTun.Hooks != nil {
+			hooks, err := parseHCLTunnelHooks(hclTun.Hooks)
+			if err != nil {
+				return nil, fmt.Errorf("tunnel %q: %w", hclTun.Name, err)
+			}
+			tunnel.Hooks = hooks
+		}
+
 		cfg.Tunnels[hclTun.Name] = tunnel
 	}
 
@@ -603,6 +641,49 @@ func parseHCLHooks(hooks *hclHooks) (*HooksConfig, error) {
 	for _, cmd := range hooks.OnLeave {
 		result.OnLeave = append(result.OnLeave, HookConfig{
 			Command: cmd,
+			Timeout: timeout,
+		})
+	}
+
+	return result, nil
+}
+
+// parseHCLTunnelHooks converts HCL tunnel hooks block to TunnelHooksConfig
+func parseHCLTunnelHooks(hooks *hclTunnelHooks) (*TunnelHooksConfig, error) {
+	if hooks == nil {
+		return nil, nil
+	}
+
+	result := &TunnelHooksConfig{}
+
+	// Convert before_connect hooks
+	for _, h := range hooks.BeforeConnect {
+		timeout := 30 * time.Second // Default
+		if h.Timeout != "" {
+			var err error
+			timeout, err = time.ParseDuration(h.Timeout)
+			if err != nil {
+				return nil, fmt.Errorf("before_connect hook: invalid timeout %q: %w", h.Timeout, err)
+			}
+		}
+		result.BeforeConnect = append(result.BeforeConnect, HookConfig{
+			Command: h.Command,
+			Timeout: timeout,
+		})
+	}
+
+	// Convert after_connect hooks
+	for _, h := range hooks.AfterConnect {
+		timeout := 30 * time.Second // Default
+		if h.Timeout != "" {
+			var err error
+			timeout, err = time.ParseDuration(h.Timeout)
+			if err != nil {
+				return nil, fmt.Errorf("after_connect hook: invalid timeout %q: %w", h.Timeout, err)
+			}
+		}
+		result.AfterConnect = append(result.AfterConnect, HookConfig{
+			Command: h.Command,
 			Timeout: timeout,
 		})
 	}

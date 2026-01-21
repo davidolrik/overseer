@@ -647,6 +647,111 @@ context "trusted" {
 }
 ```
 
+### Tunnel Hooks
+
+Tunnel hooks run at specific points during the tunnel connection lifecycle. Unlike location/context hooks which respond to state transitions, tunnel hooks are tied to the SSH connection process itself.
+
+**Hook Types:**
+- `before_connect` - Runs after companions are ready, but before SSH connection attempt
+- `after_connect` - Runs after SSH connection is verified and established
+
+```hcl
+tunnel "my-server" {
+  tags = ["production"]
+
+  hooks {
+    before_connect {
+      command = "~/scripts/pre-tunnel.sh"
+      timeout = "30s"
+    }
+
+    after_connect {
+      command = "~/scripts/post-tunnel.sh"
+    }
+  }
+
+  companion "vpn" {
+    command = "~/bin/vpn.sh"
+  }
+}
+```
+
+**Tunnel Hook Environment Variables:**
+
+| Variable                   | Description                              |
+| -------------------------- | ---------------------------------------- |
+| `OVERSEER_HOOK_TYPE`       | `before_connect` or `after_connect`      |
+| `OVERSEER_HOOK_TARGET_TYPE`| `tunnel`                                 |
+| `OVERSEER_HOOK_TARGET`     | Tunnel alias                             |
+| `OVERSEER_TUNNEL_ALIAS`    | Tunnel alias (explicit)                  |
+| `OVERSEER_TUNNEL_STATE`    | Current tunnel state (`connecting` or `connected`) |
+
+**Execution Flow:**
+
+```
+startTunnelStreaming(alias)
+│
+├─ Start companion scripts
+│   └─ Wait for ready state
+│
+├─ Execute before_connect hooks (fire-and-forget)
+│
+├─ Build and start SSH process
+│
+├─ Verify connection
+│
+├─ State = connected
+│
+├─ Execute after_connect hooks (fire-and-forget)
+│
+└─ Start monitoring
+```
+
+**Design Notes:**
+- Hooks are **fire-and-forget** - failures do NOT block tunnel connection
+- Hook events appear in `overseer status -E 20` with amber coloring
+- Only connect hooks are supported (no disconnect hooks at this time)
+
+### Global Tunnel Hooks
+
+Run hooks for ALL tunnel connections using a top-level `tunnel_hooks` block:
+
+```hcl
+# Runs for every tunnel connection
+tunnel_hooks {
+  before_connect {
+    command = "~/scripts/log-tunnel-start.sh"
+  }
+
+  after_connect {
+    command = "~/scripts/notify-tunnel-connected.sh"
+  }
+}
+
+# Per-tunnel hooks (more specific)
+tunnel "my-server" {
+  hooks {
+    before_connect {
+      command = "~/scripts/server-specific-pre.sh"
+    }
+  }
+}
+```
+
+**Global Tunnel Hook Execution Order:**
+
+Following the location/context hook pattern, hooks execute in setup/cleanup order:
+
+1. **before_connect (setup order):**
+   - Global `tunnel_hooks` before_connect hooks first (outer wrapper)
+   - Specific tunnel before_connect hooks second (inner)
+
+2. **after_connect (LIFO/cleanup order):**
+   - Specific tunnel after_connect hooks first (inner)
+   - Global `tunnel_hooks` after_connect hooks second (outer wrapper)
+
+This ensures global setup runs before specific setup, and specific cleanup runs before global cleanup.
+
 ## Sensors
 
 Overseer uses sensors to detect your current environment:

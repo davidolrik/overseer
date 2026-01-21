@@ -693,6 +693,15 @@ func (d *Daemon) startTunnelStreaming(alias string, tags []string, stream *Strea
 		d.mu.Lock()
 	}
 
+	// Execute before_connect hooks (after companions ready, before SSH connection)
+	// Order: global hooks first, then specific hooks (setup order)
+	if core.Config.GlobalTunnelHooks != nil && len(core.Config.GlobalTunnelHooks.BeforeConnect) > 0 {
+		d.executeTunnelHooks(alias, "before_connect", core.Config.GlobalTunnelHooks.BeforeConnect, StateConnecting)
+	}
+	if tunnelConfig := core.Config.Tunnels[alias]; tunnelConfig != nil && tunnelConfig.Hooks != nil && len(tunnelConfig.Hooks.BeforeConnect) > 0 {
+		d.executeTunnelHooks(alias, "before_connect", tunnelConfig.Hooks.BeforeConnect, StateConnecting)
+	}
+
 	// Check if a password is stored for this alias
 	hasPassword := keyring.HasPassword(alias)
 
@@ -834,6 +843,15 @@ func (d *Daemon) startTunnelStreaming(alias string, tags []string, stream *Strea
 	// Trigger state check after SSH connect
 	if stateOrchestrator != nil {
 		stateOrchestrator.TriggerCheck("ssh_connect")
+	}
+
+	// Execute after_connect hooks (after successful connection)
+	// Order: specific hooks first, then global hooks (LIFO/cleanup order)
+	if tunnelConfig := core.Config.Tunnels[alias]; tunnelConfig != nil && tunnelConfig.Hooks != nil && len(tunnelConfig.Hooks.AfterConnect) > 0 {
+		d.executeTunnelHooks(alias, "after_connect", tunnelConfig.Hooks.AfterConnect, StateConnected)
+	}
+	if core.Config.GlobalTunnelHooks != nil && len(core.Config.GlobalTunnelHooks.AfterConnect) > 0 {
+		d.executeTunnelHooks(alias, "after_connect", core.Config.GlobalTunnelHooks.AfterConnect, StateConnected)
 	}
 
 	// Send success message to client
@@ -2331,6 +2349,103 @@ func (d *Daemon) monitorAdoptedTunnel(alias string, pid int) {
 					"alias", alias)
 				return
 			}
+		}
+	}
+}
+
+// executeTunnelHooks executes tunnel lifecycle hooks (before_connect, after_connect)
+// Hooks are fire-and-forget and do NOT block the tunnel connection
+func (d *Daemon) executeTunnelHooks(alias, hookType string, hooks []core.HookConfig, tunnelState TunnelState) {
+	if len(hooks) == 0 {
+		return
+	}
+
+	slog.Info("Executing tunnel hooks", "alias", alias, "type", hookType, "count", len(hooks))
+
+	for _, hook := range hooks {
+		go d.executeSingleTunnelHook(alias, hookType, hook, tunnelState)
+	}
+}
+
+// executeSingleTunnelHook executes a single tunnel hook with timeout
+func (d *Daemon) executeSingleTunnelHook(alias, hookType string, hook core.HookConfig, tunnelState TunnelState) {
+	startTime := time.Now()
+
+	// Apply timeout
+	timeout := hook.Timeout
+	if timeout == 0 {
+		timeout = 30 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(d.ctx, timeout)
+	defer cancel()
+
+	// Build environment
+	env := os.Environ()
+	hookEnv := map[string]string{
+		"OVERSEER_HOOK_TYPE":        hookType,
+		"OVERSEER_HOOK_TARGET_TYPE": "tunnel",
+		"OVERSEER_HOOK_TARGET":      alias,
+		"OVERSEER_TUNNEL_ALIAS":     alias,
+		"OVERSEER_TUNNEL_STATE":     string(tunnelState),
+	}
+	for k, v := range hookEnv {
+		env = append(env, fmt.Sprintf("%s=%s", k, v))
+	}
+
+	// Create command via shell
+	cmd := exec.CommandContext(ctx, "sh", "-c", hook.Command)
+	cmd.Env = env
+
+	// Set up process group for clean termination
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		Setpgid: true,
+	}
+
+	// Run the command
+	err := cmd.Run()
+	duration := time.Since(startTime)
+
+	// Determine success and log
+	success := err == nil
+	var eventType, details string
+
+	if success {
+		eventType = "hook_executed"
+		details = fmt.Sprintf("%s hook - duration: %s", hookType, duration)
+		slog.Info("Tunnel hook executed",
+			"alias", alias,
+			"type", hookType,
+			"command", hook.Command,
+			"duration", duration)
+	} else {
+		if ctx.Err() == context.DeadlineExceeded {
+			eventType = "hook_timeout"
+			details = fmt.Sprintf("%s hook - timeout after %s", hookType, timeout)
+			slog.Warn("Tunnel hook timed out",
+				"alias", alias,
+				"type", hookType,
+				"command", hook.Command,
+				"timeout", timeout)
+			// Kill the process group
+			if cmd.Process != nil {
+				syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+			}
+		} else {
+			eventType = "hook_failed"
+			details = fmt.Sprintf("%s hook - %v", hookType, err)
+			slog.Warn("Tunnel hook failed",
+				"alias", alias,
+				"type", hookType,
+				"command", hook.Command,
+				"error", err)
+		}
+	}
+
+	// Log to database
+	if d.database != nil {
+		identifier := fmt.Sprintf("%s:tunnel:%s", hookType, alias)
+		if err := d.database.LogTunnelEvent(identifier, eventType, details); err != nil {
+			slog.Warn("Failed to log tunnel hook event", "error", err)
 		}
 	}
 }
