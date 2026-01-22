@@ -324,6 +324,12 @@ func (o *Orchestrator) SubscribeLogs(replay bool) (uint64, <-chan LogEntry) {
 	return o.streamer.Subscribe(replay)
 }
 
+// SubscribeLogsWithHistory returns a channel that receives log entries
+// If replay is true, the last 'lines' entries from history are sent first
+func (o *Orchestrator) SubscribeLogsWithHistory(replay bool, lines int) (uint64, <-chan LogEntry) {
+	return o.streamer.SubscribeWithHistory(replay, lines)
+}
+
 // UnsubscribeLogs removes a log subscription
 func (o *Orchestrator) UnsubscribeLogs(id uint64) {
 	o.streamer.Unsubscribe(id)

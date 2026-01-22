@@ -17,6 +17,8 @@ import (
 )
 
 func NewAttachCommand() *cobra.Command {
+	var lines int
+
 	attachCmd := &cobra.Command{
 		Use:   "attach",
 		Short: "Attach to the daemon's log output",
@@ -41,6 +43,9 @@ For filtered event logs (sensors, state changes, etc.), use 'overseer logs' inst
 			sigChan := make(chan os.Signal, 1)
 			signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
+			// Track reconnection state to suppress history on reconnect
+			isReconnect := false
+
 			// Reconnect loop
 			for {
 				// Connect to daemon
@@ -50,8 +55,15 @@ For filtered event logs (sensors, state changes, etc.), use 'overseer logs' inst
 					os.Exit(1)
 				}
 
+				// Build ATTACH command with optional lines count and no_history flag
+				attachCmd := fmt.Sprintf("ATTACH %d", lines)
+				if isReconnect {
+					attachCmd += " no_history"
+				}
+				attachCmd += "\n"
+
 				// Send ATTACH command
-				if _, err := conn.Write([]byte("ATTACH\n")); err != nil {
+				if _, err := conn.Write([]byte(attachCmd)); err != nil {
 					conn.Close()
 					slog.Error(fmt.Sprintf("Failed to send ATTACH command: %v", err))
 					os.Exit(1)
@@ -102,11 +114,15 @@ For filtered event logs (sensors, state changes, etc.), use 'overseer logs' inst
 						fmt.Println("Daemon not available. Exiting.")
 						return
 					}
+					// Mark as reconnect to suppress history on next connection
+					isReconnect = true
 					// Continue loop to reconnect
 				}
 			}
 		},
 	}
+
+	attachCmd.Flags().IntVarP(&lines, "lines", "L", 20, "Number of history lines to show on connect")
 
 	return attachCmd
 }

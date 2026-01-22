@@ -53,6 +53,18 @@ func (ls *LogStreamer) Emit(entry LogEntry) {
 // If replay is true, recent history is sent first.
 // Returns the client ID (for unsubscribing) and the receive channel.
 func (ls *LogStreamer) Subscribe(replay bool) (uint64, <-chan LogEntry) {
+	// Use full history when replay is true
+	lines := ls.ringBuffer.Len()
+	if !replay {
+		lines = 0
+	}
+	return ls.SubscribeWithHistory(replay, lines)
+}
+
+// SubscribeWithHistory adds a new client to receive log entries.
+// If replay is true, the last 'lines' entries from history are sent first.
+// Returns the client ID (for unsubscribing) and the receive channel.
+func (ls *LogStreamer) SubscribeWithHistory(replay bool, lines int) (uint64, <-chan LogEntry) {
 	ch := make(chan LogEntry, ls.bufferSize)
 
 	ls.mu.Lock()
@@ -61,8 +73,14 @@ func (ls *LogStreamer) Subscribe(replay bool) (uint64, <-chan LogEntry) {
 	ls.clients[id] = ch
 
 	// Send replay before unlocking to ensure ordering
-	if replay {
-		for _, entry := range ls.ringBuffer.Items() {
+	if replay && lines > 0 {
+		items := ls.ringBuffer.Items()
+		// Limit to last N items
+		start := len(items) - lines
+		if start < 0 {
+			start = 0
+		}
+		for _, entry := range items[start:] {
 			select {
 			case ch <- entry:
 			default:

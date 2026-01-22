@@ -146,22 +146,40 @@ func (d *Daemon) setupLogging() {
 
 // handleLogs streams daemon logs to the client until they disconnect
 func (d *Daemon) handleLogs(conn net.Conn) {
+	d.handleLogsWithHistory(conn, true, 20)
+}
+
+// handleLogsWithHistory streams daemon logs to the client with configurable history
+func (d *Daemon) handleLogsWithHistory(conn net.Conn, showHistory bool, historyLines int) {
 	defer conn.Close()
 
 	// Use handleLogsWithState which includes both slog and state events
 	if stateOrchestrator != nil {
-		d.handleLogsWithState(conn)
+		d.handleLogsWithStateAndHistory(conn, showHistory, historyLines)
 		return
 	}
 
 	// Fallback to just slog if state orchestrator not initialized
-	logChan := d.logBroadcast.Subscribe()
+	var logChan chan string
+	var history []string
+	if showHistory {
+		logChan, history = d.logBroadcast.SubscribeWithHistory(historyLines)
+	} else {
+		logChan = d.logBroadcast.Subscribe()
+	}
 	defer d.logBroadcast.Unsubscribe(logChan)
 
 	initialMsg := "Connected to overseer daemon logs. Press Ctrl+C to exit.\n"
 	if _, err := conn.Write([]byte(initialMsg)); err != nil {
 		slog.Warn(fmt.Sprintf("Failed to send initial message to logs client: %v", err))
 		return
+	}
+
+	// Send history first
+	for _, msg := range history {
+		if _, err := conn.Write([]byte(msg)); err != nil {
+			return
+		}
 	}
 
 	done := make(chan bool)
@@ -188,16 +206,34 @@ func (d *Daemon) handleLogs(conn net.Conn) {
 
 // handleAttach streams raw slog output to the client (same as daemon stderr)
 func (d *Daemon) handleAttach(conn net.Conn) {
+	d.handleAttachWithHistory(conn, true, 20)
+}
+
+// handleAttachWithHistory streams raw slog output with configurable history
+func (d *Daemon) handleAttachWithHistory(conn net.Conn, showHistory bool, historyLines int) {
 	defer conn.Close()
 
-	// Subscribe to slog broadcasts
-	logChan := d.logBroadcast.Subscribe()
+	// Subscribe to slog broadcasts with history
+	var logChan chan string
+	var history []string
+	if showHistory {
+		logChan, history = d.logBroadcast.SubscribeWithHistory(historyLines)
+	} else {
+		logChan = d.logBroadcast.Subscribe()
+	}
 	defer d.logBroadcast.Unsubscribe(logChan)
 
 	// Send initial message
 	initialMsg := "Attached to overseer daemon. Press Ctrl+C to detach.\n\n"
 	if _, err := conn.Write([]byte(initialMsg)); err != nil {
 		return
+	}
+
+	// Send history first
+	for _, msg := range history {
+		if _, err := conn.Write([]byte(msg)); err != nil {
+			return
+		}
 	}
 
 	// Detect when client disconnects
@@ -226,8 +262,19 @@ func (d *Daemon) handleAttach(conn net.Conn) {
 
 // handleLogsWithState streams both slog and structured state logs
 func (d *Daemon) handleLogsWithState(conn net.Conn) {
+	d.handleLogsWithStateAndHistory(conn, true, 20)
+}
+
+// handleLogsWithStateAndHistory streams both slog and structured state logs with configurable history
+func (d *Daemon) handleLogsWithStateAndHistory(conn net.Conn, showHistory bool, historyLines int) {
 	// Subscribe to state log channel (which includes all events)
-	stateID, stateChan := stateOrchestrator.SubscribeLogs(true)
+	var stateID uint64
+	var stateChan <-chan state.LogEntry
+	if showHistory {
+		stateID, stateChan = stateOrchestrator.SubscribeLogsWithHistory(true, historyLines)
+	} else {
+		stateID, stateChan = stateOrchestrator.SubscribeLogsWithHistory(false, 0)
+	}
 	defer stateOrchestrator.UnsubscribeLogs(stateID)
 
 	// Send initial message
@@ -240,8 +287,10 @@ func (d *Daemon) handleLogsWithState(conn net.Conn) {
 	// Create renderer for formatting log entries
 	renderer := state.NewLogRenderer(conn, false)
 
-	// Render separator for history replay
-	renderer.RenderSeparator("Recent History")
+	// Render separator for history replay (only if showing history)
+	if showHistory && historyLines > 0 {
+		renderer.RenderSeparator("Recent History")
+	}
 
 	// Create a reader for the connection to detect when client disconnects
 	done := make(chan bool)

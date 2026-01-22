@@ -18,6 +18,8 @@ import (
 )
 
 func NewLogsCommand() *cobra.Command {
+	var lines int
+
 	logsCmd := &cobra.Command{
 		Use:     "logs",
 		Aliases: []string{"log"},
@@ -40,6 +42,7 @@ Examples:
   overseer logs -f state   # Filter to state changes
   overseer logs -f effect  # Filter to env file writes
   overseer logs -f online  # Filter by keyword
+  overseer logs -L 50      # Show 50 history lines on connect
 
 Automatically reconnects if the daemon is reloaded.`,
 		Args: cobra.NoArgs,
@@ -59,6 +62,9 @@ Automatically reconnects if the daemon is reloaded.`,
 			sigChan := make(chan os.Signal, 1)
 			signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
+			// Track reconnection state to suppress history on reconnect
+			isReconnect := false
+
 			// Reconnect loop
 			for {
 				// Connect to daemon
@@ -68,8 +74,15 @@ Automatically reconnects if the daemon is reloaded.`,
 					os.Exit(1)
 				}
 
+				// Build LOGS command with optional lines count and no_history flag
+				logsCmd := fmt.Sprintf("LOGS %d", lines)
+				if isReconnect {
+					logsCmd += " no_history"
+				}
+				logsCmd += "\n"
+
 				// Send LOGS command
-				if _, err := conn.Write([]byte("LOGS\n")); err != nil {
+				if _, err := conn.Write([]byte(logsCmd)); err != nil {
 					conn.Close()
 					slog.Error(fmt.Sprintf("Failed to send LOGS command: %v", err))
 					os.Exit(1)
@@ -138,6 +151,8 @@ Automatically reconnects if the daemon is reloaded.`,
 						fmt.Println("Daemon not available. Exiting.")
 						return
 					}
+					// Mark as reconnect to suppress history on next connection
+					isReconnect = true
 					// Continue loop to reconnect
 				}
 			}
@@ -147,6 +162,7 @@ Automatically reconnects if the daemon is reloaded.`,
 	logsCmd.Flags().BoolP("verbose", "v", false, "Show DEBUG level logs")
 	logsCmd.Flags().StringP("filter", "F", "", "Filter logs by keyword (e.g., sensor, state, tunnel, context)")
 	logsCmd.Flags().Bool("no-color", false, "Disable colored output")
+	logsCmd.Flags().IntVarP(&lines, "lines", "L", 20, "Number of history lines to show on connect")
 
 	return logsCmd
 }

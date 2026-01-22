@@ -528,11 +528,35 @@ func (d *Daemon) handleConnection(conn net.Conn) {
 		response = d.resetRetries()
 	case "LOGS":
 		// Handle log streaming - don't send JSON response, just stream logs
-		d.handleLogs(conn)
+		// Parse optional lines count and no_history flag
+		historyLines := 20 // default
+		showHistory := true
+		if len(args) >= 1 {
+			if n, err := strconv.Atoi(args[0]); err == nil {
+				historyLines = n
+			}
+			// Check for no_history flag (in 1st or 2nd position)
+			if args[0] == "no_history" || (len(args) >= 2 && args[1] == "no_history") {
+				showHistory = false
+			}
+		}
+		d.handleLogsWithHistory(conn, showHistory, historyLines)
 		return // Don't send JSON response
 	case "ATTACH":
 		// Stream raw slog output for debugging
-		d.handleAttach(conn)
+		// Parse optional lines count and no_history flag
+		historyLines := 20 // default
+		showHistory := true
+		if len(args) >= 1 {
+			if n, err := strconv.Atoi(args[0]); err == nil {
+				historyLines = n
+			}
+			// Check for no_history flag (in 1st or 2nd position)
+			if args[0] == "no_history" || (len(args) >= 2 && args[1] == "no_history") {
+				showHistory = false
+			}
+		}
+		d.handleAttachWithHistory(conn, showHistory, historyLines)
 		return // Don't send JSON response
 	case "CONTEXT_STATUS":
 		// Parse optional event limit parameter (default: 20)
