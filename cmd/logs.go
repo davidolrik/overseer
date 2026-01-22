@@ -38,10 +38,10 @@ Filter categories:
 Examples:
   overseer logs            # Stream INFO and above
   overseer logs -v         # Include DEBUG logs
-  overseer logs -f sensor  # Filter to sensor readings
-  overseer logs -f state   # Filter to state changes
-  overseer logs -f effect  # Filter to env file writes
-  overseer logs -f online  # Filter by keyword
+  overseer logs -F sensor  # Filter to sensor readings
+  overseer logs -F state   # Filter to state changes
+  overseer logs -F effect  # Filter to env file writes
+  overseer logs -F online  # Filter by keyword
   overseer logs -L 50      # Show 50 history lines on connect
 
 Automatically reconnects if the daemon is reloaded.`,
