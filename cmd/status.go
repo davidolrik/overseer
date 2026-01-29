@@ -410,6 +410,44 @@ func displayContextInfo(data interface{}) {
 	fmt.Println()
 }
 
+// timestampGradientColor returns an ANSI 24-bit color code for a timestamp
+// based on its age. Newer events are brighter, older events are more faded.
+func timestampGradientColor(t time.Time) string {
+	age := time.Since(t)
+
+	// Define brightness range (0-255 grayscale)
+	// Brightest (newest): 220 (near-white)
+	// Dimmest (oldest): 80 (dark gray)
+	const brightestGray = 220
+	const dimmestGray = 80
+
+	// Use a logarithmic scale so recent events stand out more
+	// Map age to a 0.0 (newest) to 1.0 (oldest) factor
+	// 0s = 0.0, 1min = ~0.3, 10min = ~0.6, 1hr = ~0.8, 6hr+ = 1.0
+	var factor float64
+	switch {
+	case age < time.Minute:
+		// 0-60s maps to 0.0-0.3
+		factor = float64(age) / float64(time.Minute) * 0.3
+	case age < 10*time.Minute:
+		// 1-10min maps to 0.3-0.6
+		factor = 0.3 + float64(age-time.Minute)/float64(9*time.Minute)*0.3
+	case age < time.Hour:
+		// 10-60min maps to 0.6-0.8
+		factor = 0.6 + float64(age-10*time.Minute)/float64(50*time.Minute)*0.2
+	case age < 6*time.Hour:
+		// 1-6hr maps to 0.8-1.0
+		factor = 0.8 + float64(age-time.Hour)/float64(5*time.Hour)*0.2
+	default:
+		factor = 1.0
+	}
+
+	// Interpolate between brightest and dimmest
+	gray := int(brightestGray - factor*(brightestGray-dimmestGray))
+
+	return fmt.Sprintf("\033[38;2;%d;%d;%dm", gray, gray, gray)
+}
+
 // displayRecentEvents shows recent sensor changes and tunnel events
 func displayRecentEvents(data interface{}) {
 	jsonData, err := json.Marshal(data)
@@ -575,9 +613,10 @@ func displayRecentEvents(data interface{}) {
 	if len(events) > 0 {
 		fmt.Printf("\n%sRecent Events:%s\n", colorBold, colorReset)
 		for _, event := range events {
-			// Format timestamp as HH:MM:SS
+			// Format timestamp with gradient color based on age
 			timeStr := event.timestamp.Local().Format("2006-01-02 15:04:05")
-			fmt.Printf("  %s%s%s %s\n", colorGray, timeStr, colorReset, event.message)
+			tsColor := timestampGradientColor(event.timestamp)
+			fmt.Printf("  %s%s%s %s\n", tsColor, timeStr, colorReset, event.message)
 		}
 	}
 
