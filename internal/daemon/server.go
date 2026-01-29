@@ -973,6 +973,23 @@ func (d *Daemon) monitorTunnel(alias string) {
 			return
 		}
 
+		// Wait for wake grace period if suppressed (just woke from sleep)
+		if orch := GetStateOrchestrator(); orch != nil && orch.IsSuppressed() {
+			slog.Info(fmt.Sprintf("Tunnel '%s' waiting for wake grace period", alias))
+			d.mu.Unlock()
+			// Wait until no longer suppressed (check every second)
+			for orch.IsSuppressed() {
+				time.Sleep(1 * time.Second)
+			}
+			d.mu.Lock()
+			// Re-check tunnel still exists
+			tunnel, exists = d.tunnels[alias]
+			if !exists {
+				d.mu.Unlock()
+				return
+			}
+		}
+
 		// Check if we're online before attempting reconnection
 		// If offline, just skip reconnect but don't change tunnel state
 		// The SSH connection might still be alive despite brief offline periods

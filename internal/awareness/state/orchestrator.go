@@ -64,6 +64,9 @@ type Orchestrator struct {
 	streamer   *LogStreamer
 	ruleEngine *RuleEngine
 
+	// Sleep/wake detection
+	sleepMonitor *SleepMonitor
+
 	// Probes
 	tcpProbe       *TCPProbe
 	ipv4Probe      *IPProbe
@@ -149,12 +152,45 @@ func NewOrchestrator(config OrchestratorConfig) *Orchestrator {
 	})
 	o.effects = effects
 
+	// Create sleep monitor with callbacks for logging
+	o.sleepMonitor = NewSleepMonitor(config.Logger, func() {
+		// On sleep: log to streamer and database
+		streamer.Emit(LogEntry{
+			Timestamp: time.Now(),
+			Level:     LogInfo,
+			Category:  CategorySystem,
+			Message:   "System entering sleep",
+			System: &SystemLogData{
+				Event:   "system_sleep",
+				Details: "System entering sleep",
+			},
+		})
+		if config.DatabaseLogger != nil {
+			config.DatabaseLogger.LogSensorChange("system_power", "string", "awake", "sleeping")
+		}
+	}, func() {
+		// On wake: log to streamer and database
+		streamer.Emit(LogEntry{
+			Timestamp: time.Now(),
+			Level:     LogInfo,
+			Category:  CategorySystem,
+			Message:   "System waking up",
+			System: &SystemLogData{
+				Event:   "system_wake",
+				Details: "System waking up",
+			},
+		})
+		if config.DatabaseLogger != nil {
+			config.DatabaseLogger.LogSensorChange("system_power", "string", "sleeping", "awake")
+		}
+	})
+
 	// Create probes
-	o.tcpProbe = NewTCPProbe(config.Logger)
+	o.tcpProbe = NewTCPProbe(config.Logger, o.sleepMonitor)
 	o.ipv4Probe = NewIPv4Probe(config.Logger)
 	o.ipv6Probe = NewIPv6Probe(config.Logger)
 	o.localIPv4Probe = NewLocalIPv4Probe(config.Logger)
-	o.networkProbe = NewNetworkMonitorProbe(o.ipv4Probe, o.ipv6Probe, o.localIPv4Probe, config.Logger)
+	o.networkProbe = NewNetworkMonitorProbe(o.ipv4Probe, o.ipv6Probe, o.localIPv4Probe, o.sleepMonitor, config.Logger)
 
 	// Create env probes for any env conditions in the config
 	envVarNames := CollectEnvSensors(config.Rules, config.Locations)
@@ -203,6 +239,9 @@ func (o *Orchestrator) Start() {
 	// Start the readings forwarder
 	o.wg.Add(1)
 	go o.forwardReadings()
+
+	// Start sleep monitor
+	o.sleepMonitor.Start(o.ctx)
 
 	// Start probes
 	o.tcpProbe.Start(o.ctx, o.readings)
@@ -379,6 +418,15 @@ func (o *Orchestrator) GetCurrentRule() *Rule {
 	o.currentRuleMu.RLock()
 	defer o.currentRuleMu.RUnlock()
 	return o.currentRule
+}
+
+// IsSuppressed returns true if probes/connections should be suppressed
+// (sleeping or within wake grace period)
+func (o *Orchestrator) IsSuppressed() bool {
+	if o.sleepMonitor == nil {
+		return false
+	}
+	return o.sleepMonitor.IsSuppressed()
 }
 
 // Reload updates the rules and locations (called on config reload)

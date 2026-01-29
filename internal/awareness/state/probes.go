@@ -29,11 +29,12 @@ type Probe interface {
 
 // TCPProbe checks network connectivity via TCP connections
 type TCPProbe struct {
-	name     string
-	targets  []TCPTarget
-	timeout  time.Duration
-	interval time.Duration
-	logger   *slog.Logger
+	name         string
+	targets      []TCPTarget
+	timeout      time.Duration
+	interval     time.Duration
+	logger       *slog.Logger
+	sleepMonitor *SleepMonitor
 }
 
 // TCPTarget defines a host to check for connectivity
@@ -62,16 +63,17 @@ func DefaultTCPTargets() []TCPTarget {
 }
 
 // NewTCPProbe creates a new TCP connectivity probe
-func NewTCPProbe(logger *slog.Logger) *TCPProbe {
+func NewTCPProbe(logger *slog.Logger, sleepMonitor *SleepMonitor) *TCPProbe {
 	if logger == nil {
 		logger = slog.Default()
 	}
 	return &TCPProbe{
-		name:     "tcp",
-		targets:  DefaultTCPTargets(),
-		timeout:  5 * time.Second,
-		interval: 10 * time.Second,
-		logger:   logger,
+		name:         "tcp",
+		targets:      DefaultTCPTargets(),
+		timeout:      5 * time.Second,
+		interval:     10 * time.Second,
+		logger:       logger,
+		sleepMonitor: sleepMonitor,
 	}
 }
 
@@ -79,12 +81,14 @@ func (p *TCPProbe) Name() string { return p.name }
 
 func (p *TCPProbe) Start(ctx context.Context, output chan<- SensorReading) {
 	go func() {
-		// Do an initial check immediately
-		reading := p.Check(ctx)
-		select {
-		case output <- reading:
-		case <-ctx.Done():
-			return
+		// Do an initial check immediately (skip if suppressed)
+		if p.sleepMonitor == nil || !p.sleepMonitor.IsSuppressed() {
+			reading := p.Check(ctx)
+			select {
+			case output <- reading:
+			case <-ctx.Done():
+				return
+			}
 		}
 
 		ticker := time.NewTicker(p.interval)
@@ -95,6 +99,10 @@ func (p *TCPProbe) Start(ctx context.Context, output chan<- SensorReading) {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
+				// Skip if suppressed (sleeping or in grace period)
+				if p.sleepMonitor != nil && p.sleepMonitor.IsSuppressed() {
+					continue
+				}
 				reading := p.Check(ctx)
 				select {
 				case output <- reading:
@@ -244,7 +252,7 @@ func NewIPv6Probe(logger *slog.Logger) *IPProbe {
 		offlineIP:      "fe80::",
 		logger:         logger,
 		prefixBits:     64, // Only track /64 prefix to avoid privacy extension noise
-		stabilityCount: 2,
+		stabilityCount: 4,  // Higher than IPv4 to filter brief network hiccups
 	}
 }
 
@@ -619,13 +627,16 @@ type NetworkMonitorProbe struct {
 	ipv6Probe      *IPProbe
 	localIPv4Probe *LocalIPProbe
 
+	// Sleep/wake awareness
+	sleepMonitor *SleepMonitor
+
 	mu            sync.Mutex
 	lastCheckTime time.Time
 	minInterval   time.Duration // Minimum time between checks (debounce)
 }
 
 // NewNetworkMonitorProbe creates a new network monitor probe
-func NewNetworkMonitorProbe(ipv4 *IPProbe, ipv6 *IPProbe, localIPv4 *LocalIPProbe, logger *slog.Logger) *NetworkMonitorProbe {
+func NewNetworkMonitorProbe(ipv4 *IPProbe, ipv6 *IPProbe, localIPv4 *LocalIPProbe, sleepMonitor *SleepMonitor, logger *slog.Logger) *NetworkMonitorProbe {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -636,6 +647,7 @@ func NewNetworkMonitorProbe(ipv4 *IPProbe, ipv6 *IPProbe, localIPv4 *LocalIPProb
 		ipv4Probe:      ipv4,
 		ipv6Probe:      ipv6,
 		localIPv4Probe: localIPv4,
+		sleepMonitor:   sleepMonitor,
 		minInterval:    2 * time.Second,
 	}
 }
@@ -662,6 +674,11 @@ func (p *NetworkMonitorProbe) Start(ctx context.Context, output chan<- SensorRea
 }
 
 func (p *NetworkMonitorProbe) checkAndEmit(ctx context.Context, output chan<- SensorReading) {
+	// Skip checks during sleep and wake grace period
+	if p.sleepMonitor != nil && p.sleepMonitor.IsSuppressed() {
+		return
+	}
+
 	// Debounce rapid checks
 	p.mu.Lock()
 	if time.Since(p.lastCheckTime) < p.minInterval {

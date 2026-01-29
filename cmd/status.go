@@ -444,17 +444,18 @@ func displayRecentEvents(data interface{}) {
 
 	// ANSI color codes
 	const (
-		colorCyan    = "\033[36m"
-		colorGray    = "\033[90m"
-		colorReset   = "\033[0m"
-		colorBold    = "\033[1m"
-		colorYellow  = "\033[33m"
-		colorMagenta = "\033[35m"
-		colorBlue    = "\033[34m"
-		colorGreen   = "\033[32m"
-		colorRed     = "\033[31m"
-		colorOrange  = "\033[38;2;255;165;0m" // Companion scripts - true 24-bit orange
-		colorAmber   = "\033[38;2;255;191;0m" // Hook scripts - golden amber
+		colorCyan         = "\033[36m"
+		colorGray         = "\033[90m"
+		colorReset        = "\033[0m"
+		colorBold         = "\033[1m"
+		colorYellow       = "\033[33m"
+		colorBrightYellow = "\033[93m"
+		colorMagenta      = "\033[35m"
+		colorBlue         = "\033[34m"
+		colorGreen        = "\033[32m"
+		colorRed          = "\033[31m"
+		colorOrange       = "\033[38;2;255;165;0m" // Companion scripts - true 24-bit orange
+		colorAmber        = "\033[38;2;255;191;0m" // Hook scripts - golden amber
 	)
 
 	// Collect all events into a single list for unified display
@@ -486,6 +487,10 @@ func displayRecentEvents(data interface{}) {
 			oldValue = colorGreen + "true" + colorReset
 		} else if oldValue == "false" {
 			oldValue = colorRed + "false" + colorReset
+		} else if oldValue == "awake" {
+			oldValue = colorGreen + "awake" + colorReset
+		} else if oldValue == "sleeping" {
+			oldValue = colorRed + "sleeping" + colorReset
 		}
 		if newValue == "" {
 			if isEnvSensor {
@@ -497,6 +502,10 @@ func displayRecentEvents(data interface{}) {
 			newValue = colorGreen + "true" + colorReset
 		} else if newValue == "false" {
 			newValue = colorRed + "false" + colorReset
+		} else if newValue == "awake" {
+			newValue = colorGreen + "awake" + colorReset
+		} else if newValue == "sleeping" {
+			newValue = colorRed + "sleeping" + colorReset
 		}
 
 		var msg string
@@ -506,6 +515,8 @@ func displayRecentEvents(data interface{}) {
 			msg = fmt.Sprintf("%slocation: %s → %s%s", colorBlue, sc.OldValue, sc.NewValue, colorReset)
 		} else if sc.SensorName == "online" {
 			msg = fmt.Sprintf("%s%sonline:%s %s → %s", colorBold, colorGreen, colorReset, oldValue, newValue)
+		} else if sc.SensorName == "system_power" {
+			msg = fmt.Sprintf("%s%ssystem_power:%s %s → %s", colorBold, colorBrightYellow, colorReset, oldValue, newValue)
 		} else {
 			msg = fmt.Sprintf("%s%s:%s %s → %s", colorCyan, sc.SensorName, colorReset, oldValue, newValue)
 		}

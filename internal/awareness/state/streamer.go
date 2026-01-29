@@ -263,11 +263,31 @@ func (r *LogRenderer) renderTransition(ts, level, icon string, t *TransitionLogD
 			field = "\033[34mlocation\033[0m" // Blue
 		case "ipv4", "ipv6":
 			field = "\033[33m" + t.Field + "\033[0m" // Yellow
+		case "system_power":
+			field = "\033[1m\033[93msystem_power\033[0m" // Bold bright yellow
+		}
+	}
+
+	// Color values for awake/sleeping and true/false
+	from := t.From
+	to := t.To
+	if !r.noColor {
+		switch from {
+		case "true", "awake":
+			from = "\033[32m" + from + "\033[0m" // Green
+		case "false", "sleeping":
+			from = "\033[31m" + from + "\033[0m" // Red
+		}
+		switch to {
+		case "true", "awake":
+			to = "\033[32m" + to + "\033[0m" // Green
+		case "false", "sleeping":
+			to = "\033[31m" + to + "\033[0m" // Red
 		}
 	}
 
 	fmt.Fprintf(r.out, "%s %s %s %s: %s %s %s",
-		ts, level, icon, field, t.From, arrow, t.To)
+		ts, level, icon, field, from, arrow, to)
 
 	if t.Source != "" {
 		if r.noColor {
