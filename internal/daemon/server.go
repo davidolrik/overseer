@@ -285,6 +285,16 @@ func (d *Daemon) Run() {
 			"adopted_companions", adoptedCompanions)
 	}
 
+	// Clean up orphan SSH processes from previous daemon instances
+	// This handles cases where:
+	// - Previous daemon was killed without graceful shutdown
+	// - State file was lost/corrupted so tunnels couldn't be adopted
+	// Must happen AFTER adoption (so we keep adopted tunnels) but BEFORE
+	// state orchestrator (so orphans don't block new connections)
+	if orphansKilled := d.cleanOrphanTunnels(); orphansKilled > 0 {
+		slog.Info("Cleaned up orphan tunnels from previous daemon", "count", orphansKilled)
+	}
+
 	// Initialize state orchestrator (new centralized state management)
 	if err := d.initStateOrchestrator(); err != nil {
 		slog.Error("Failed to initialize state orchestrator", "error", err)
@@ -1247,6 +1257,8 @@ func (d *Daemon) verifyConnection(stderr io.ReadCloser, alias string, result cha
 
 // gracefulTerminate sends SIGTERM first, waits for graceful exit, then falls back to SIGKILL.
 // Returns nil if process terminated gracefully, or the kill error if force kill was needed.
+// Note: Uses Signal(0) polling instead of Wait() because Wait() only works for child processes,
+// and our SSH tunnels run in separate sessions (Setsid: true) which may not be direct children.
 func gracefulTerminate(process *os.Process, timeout time.Duration, label string) error {
 	// Send SIGTERM for graceful shutdown
 	if err := process.Signal(syscall.SIGTERM); err != nil {
@@ -1259,21 +1271,36 @@ func gracefulTerminate(process *os.Process, timeout time.Duration, label string)
 		return process.Kill()
 	}
 
-	// Wait for process to exit gracefully
-	done := make(chan error, 1)
-	go func() {
-		_, err := process.Wait()
-		done <- err
-	}()
-
-	select {
-	case <-done:
-		slog.Info(fmt.Sprintf("Process %s terminated gracefully", label))
-		return nil
-	case <-time.After(timeout):
-		slog.Warn(fmt.Sprintf("Process %s did not exit within %v, forcing kill", label, timeout))
-		return process.Kill()
+	// Poll for process death using Signal(0) instead of Wait()
+	// Wait() only works for direct child processes, but our SSH processes
+	// run in separate sessions (Setsid: true) and may be orphaned/adopted
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if err := process.Signal(syscall.Signal(0)); err != nil {
+			// Process is dead (ESRCH or similar)
+			slog.Info(fmt.Sprintf("Process %s terminated gracefully", label))
+			return nil
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
+
+	// Timeout - force kill
+	slog.Warn(fmt.Sprintf("Process %s did not exit within %v, forcing kill", label, timeout))
+	if err := process.Kill(); err != nil {
+		if err == os.ErrProcessDone {
+			return nil
+		}
+		return err
+	}
+
+	// Verify kill succeeded
+	time.Sleep(100 * time.Millisecond)
+	if err := process.Signal(syscall.Signal(0)); err == nil {
+		slog.Error(fmt.Sprintf("Process %s survived SIGKILL", label))
+		return fmt.Errorf("process survived SIGKILL")
+	}
+
+	return nil
 }
 
 func (d *Daemon) stopTunnel(alias string, forReconnect bool) Response {
@@ -2127,6 +2154,118 @@ func (d *Daemon) watchConfig() {
 	}()
 
 	slog.Info("Watching configuration file for changes")
+}
+
+// cleanOrphanTunnels finds and kills SSH processes from previous daemon instances
+// that weren't properly cleaned up. This can happen if:
+// - The daemon was killed with SIGKILL (no graceful shutdown)
+// - The tunnel state file was lost or corrupted
+// - A race condition during shutdown left processes running
+// Returns the number of orphan processes killed
+func (d *Daemon) cleanOrphanTunnels() int {
+	// Find SSH processes that were started by overseer
+	// They'll have the tag "overseer daemon" in their command line
+	pids, err := findOverseerSSHProcesses()
+	if err != nil {
+		slog.Warn("Failed to search for orphan SSH processes", "error", err)
+		return 0
+	}
+
+	if len(pids) == 0 {
+		slog.Debug("No orphan SSH processes found")
+		return 0
+	}
+
+	slog.Info("Found SSH processes with overseer tag, checking for orphans", "count", len(pids))
+
+	// For each found process, check if it's in our tunnel map
+	// If not, it's an orphan and should be killed
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	killedCount := 0
+	for _, pid := range pids {
+		// Check if this PID belongs to any tunnel we're tracking
+		isTracked := false
+		for _, tunnel := range d.tunnels {
+			tunnelPid := tunnel.Pid
+			if tunnel.Cmd != nil && tunnel.Cmd.Process != nil {
+				tunnelPid = tunnel.Cmd.Process.Pid
+			}
+			if tunnelPid == pid {
+				isTracked = true
+				break
+			}
+		}
+
+		if !isTracked {
+			// This is an orphan process - kill it
+			slog.Warn("Found orphan SSH process, killing", "pid", pid)
+			process, err := os.FindProcess(pid)
+			if err != nil {
+				slog.Error("Failed to find orphan process", "pid", pid, "error", err)
+				continue
+			}
+
+			// Try graceful termination first, then force kill
+			if err := gracefulTerminate(process, 2*time.Second, fmt.Sprintf("orphan-pid-%d", pid)); err != nil {
+				slog.Error("Failed to kill orphan process", "pid", pid, "error", err)
+			} else {
+				killedCount++
+				slog.Info("Killed orphan SSH process", "pid", pid)
+
+				// Log to database
+				if d.database != nil {
+					if err := d.database.LogTunnelEvent("_orphan", "orphan_killed", fmt.Sprintf("Killed orphan SSH process with PID %d", pid)); err != nil {
+						slog.Error("Failed to log orphan kill event", "error", err)
+					}
+				}
+			}
+		}
+	}
+
+	if killedCount > 0 {
+		slog.Info("Orphan tunnel cleanup complete", "killed", killedCount)
+	}
+
+	return killedCount
+}
+
+// findOverseerSSHProcesses finds SSH processes started by overseer daemon
+// by looking for processes with "overseer daemon" in their command line
+func findOverseerSSHProcesses() ([]int, error) {
+	// Use pgrep to find SSH processes with our tag
+	// -f: match against full command line
+	// The tag "overseer daemon" is added via SSH's -P option
+	cmd := exec.Command("pgrep", "-f", "ssh.*overseer daemon")
+	output, err := cmd.Output()
+	if err != nil {
+		// pgrep returns exit code 1 when no processes found - that's OK
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			if exitErr.ExitCode() == 1 {
+				return nil, nil // No matching processes
+			}
+		}
+		return nil, fmt.Errorf("pgrep failed: %w", err)
+	}
+
+	// Parse PIDs from output (one per line)
+	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
+	pids := make([]int, 0, len(lines))
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		pid, err := strconv.Atoi(line)
+		if err != nil {
+			slog.Warn("Failed to parse PID from pgrep output", "line", line, "error", err)
+			continue
+		}
+		pids = append(pids, pid)
+	}
+
+	return pids, nil
 }
 
 // adoptExistingTunnels attempts to adopt tunnel processes from a previous daemon instance
