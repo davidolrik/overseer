@@ -52,20 +52,21 @@ const (
 )
 
 type Tunnel struct {
-	Hostname          string
-	Pid               int
-	Cmd               *exec.Cmd
-	StartDate         time.Time // Original tunnel creation time
-	LastConnectedTime time.Time // Time of last successful connection (for age display)
-	DisconnectedTime  time.Time // Time when connection was lost (for "disconnected since" display)
-	AskpassToken      string    // Token for this tunnel's askpass validation
-	RetryCount        int       // Current reconnection attempt number
-	TotalReconnects   int       // Total successful reconnections (stability indicator)
-	LastRetryTime     time.Time
-	AutoReconnect     bool        // Whether to auto-reconnect on failure
-	State             TunnelState // Current connection state
-	NextRetryTime     time.Time   // When the next retry will occur
-	Tags              []string    // Custom SSH tags for -P arguments (used with Match tagged in ssh_config)
+	Hostname            string
+	Pid                 int
+	Cmd                 *exec.Cmd
+	StartDate           time.Time // Original tunnel creation time
+	LastConnectedTime   time.Time // Time of last successful connection (for age display)
+	DisconnectedTime    time.Time // Time when connection was lost (for "disconnected since" display)
+	AskpassToken        string    // Token for this tunnel's askpass validation
+	RetryCount          int       // Current reconnection attempt number
+	TotalReconnects     int       // Total successful reconnections (stability indicator)
+	LastRetryTime       time.Time
+	AutoReconnect       bool        // Whether to auto-reconnect on failure
+	State               TunnelState // Current connection state
+	NextRetryTime       time.Time   // When the next retry will occur
+	Tags                []string    // Custom SSH tags for -P arguments (used with Match tagged in ssh_config)
+	HealthCheckFailures int         // Consecutive health check failures (requires multiple before killing)
 }
 
 func New() *Daemon {
@@ -943,6 +944,11 @@ func (d *Daemon) monitorTunnel(alias string) {
 		if waitErr != nil {
 			exitDetails = fmt.Sprintf("Error: %v", waitErr)
 		}
+		slog.Debug("Recording tunnel disconnect event",
+			"alias", alias,
+			"pid", tunnel.Pid,
+			"exit_details", exitDetails,
+			"database_available", d.database != nil)
 		if d.database != nil {
 			if err := d.database.LogTunnelEvent(alias, "disconnect", exitDetails); err != nil {
 				slog.Error("Failed to log tunnel disconnect", "error", err)
@@ -1666,11 +1672,23 @@ func hasEstablishedTCPConnection(pid int) bool {
 		return false
 	}
 
+	slog.Debug("TCP connection check", "pid", pid, "total_connections", len(conns))
+
 	for _, conn := range conns {
+		slog.Debug("TCP connection detail",
+			"pid", pid,
+			"status", conn.Status,
+			"local", fmt.Sprintf("%s:%d", conn.Laddr.IP, conn.Laddr.Port),
+			"remote", fmt.Sprintf("%s:%d", conn.Raddr.IP, conn.Raddr.Port))
 		if conn.Status == "ESTABLISHED" {
 			return true
 		}
 	}
+
+	if len(conns) == 0 {
+		slog.Debug("No TCP connections found for PID (lsof may have returned empty)", "pid", pid)
+	}
+
 	return false
 }
 
@@ -1693,11 +1711,25 @@ func (d *Daemon) checkTunnelHealth(alias string, pid int) bool {
 // checkAllTunnelHealth checks all tunnels and marks dead ones for reconnection
 // This is called periodically and on network state changes
 func (d *Daemon) checkAllTunnelHealth(reason string) {
+	const (
+		minConnectionAge      = 60 * time.Second // Skip health checks for recently connected tunnels
+		requiredFailures      = 2                // Require consecutive failures before killing
+	)
+
 	d.mu.Lock()
-	tunnelsToCheck := make(map[string]int) // alias -> pid
+	type tunnelCheck struct {
+		pid               int
+		lastConnectedTime time.Time
+		failures          int
+	}
+	tunnelsToCheck := make(map[string]tunnelCheck) // alias -> check info
 	for alias, tunnel := range d.tunnels {
 		if tunnel.State == StateConnected {
-			tunnelsToCheck[alias] = tunnel.Pid
+			tunnelsToCheck[alias] = tunnelCheck{
+				pid:               tunnel.Pid,
+				lastConnectedTime: tunnel.LastConnectedTime,
+				failures:          tunnel.HealthCheckFailures,
+			}
 		}
 	}
 	d.mu.Unlock()
@@ -1708,26 +1740,76 @@ func (d *Daemon) checkAllTunnelHealth(reason string) {
 
 	slog.Debug("Checking tunnel health", "reason", reason, "tunnel_count", len(tunnelsToCheck))
 
-	for alias, pid := range tunnelsToCheck {
-		if !d.checkTunnelHealth(alias, pid) {
+	for alias, check := range tunnelsToCheck {
+		// Skip health checks for recently connected tunnels
+		connectionAge := time.Since(check.lastConnectedTime)
+		if connectionAge < minConnectionAge {
+			slog.Debug("Skipping health check for recently connected tunnel",
+				"alias", alias,
+				"age", connectionAge.Round(time.Second),
+				"min_age", minConnectionAge)
+			continue
+		}
+
+		if !d.checkTunnelHealth(alias, check.pid) {
+			// Increment failure count
+			d.mu.Lock()
+			tunnel, exists := d.tunnels[alias]
+			if !exists || tunnel.Pid != check.pid {
+				d.mu.Unlock()
+				continue // Tunnel was removed or replaced
+			}
+			tunnel.HealthCheckFailures++
+			failures := tunnel.HealthCheckFailures
+			d.tunnels[alias] = tunnel
+			d.mu.Unlock()
+
+			slog.Warn("Tunnel health check failed",
+				"alias", alias,
+				"pid", check.pid,
+				"consecutive_failures", failures,
+				"required_failures", requiredFailures,
+				"reason", reason)
+
+			if failures < requiredFailures {
+				slog.Info("Not killing tunnel yet, waiting for more consecutive failures",
+					"alias", alias,
+					"failures", failures,
+					"required", requiredFailures)
+				continue
+			}
+
 			slog.Warn("Tunnel connection is dead, killing process to trigger reconnection",
 				"alias", alias,
-				"pid", pid,
+				"pid", check.pid,
+				"consecutive_failures", failures,
 				"reason", reason)
 
 			// Log to database
 			if d.database != nil {
-				details := fmt.Sprintf("Health check failed (%s), killing PID %d", reason, pid)
+				details := fmt.Sprintf("Health check failed (%s), %d consecutive failures, killing PID %d", reason, failures, check.pid)
 				if err := d.database.LogTunnelEvent(alias, "health_check_failed", details); err != nil {
 					slog.Error("Failed to log health check failure", "error", err)
 				}
 			}
 
 			// Kill the SSH process - the monitor goroutine will handle reconnection
-			process, err := os.FindProcess(pid)
+			process, err := os.FindProcess(check.pid)
 			if err == nil {
 				process.Kill()
 			}
+		} else {
+			// Health check passed - reset failure count if it was non-zero
+			d.mu.Lock()
+			tunnel, exists := d.tunnels[alias]
+			if exists && tunnel.Pid == check.pid && tunnel.HealthCheckFailures > 0 {
+				slog.Debug("Tunnel health check passed, resetting failure count",
+					"alias", alias,
+					"previous_failures", tunnel.HealthCheckFailures)
+				tunnel.HealthCheckFailures = 0
+				d.tunnels[alias] = tunnel
+			}
+			d.mu.Unlock()
 		}
 	}
 }
@@ -2362,6 +2444,13 @@ func (d *Daemon) adoptTunnel(info TunnelInfo) bool {
 		"alias", info.Alias,
 		"pid", info.PID,
 		"age", time.Since(info.StartDate).Round(time.Second))
+
+	// Log to database
+	if d.database != nil {
+		if err := d.database.LogTunnelEvent(info.Alias, "tunnel_adopted", fmt.Sprintf("PID: %d, age: %s", info.PID, time.Since(info.StartDate).Round(time.Second))); err != nil {
+			slog.Error("Failed to log tunnel adoption event", "error", err)
+		}
+	}
 
 	return true
 }
