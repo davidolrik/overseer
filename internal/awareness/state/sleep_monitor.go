@@ -33,7 +33,8 @@ func NewSleepMonitor(logger *slog.Logger, onSleep, onWake func()) *SleepMonitor 
 }
 
 // IsSuppressed returns true if probes should be suppressed.
-// This is the case when the system is sleeping or within the grace period after wake.
+// This is the case when the system is sleeping, in dark wake (Power Nap),
+// or within the grace period after wake.
 func (m *SleepMonitor) IsSuppressed() bool {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -42,8 +43,20 @@ func (m *SleepMonitor) IsSuppressed() bool {
 		return true
 	}
 
-	if !m.wakeTime.IsZero() && time.Since(m.wakeTime) < m.graceTime {
-		return true
+	// Check for dark wake only in the first 2 seconds after wake
+	// After that, we assume it's a full wake regardless of IOPMUserIsActive
+	if !m.wakeTime.IsZero() {
+		timeSinceWake := time.Since(m.wakeTime)
+
+		// During first 2 seconds: if user not active, it might be dark wake
+		if timeSinceWake < 2*time.Second && !m.isUserActive() {
+			return true
+		}
+
+		// During grace period (10 seconds): always suppress
+		if timeSinceWake < m.graceTime {
+			return true
+		}
 	}
 
 	return false
@@ -63,7 +76,8 @@ func (m *SleepMonitor) markSleep() {
 
 func (m *SleepMonitor) markWake() {
 	m.mu.Lock()
-	if !m.sleeping {
+	wasSleeping := m.sleeping
+	if !wasSleeping {
 		m.mu.Unlock()
 		return // Already awake
 	}

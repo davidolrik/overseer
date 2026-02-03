@@ -7,12 +7,21 @@ package state
 #include <IOKit/IOMessage.h>
 #include <CoreFoundation/CoreFoundation.h>
 
+// IOPMUserIsActive is a private API that returns true when the user is active
+// (full wake) and false during dark wake (Power Nap) or when display is asleep.
+// Declaration from IOPMLibPrivate.h (not in public SDK).
+extern Boolean IOPMUserIsActive(void);
+
 // Forward declarations for the Go callback
 extern void goSleepCallback(int messageType);
 
 static io_connect_t rootPort;
 static IONotificationPortRef notifyPortRef;
 static io_object_t notifierObject;
+
+// Message types:
+// 1 = sleep
+// 2 = wake
 
 static void sleepCallbackC(void *refCon, io_service_t service, natural_t messageType, void *messageArgument) {
 	switch (messageType) {
@@ -51,6 +60,11 @@ static void runRunLoop(void) {
 
 static void stopRunLoop(CFRunLoopRef rl) {
 	CFRunLoopStop(rl);
+}
+
+// queryUserIsActive checks if the user is currently active (not in dark wake)
+static int queryUserIsActive(void) {
+	return IOPMUserIsActive() ? 1 : 0;
 }
 */
 import "C"
@@ -114,4 +128,10 @@ func (m *SleepMonitor) Start(ctx context.Context) {
 	}()
 
 	m.logger.Info("Sleep monitor started (IOKit)")
+}
+
+// isUserActive returns true if the user is currently active (not in dark wake).
+// This is used to suppress probes during Power Nap.
+func (m *SleepMonitor) isUserActive() bool {
+	return C.queryUserIsActive() != 0
 }
