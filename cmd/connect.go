@@ -3,14 +3,13 @@ package cmd
 import (
 	"log/slog"
 	"os"
-	"strings"
 
 	"github.com/spf13/cobra"
 	"overseer.olrik.dev/internal/daemon"
 )
 
 func NewConnectCommand() *cobra.Command {
-	var tags []string
+	var tag string
 
 	connectCmd := &cobra.Command{
 		Use:               "connect",
@@ -24,10 +23,10 @@ func NewConnectCommand() *cobra.Command {
 			daemon.EnsureDaemonIsRunning()
 			daemon.CheckVersionMismatch()
 
-			// Build command with optional tags
+			// Build command with optional tag
 			command := "SSH_CONNECT " + alias
-			if len(tags) > 0 {
-				command += " --tags=" + strings.Join(tags, ",")
+			if tag != "" {
+				command += " --tag=" + tag
 			}
 
 			// Use streaming to show companion startup progress in real-time
@@ -38,8 +37,8 @@ func NewConnectCommand() *cobra.Command {
 		},
 	}
 
-	connectCmd.Flags().StringArrayVarP(&tags, "tag", "T", []string{},
-		"SSH tag for config matching (can be specified multiple times)")
+	connectCmd.Flags().StringVarP(&tag, "tag", "T", "",
+		"SSH tag for config matching (passed as -P to ssh for Match tagged)")
 
 	return connectCmd
 }

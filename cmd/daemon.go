@@ -22,5 +22,8 @@ foreground use this command.`,
 		},
 	}
 
+	daemonCmd.Flags().Bool("overseer-daemon", false, "Process marker for pgrep detection")
+	daemonCmd.Flags().MarkHidden("overseer-daemon")
+
 	return daemonCmd
 }

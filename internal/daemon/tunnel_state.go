@@ -30,6 +30,7 @@ type TunnelInfo struct {
 	TotalReconnects   int       `json:"total_reconnects"`
 	AutoReconnect     bool      `json:"auto_reconnect"`
 	State             string    `json:"state"`
+	Tag               string    `json:"tag,omitempty"`
 	// Note: AskpassToken is NOT persisted for security reasons
 	// New tokens will be generated when adopting tunnels
 }
@@ -60,7 +61,7 @@ func (d *Daemon) SaveTunnelState() error {
 		// Build command line for validation
 		// Note: We can't get the full cmdline from exec.Cmd after Start(),
 		// so we reconstruct it based on our config
-		cmdline := []string{"ssh", alias, "-N", "-o", "ExitOnForwardFailure=yes", "-v"}
+		cmdline := []string{"ssh", alias, "-N", "-o", "IgnoreUnknown=overseer-daemon", "-o", "overseer-daemon=true", "-o", "ExitOnForwardFailure=yes", "-v"}
 
 		info := TunnelInfo{
 			PID:               tunnel.Pid,
@@ -73,6 +74,7 @@ func (d *Daemon) SaveTunnelState() error {
 			TotalReconnects:   tunnel.TotalReconnects,
 			AutoReconnect:     tunnel.AutoReconnect,
 			State:             string(tunnel.State),
+			Tag:               tunnel.Tag,
 			// AskpassToken intentionally omitted for security
 		}
 

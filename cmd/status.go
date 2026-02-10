@@ -134,10 +134,16 @@ and rules defined in your configuration. Context changes automatically connect o
 						reconnectInfo = fmt.Sprintf(", Reconnects: %d", status.TotalReconnects)
 					}
 
+					tagInfo := ""
+					if status.Tag != "" {
+						tagInfo = fmt.Sprintf(" \033[2m[%s]\033[0m", status.Tag)
+					}
+
 					fmt.Printf(
-						"  %s%s%s %s%s%s (PID: %d, %s%s)%s\n",
+						"  %s%s%s %s%s%s%s (PID: %d, %s%s)%s\n",
 						color, icon, colorReset,
 						color, status.Hostname, colorReset,
+						tagInfo,
 						status.Pid, timeInfo,
 						reconnectInfo,
 						extraInfo,

@@ -103,7 +103,7 @@ func EnsureDaemonIsRunning() {
 	}
 
 	slog.Info("Daemon not running. Starting it now...")
-	cmd := exec.Command(os.Args[0], "daemon")
+	cmd := exec.Command(os.Args[0], "daemon", "--overseer-daemon")
 	if err := cmd.Start(); err != nil {
 		slog.Error(fmt.Sprintf("Fatal: Could not fork daemon process: %v", err))
 		os.Exit(1)
@@ -155,7 +155,7 @@ func CheckVersionMismatch() {
 
 // StartDaemon starts the daemon process in the background
 func StartDaemon() error {
-	cmd := exec.Command(os.Args[0], "daemon")
+	cmd := exec.Command(os.Args[0], "daemon", "--overseer-daemon")
 
 	// Pass the parent PID (shell/SSH session) to the daemon
 	// The daemon will monitor this PID instead of its own parent (which will be PID 1)
