@@ -1038,6 +1038,10 @@ func printSessions(sessions []OnlineSession) {
 				durationColor, formatDuration(entryDuration), colorReset,
 				ipStr)
 
+			if e.continuesPrev || e.continuesNext {
+				fmt.Printf(" %s(%s)%s", colorGray, formatDuration(s.Duration), colorReset)
+			}
+
 			if e.isActive {
 				fmt.Printf(" %s(active)%s", colorGreen, colorReset)
 			}
