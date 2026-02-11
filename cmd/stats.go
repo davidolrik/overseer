@@ -403,7 +403,6 @@ func getSensorChanges(database *db.DB, start, end time.Time) (online, ip []db.Se
 	for i, j := 0, len(ipChanges)-1; i < j; i, j = i+1, j-1 {
 		ipChanges[i], ipChanges[j] = ipChanges[j], ipChanges[i]
 	}
-
 	return onlineChanges, ipChanges, nil
 }
 
@@ -420,7 +419,10 @@ func getIPForSession(ipChanges []db.SensorChange, sessionStart, sessionEnd time.
 
 		// Track any valid IP that occurred before or during the session
 		// This includes IPs from before the session (as baseline) and during the session
-		if c.NewValue != "169.254.0.0" && c.NewValue != "" {
+		if c.NewValue == "169.254.0.0" || c.NewValue == "0.0.0.0" || c.NewValue == "" {
+			// IP was cleared (e.g. at sleep) or is link-local — reset to unknown
+			lastIP = ""
+		} else {
 			lastIP = c.NewValue
 		}
 	}
@@ -429,6 +431,65 @@ func getIPForSession(ipChanges []db.SensorChange, sessionStart, sessionEnd time.
 		return "unknown"
 	}
 	return lastIP
+}
+
+// splitSessionsByIP takes sessions and splits any session where the public IP
+// changed mid-session into multiple sub-sessions, one per IP.
+func splitSessionsByIP(sessions []OnlineSession, ipChanges []db.SensorChange) []OnlineSession {
+	var result []OnlineSession
+
+	for _, s := range sessions {
+		// Find the IP active at session start (last valid IP at or before s.Start)
+		currentIP := "unknown"
+		for _, c := range ipChanges {
+			if c.Timestamp.After(s.Start) {
+				break
+			}
+			if c.NewValue == "169.254.0.0" || c.NewValue == "0.0.0.0" || c.NewValue == "" {
+				currentIP = "unknown"
+			} else {
+				currentIP = c.NewValue
+			}
+		}
+
+		// Walk through IP changes strictly within the session, splitting at each one
+		segStart := s.Start
+		for _, c := range ipChanges {
+			if !c.Timestamp.After(s.Start) {
+				continue
+			}
+			if !c.Timestamp.Before(s.End) {
+				break
+			}
+			if c.NewValue == "169.254.0.0" || c.NewValue == "0.0.0.0" || c.NewValue == "" {
+				continue
+			}
+
+			// Close current segment and start a new one
+			if c.Timestamp.After(segStart) {
+				result = append(result, OnlineSession{
+					Start:    segStart,
+					End:      c.Timestamp,
+					Duration: c.Timestamp.Sub(segStart),
+					IP:       currentIP,
+				})
+			}
+			segStart = c.Timestamp
+			currentIP = c.NewValue
+		}
+
+		// Final segment
+		if s.End.After(segStart) {
+			result = append(result, OnlineSession{
+				Start:    segStart,
+				End:      s.End,
+				Duration: s.End.Sub(segStart),
+				IP:       currentIP,
+			})
+		}
+	}
+
+	return result
 }
 
 // parseOnlineSessions converts online/offline events into sessions with IP tracking
@@ -484,7 +545,34 @@ func parseOnlineSessions(onlineChanges, ipChanges []db.SensorChange, start, end 
 		})
 	}
 
-	return sessions
+	// Split sessions at IP change boundaries so each sub-session has one IP
+	sessions = splitSessionsByIP(sessions, ipChanges)
+
+	// Drop brief unknown-IP segments (wake-up artifacts before IP probe runs)
+	filtered := sessions[:0]
+	for _, s := range sessions {
+		if s.IP == "unknown" && s.Duration < time.Minute {
+			continue
+		}
+		filtered = append(filtered, s)
+	}
+
+	if len(filtered) == 0 {
+		return filtered
+	}
+
+	// Merge adjacent sessions with the same IP and touching timestamps
+	merged := []OnlineSession{filtered[0]}
+	for _, s := range filtered[1:] {
+		last := &merged[len(merged)-1]
+		if last.End.Equal(s.Start) && last.IP == s.IP {
+			last.End = s.End
+			last.Duration = last.End.Sub(last.Start)
+		} else {
+			merged = append(merged, s)
+		}
+	}
+	return merged
 }
 
 // groupSessionsByIP groups sessions by their IP address

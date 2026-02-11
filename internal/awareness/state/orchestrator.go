@@ -3,6 +3,7 @@ package state
 import (
 	"context"
 	"log/slog"
+	"net"
 	"sync"
 	"time"
 )
@@ -167,6 +168,26 @@ func NewOrchestrator(config OrchestratorConfig) *Orchestrator {
 		})
 		if config.DatabaseLogger != nil {
 			config.DatabaseLogger.LogSensorChange("system_power", "string", "awake", "sleeping")
+		}
+		// Clear public IP so stale address doesn't bleed into next session
+		linkLocal := net.ParseIP("169.254.0.0")
+		select {
+		case readings <- SensorReading{
+			Sensor:    "public_ipv4",
+			Timestamp: time.Now(),
+			IP:        linkLocal,
+		}:
+		default:
+		}
+		// Emit synthetic offline reading so the normal pipeline records online=false
+		offline := false
+		select {
+		case readings <- SensorReading{
+			Sensor:    "tcp",
+			Timestamp: time.Now(),
+			Online:    &offline,
+		}:
+		default:
 		}
 	}, func() {
 		// On wake: log to streamer and database

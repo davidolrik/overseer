@@ -133,6 +133,54 @@ func (db *DB) LogSensorChange(sensorName, sensorType, oldValue, newValue string)
 	return err
 }
 
+// LogSensorChangeAt logs a sensor state change at a specific timestamp
+func (db *DB) LogSensorChangeAt(sensorName, sensorType, oldValue, newValue string, timestamp time.Time) error {
+	_, err := db.conn.Exec(
+		`INSERT INTO sensor_changes (sensor_name, sensor_type, old_value, new_value, timestamp)
+		 VALUES (?, ?, ?, ?, ?)`,
+		sensorName, sensorType, oldValue, newValue, timestamp,
+	)
+	return err
+}
+
+// DeleteSensorChangesNear deletes sensor changes matching the given criteria within a time window.
+// Returns the number of rows deleted.
+func (db *DB) DeleteSensorChangesNear(sensorName, oldValue, newValue string, timestamp time.Time, window time.Duration) (int64, error) {
+	result, err := db.conn.Exec(
+		`DELETE FROM sensor_changes
+		 WHERE sensor_name = ? AND old_value = ? AND new_value = ?
+		 AND timestamp BETWEEN ? AND ?`,
+		sensorName, oldValue, newValue, timestamp.Add(-window), timestamp.Add(window),
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+// HasSensorChangeAfter checks if a sensor change with the given new_value exists
+// within a forward-looking window after the given timestamp.
+func (db *DB) HasSensorChangeAfter(sensorName, newValue string, timestamp time.Time, window time.Duration) (bool, error) {
+	var count int
+	err := db.conn.QueryRow(
+		`SELECT COUNT(*) FROM sensor_changes
+		 WHERE sensor_name = ? AND new_value = ? AND timestamp BETWEEN ? AND ?`,
+		sensorName, newValue, timestamp, timestamp.Add(window),
+	).Scan(&count)
+	return count > 0, err
+}
+
+// HasSensorChangeNear checks if a sensor change exists within a time window of the given timestamp
+func (db *DB) HasSensorChangeNear(sensorName string, timestamp time.Time, window time.Duration) (bool, error) {
+	var count int
+	err := db.conn.QueryRow(
+		`SELECT COUNT(*) FROM sensor_changes
+		 WHERE sensor_name = ? AND timestamp BETWEEN ? AND ?`,
+		sensorName, timestamp.Add(-window), timestamp.Add(window),
+	).Scan(&count)
+	return count > 0, err
+}
+
 // TunnelEvent represents a tunnel lifecycle event
 type TunnelEvent struct {
 	ID          int64
