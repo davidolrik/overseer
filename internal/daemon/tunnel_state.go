@@ -31,6 +31,7 @@ type TunnelInfo struct {
 	AutoReconnect     bool      `json:"auto_reconnect"`
 	State             string    `json:"state"`
 	Tag               string    `json:"tag,omitempty"`
+	ResolvedHost      string    `json:"resolved_host,omitempty"`
 	// Note: AskpassToken is NOT persisted for security reasons
 	// New tokens will be generated when adopting tunnels
 }
@@ -75,6 +76,7 @@ func (d *Daemon) SaveTunnelState() error {
 			AutoReconnect:     tunnel.AutoReconnect,
 			State:             string(tunnel.State),
 			Tag:               tunnel.Tag,
+			ResolvedHost:      tunnel.ResolvedHost,
 			// AskpassToken intentionally omitted for security
 		}
 

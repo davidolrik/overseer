@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net"
 	"os"
 	"sort"
 	"strings"
@@ -67,11 +68,12 @@ and rules defined in your configuration. Context changes automatically connect o
 				for _, status := range statuses {
 					// ANSI color codes
 					const (
-						colorGreen  = "\033[32m"
-						colorYellow = "\033[33m"
-						colorRed    = "\033[31m"
-						colorGray   = "\033[90m"
-						colorReset  = "\033[0m"
+						colorGreen    = "\033[32m"
+						colorYellow   = "\033[33m"
+						colorRed      = "\033[31m"
+						colorGray     = "\033[90m"
+						colorBoldBlue = "\033[1;34m"
+						colorReset    = "\033[0m"
 					)
 
 					// Build state indicator with colored icon and alias
@@ -82,14 +84,14 @@ and rules defined in your configuration. Context changes automatically connect o
 						color = colorYellow
 						startTime, _ := time.Parse(time.RFC3339, status.StartDate)
 						elapsed := time.Since(startTime)
-						timeInfo = fmt.Sprintf("Connecting: %s", elapsed.Round(time.Second).String())
+						timeInfo = fmt.Sprintf("%sConnecting:%s %s", colorGray, colorReset, elapsed.Round(time.Second).String())
 					case "connected":
 						icon = "✓"
 						color = colorGreen
 						// Use LastConnectedTime for age (resets to 0 on reconnection)
 						lastConnected, _ := time.Parse(time.RFC3339, status.LastConnectedTime)
 						age := time.Since(lastConnected)
-						timeInfo = fmt.Sprintf("Age: %s", age.Round(time.Second).String())
+						timeInfo = fmt.Sprintf("%sAge:%s %s", colorGray, colorReset, age.Round(time.Second).String())
 					case "disconnected":
 						icon = "✗"
 						color = colorRed
@@ -97,9 +99,9 @@ and rules defined in your configuration. Context changes automatically connect o
 						if status.DisconnectedTime != "" {
 							disconnectedAt, _ := time.Parse(time.RFC3339, status.DisconnectedTime)
 							disconnectedFor := time.Since(disconnectedAt)
-							timeInfo = fmt.Sprintf("Disconnected: %s ago", disconnectedFor.Round(time.Second).String())
+							timeInfo = fmt.Sprintf("%sDisconnected:%s %s ago", colorGray, colorReset, disconnectedFor.Round(time.Second).String())
 						} else {
-							timeInfo = "Disconnected"
+							timeInfo = fmt.Sprintf("%sDisconnected%s", colorGray, colorReset)
 						}
 					case "reconnecting":
 						icon = "⟳"
@@ -108,30 +110,30 @@ and rules defined in your configuration. Context changes automatically connect o
 						if status.DisconnectedTime != "" {
 							disconnectedAt, _ := time.Parse(time.RFC3339, status.DisconnectedTime)
 							disconnectedFor := time.Since(disconnectedAt)
-							timeInfo = fmt.Sprintf("Disconnected: %s ago", disconnectedFor.Round(time.Second).String())
+							timeInfo = fmt.Sprintf("%sDisconnected:%s %s ago", colorGray, colorReset, disconnectedFor.Round(time.Second).String())
 						} else {
-							timeInfo = "Reconnecting"
+							timeInfo = fmt.Sprintf("%sReconnecting%s", colorGray, colorReset)
 						}
 						if status.NextRetry != "" {
 							nextRetry, err := time.Parse(time.RFC3339, status.NextRetry)
 							if err == nil {
 								timeUntil := time.Until(nextRetry)
 								if timeUntil > 0 {
-									extraInfo = fmt.Sprintf(" (next attempt in %s)", timeUntil.Round(time.Second))
+									extraInfo = fmt.Sprintf(" %s(next attempt in %s)%s", colorGray, timeUntil.Round(time.Second), colorReset)
 								} else {
-									extraInfo = " (attempting now)"
+									extraInfo = fmt.Sprintf(" %s(attempting now)%s", colorGray, colorReset)
 								}
 							}
 						}
 						if status.RetryCount > 0 {
-							extraInfo += fmt.Sprintf(" [attempt %d]", status.RetryCount)
+							extraInfo += fmt.Sprintf(" %s[attempt %d]%s", colorYellow, status.RetryCount, colorReset)
 						}
 					}
 
 					// Build reconnect count info
 					reconnectInfo := ""
 					if status.TotalReconnects > 0 {
-						reconnectInfo = fmt.Sprintf(", Reconnects: %d", status.TotalReconnects)
+						reconnectInfo = fmt.Sprintf(", %sReconnects:%s %s%d%s", colorGray, colorReset, colorYellow, status.TotalReconnects, colorReset)
 					}
 
 					tagInfo := ""
@@ -139,13 +141,24 @@ and rules defined in your configuration. Context changes automatically connect o
 						tagInfo = fmt.Sprintf(" \033[2m[%s]\033[0m", status.Tag)
 					}
 
+					resolvedHostInfo := ""
+					if status.ResolvedHost != "" {
+						host, port, err := net.SplitHostPort(status.ResolvedHost)
+						if err == nil {
+							resolvedHostInfo = fmt.Sprintf(", %sHost:%s %s%s%s:%s%s", colorGray, colorReset, colorBoldBlue, host, colorGray, colorReset, port)
+						} else {
+							resolvedHostInfo = fmt.Sprintf(", %sHost:%s %s%s%s", colorGray, colorReset, colorBoldBlue, status.ResolvedHost, colorReset)
+						}
+					}
+
 					fmt.Printf(
-						"  %s%s%s %s%s%s%s (PID: %d, %s%s)%s\n",
+						"  %s%s%s %s%s%s%s %s(PID:%s %d%s, %s%s%s)%s%s\n",
 						color, icon, colorReset,
 						color, status.Hostname, colorReset,
 						tagInfo,
-						status.Pid, timeInfo,
+						colorGray, colorReset, status.Pid, resolvedHostInfo, timeInfo,
 						reconnectInfo,
+						colorGray, colorReset,
 						extraInfo,
 					)
 

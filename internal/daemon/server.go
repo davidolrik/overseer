@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
+	"regexp"
 	"strings"
 	"sync"
 	"syscall"
@@ -67,6 +68,7 @@ type Tunnel struct {
 	NextRetryTime       time.Time   // When the next retry will occur
 	Tag                 string      // Custom SSH tag for -P argument (used with Match tagged in ssh_config)
 	HealthCheckFailures int         // Consecutive health check failures (requires multiple before killing)
+	ResolvedHost        string      // Actual IP:port from SSH "Authenticated to" output
 }
 
 func New() *Daemon {
@@ -1190,6 +1192,8 @@ func (d *Daemon) monitorTunnel(alias string) {
 }
 
 // verifyConnection monitors SSH stderr output to detect connection success or failure
+var authenticatedToRe = regexp.MustCompile(`Authenticated to \S+ \(\[([^\]]+)\]:(\d+)\)`)
+
 func (d *Daemon) verifyConnection(stderr io.ReadCloser, alias string, result chan<- error) {
 	defer func() {
 		// Ensure we always send a result, even if we exit unexpectedly
@@ -1219,6 +1223,15 @@ func (d *Daemon) verifyConnection(stderr io.ReadCloser, alias string, result cha
 		if strings.Contains(line, "Authentication succeeded") ||
 			strings.Contains(line, "Authenticated to") {
 			authenticated = true
+			if matches := authenticatedToRe.FindStringSubmatch(line); len(matches) == 3 {
+				resolvedHost := matches[1] + ":" + matches[2]
+				d.mu.Lock()
+				if t, exists := d.tunnels[alias]; exists {
+					t.ResolvedHost = resolvedHost
+					d.tunnels[alias] = t
+				}
+				d.mu.Unlock()
+			}
 			// Don't return yet - we need to wait for the session to be established
 		}
 
@@ -1395,6 +1408,7 @@ type DaemonStatus struct {
 	State             TunnelState `json:"state"`
 	NextRetry         string      `json:"next_retry,omitempty"` // ISO 8601 format
 	Tag               string      `json:"tag,omitempty"`
+	ResolvedHost      string      `json:"resolved_host,omitempty"`
 }
 
 func (d *Daemon) getStatus() Response {
@@ -1425,6 +1439,7 @@ func (d *Daemon) getStatus() Response {
 			AutoReconnect:     tunnel.AutoReconnect,
 			State:             tunnel.State,
 			Tag:               tunnel.Tag,
+			ResolvedHost:      tunnel.ResolvedHost,
 		}
 
 		// Add disconnected time if tunnel is disconnected or reconnecting
@@ -2441,6 +2456,7 @@ func (d *Daemon) adoptTunnel(info TunnelInfo) bool {
 		AutoReconnect:     info.AutoReconnect,
 		State:             TunnelState(info.State),
 		Tag:               info.Tag,
+		ResolvedHost:      info.ResolvedHost,
 	}
 
 	d.tunnels[info.Alias] = tunnel
