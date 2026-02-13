@@ -1202,10 +1202,18 @@ func (d *Daemon) verifyConnection(stderr io.ReadCloser, alias string, result cha
 
 	scanner := bufio.NewScanner(stderr)
 	authenticated := false
+	verified := false
 
 	for scanner.Scan() {
 		line := scanner.Text()
 		slog.Debug(fmt.Sprintf("[%s] SSH: %s", alias, line))
+
+		// After verification, keep reading to drain stderr and prevent pipe buffer deadlock.
+		// If we stop reading, SSH's stderr pipe buffer fills up (~64KB) and the SSH process
+		// blocks on write(), freezing the tunnel and all multiplexed connections.
+		if verified {
+			continue
+		}
 
 		// Track authentication completion
 		if strings.Contains(line, "Authentication succeeded") ||
@@ -1219,7 +1227,8 @@ func (d *Daemon) verifyConnection(stderr io.ReadCloser, alias string, result cha
 		if authenticated && (strings.Contains(line, "Entering interactive session") ||
 			strings.Contains(line, "pledge: network")) {
 			result <- nil
-			return
+			verified = true
+			continue
 		}
 
 		// Look for failure indicators
@@ -1253,10 +1262,8 @@ func (d *Daemon) verifyConnection(stderr io.ReadCloser, alias string, result cha
 		}
 	}
 
-	// If we exit the loop without finding success/failure, check scanner error
 	if err := scanner.Err(); err != nil {
 		slog.Debug(fmt.Sprintf("[%s] Error reading SSH output: %v", alias, err))
-		result <- fmt.Errorf("error reading SSH output: %v", err)
 	}
 }
 
