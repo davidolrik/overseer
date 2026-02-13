@@ -1,6 +1,6 @@
 module overseer.olrik.dev
 
-go 1.25.4
+go 1.26.0
 
 require (
 	github.com/99designs/keyring v1.2.2
