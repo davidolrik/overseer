@@ -904,6 +904,70 @@ func (d *Daemon) startTunnel(alias string, tag string) Response {
 	return d.startTunnelStreaming(alias, tag, nil)
 }
 
+// isPublicIPKnown returns true if the public IPv4 has been determined
+// and written to the env file. We check the last-written value rather than
+// in-memory state to avoid a race where the state manager has the real IP
+// but the effects processor hasn't written it to the env file yet.
+func (d *Daemon) isPublicIPKnown() bool {
+	orch := GetStateOrchestrator()
+	if orch == nil {
+		return true // no orchestrator = no env file dependency
+	}
+	if !orch.HasEnvWriters() {
+		// No env file dependency, check in-memory state
+		state := orch.GetCurrentState()
+		return state.PublicIPv4 != nil &&
+			!state.PublicIPv4.Equal(net.ParseIP("0.0.0.0")) &&
+			!state.PublicIPv4.Equal(net.ParseIP("169.254.0.0"))
+	}
+	ip := orch.LastWrittenPublicIPv4()
+	return ip != "" && ip != "0.0.0.0" && ip != "169.254.0.0"
+}
+
+// startTunnelWhenIPReady waits for the public IP to be determined,
+// then starts the tunnel. This avoids starting tunnels before the env
+// file has OVERSEER_PUBLIC_IP populated (SSH config depends on it).
+func (d *Daemon) startTunnelWhenIPReady(alias, ctx string) {
+	slog.Info("Deferring tunnel until public IP is known", "alias", alias, "context", ctx)
+
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		time.Sleep(200 * time.Millisecond)
+
+		// Abort if tunnel was started/stopped by another path while we waited
+		d.mu.Lock()
+		_, exists := d.tunnels[alias]
+		d.mu.Unlock()
+		if exists {
+			slog.Debug("Tunnel appeared while waiting for IP, aborting deferred connect",
+				"alias", alias)
+			return
+		}
+
+		if d.isPublicIPKnown() {
+			slog.Info("Public IP now known, starting deferred tunnel", "alias", alias)
+			resp := d.startTunnel(alias, "")
+			for _, msg := range resp.Messages {
+				if msg.Status == "ERROR" {
+					slog.Error("Deferred tunnel failed to start",
+						"alias", alias, "error", msg.Message)
+				}
+			}
+			return
+		}
+	}
+
+	slog.Warn("Timed out waiting for public IP, starting tunnel with current state",
+		"alias", alias)
+	resp := d.startTunnel(alias, "")
+	for _, msg := range resp.Messages {
+		if msg.Status == "ERROR" {
+			slog.Error("Deferred tunnel (timeout) failed to start",
+				"alias", alias, "error", msg.Message)
+		}
+	}
+}
+
 // monitorTunnel watches a tunnel process and handles reconnection with exponential backoff
 func (d *Daemon) monitorTunnel(alias string) {
 	for {

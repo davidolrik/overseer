@@ -656,6 +656,11 @@ func (p *NetworkMonitorProbe) Name() string { return p.name }
 
 func (p *NetworkMonitorProbe) Start(ctx context.Context, output chan<- SensorReading) {
 	go func() {
+		// Do an initial check immediately so IP sensors are populated early
+		if p.sleepMonitor == nil || !p.sleepMonitor.IsSuppressed() {
+			p.checkAndEmit(ctx, output)
+		}
+
 		ticker := time.NewTicker(p.interval)
 		defer ticker.Stop()
 

@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -101,6 +102,9 @@ type EffectsProcessor struct {
 	contextHooks        map[string]*HooksConfig
 	globalLocationHooks *HooksConfig
 	globalContextHooks  *HooksConfig
+
+	// Track last IPv4 written to env files (used to avoid race with in-memory state)
+	lastWrittenIPv4 atomic.Value
 
 	// Lifecycle
 	ctx    context.Context
@@ -462,6 +466,21 @@ func (ep *EffectsProcessor) writeEnvFiles(t StateTransition) {
 				"path", writer.Path())
 		}
 	}
+
+	// Track the IPv4 that was actually written to env files.
+	// This is read by the tunnel startup code to avoid a race where
+	// in-memory state has the real IP but the env file still has 0.0.0.0.
+	ep.lastWrittenIPv4.Store(publicIPv4)
+}
+
+// LastWrittenPublicIPv4 returns the IPv4 string most recently written to env files.
+// Returns "" if no write has occurred yet.
+func (ep *EffectsProcessor) LastWrittenPublicIPv4() string {
+	v := ep.lastWrittenIPv4.Load()
+	if v == nil {
+		return ""
+	}
+	return v.(string)
 }
 
 // executeCallbacks runs the registered callbacks

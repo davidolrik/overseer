@@ -441,6 +441,17 @@ func (o *Orchestrator) GetCurrentRule() *Rule {
 	return o.currentRule
 }
 
+// LastWrittenPublicIPv4 returns the IPv4 string most recently written to env files.
+// Returns "" if no write has occurred yet.
+func (o *Orchestrator) LastWrittenPublicIPv4() string {
+	return o.effects.LastWrittenPublicIPv4()
+}
+
+// HasEnvWriters returns true if any env file writers are configured.
+func (o *Orchestrator) HasEnvWriters() bool {
+	return len(o.effects.config.EnvWriters) > 0
+}
+
 // IsSuppressed returns true if probes/connections should be suppressed
 // (sleeping or within wake grace period)
 func (o *Orchestrator) IsSuppressed() bool {
