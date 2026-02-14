@@ -1,0 +1,400 @@
+/* ============================================================
+ * Retro Cyber Glow Theme for Overseer Docs
+ * CRT terminals, neon signs, dark interfaces with glowing accents
+ * ============================================================ */
+
+/* --- Color palette (dark mode only — light mode is force-disabled) --- */
+:root {
+    /* Brand / primary — Neon cyan */
+    --vp-c-brand-1: #00e5ff;
+    --vp-c-brand-2: #00b8d4;
+    --vp-c-brand-3: #0097a7;
+    --vp-c-brand-soft: rgba(0, 229, 255, 0.12);
+
+    /* Backgrounds */
+    --vp-c-bg: #0a0a0f;
+    --vp-c-bg-alt: #0e0e18;
+    --vp-c-bg-elv: #12121f;
+    --vp-c-bg-soft: #14142a;
+
+    /* Text */
+    --vp-c-text-1: #e0e0eb;
+    --vp-c-text-2: #a0a0b8;
+    --vp-c-text-3: #6a6a82;
+
+    /* Borders & dividers */
+    --vp-c-border: rgba(0, 229, 255, 0.12);
+    --vp-c-divider: rgba(0, 229, 255, 0.08);
+    --vp-c-gutter: #0a0a0f;
+
+    /* Success — Matrix green */
+    --vp-c-success-1: #39ff14;
+    --vp-c-success-2: #2ecc0f;
+    --vp-c-success-3: #24a00c;
+    --vp-c-success-soft: rgba(57, 255, 20, 0.12);
+
+    /* Warning — CRT amber */
+    --vp-c-warning-1: #ffb300;
+    --vp-c-warning-2: #e6a200;
+    --vp-c-warning-3: #cc9000;
+    --vp-c-warning-soft: rgba(255, 179, 0, 0.12);
+
+    /* Danger — Hot magenta */
+    --vp-c-danger-1: #ff2d7b;
+    --vp-c-danger-2: #e02568;
+    --vp-c-danger-3: #c01e58;
+    --vp-c-danger-soft: rgba(255, 45, 123, 0.12);
+
+    /* Important — Neon purple */
+    --vp-c-important-1: #b388ff;
+    --vp-c-important-2: #9c6fef;
+    --vp-c-important-3: #8556df;
+    --vp-c-important-soft: rgba(179, 136, 255, 0.12);
+
+    /* Shadows — Cyan-tinted */
+    --vp-shadow-1: 0 1px 4px rgba(0, 229, 255, 0.1),
+        0 2px 8px rgba(0, 229, 255, 0.06);
+    --vp-shadow-2: 0 2px 8px rgba(0, 229, 255, 0.12),
+        0 4px 16px rgba(0, 229, 255, 0.08);
+    --vp-shadow-3: 0 4px 16px rgba(0, 229, 255, 0.14),
+        0 8px 32px rgba(0, 229, 255, 0.1);
+    --vp-shadow-4: 0 8px 32px rgba(0, 229, 255, 0.16),
+        0 16px 64px rgba(0, 229, 255, 0.12);
+    --vp-shadow-5: 0 12px 48px rgba(0, 229, 255, 0.18),
+        0 24px 96px rgba(0, 229, 255, 0.14);
+
+    /* Button brand */
+    --vp-button-brand-border: rgba(0, 229, 255, 0.4);
+    --vp-button-brand-text: #ffffff;
+    --vp-button-brand-bg: rgba(0, 229, 255, 0.2);
+    --vp-button-brand-hover-border: rgba(0, 229, 255, 0.6);
+    --vp-button-brand-hover-text: #ffffff;
+    --vp-button-brand-hover-bg: rgba(0, 229, 255, 0.3);
+    --vp-button-brand-active-border: rgba(0, 229, 255, 0.8);
+    --vp-button-brand-active-text: #ffffff;
+    --vp-button-brand-active-bg: rgba(0, 229, 255, 0.35);
+
+    /* Button alt */
+    --vp-button-alt-border: rgba(0, 229, 255, 0.15);
+    --vp-button-alt-text: #e0e0eb;
+    --vp-button-alt-bg: rgba(0, 229, 255, 0.06);
+    --vp-button-alt-hover-border: rgba(0, 229, 255, 0.3);
+    --vp-button-alt-hover-text: #ffffff;
+    --vp-button-alt-hover-bg: rgba(0, 229, 255, 0.1);
+
+    /* Home hero name gradient */
+    --vp-home-hero-name-color: transparent;
+    --vp-home-hero-name-background: linear-gradient(
+        135deg,
+        #00e5ff 0%,
+        #b388ff 50%,
+        #ff2d7b 100%
+    );
+
+    /* Home hero image glow */
+    --vp-home-hero-image-background-image: radial-gradient(
+        circle,
+        rgba(0, 229, 255, 0.25) 0%,
+        rgba(179, 136, 255, 0.12) 40%,
+        transparent 70%
+    );
+    --vp-home-hero-image-filter: drop-shadow(0 0 24px rgba(0, 229, 255, 0.35));
+
+    /* Code */
+    --vp-code-block-bg: #080810;
+    --vp-code-tab-active-bar-color: #00e5ff;
+
+    /* Font */
+    --vp-font-family-mono: "JetBrains Mono", ui-monospace, SFMono-Regular,
+        "SF Mono", Menlo, Monaco, Consolas, "Liberation Mono", "Courier New",
+        monospace;
+
+    /* Selection */
+    --vp-c-text-selection-bg: rgba(0, 229, 255, 0.25);
+}
+
+/* ============================================================
+ * Ambient body grid
+ * ============================================================ */
+body {
+    background-color: #0a0a0f;
+    background-image: linear-gradient(
+            rgba(0, 229, 255, 0.02) 1px,
+            transparent 1px
+        ),
+        linear-gradient(90deg, rgba(0, 229, 255, 0.02) 1px, transparent 1px);
+    background-size: 40px 40px;
+}
+
+/* Text selection */
+::selection {
+    background: rgba(0, 229, 255, 0.25);
+    color: #ffffff;
+}
+
+/* ============================================================
+ * Navigation — frosted glass + gradient border
+ * ============================================================ */
+.VPNav .VPNavBar .wrapper > .container {
+    background: transparent !important;
+}
+
+.VPNavBar {
+    background: rgba(10, 10, 15, 0.8) !important;
+    backdrop-filter: blur(16px) saturate(1.2) !important;
+    -webkit-backdrop-filter: blur(16px) saturate(1.2) !important;
+    border-bottom: none !important;
+}
+
+.VPNavBar::after {
+    content: "";
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    height: 1px;
+    background: linear-gradient(
+        90deg,
+        transparent,
+        #00e5ff,
+        #b388ff,
+        transparent
+    );
+    opacity: 0.6;
+}
+
+.VPNavBar .divider,
+.VPNavBar .divider-line {
+    background-color: transparent !important;
+}
+
+/* ============================================================
+ * Hero section
+ * ============================================================ */
+.VPHero .name .clip {
+    font-family: "JetBrains Mono", var(--vp-font-family-mono);
+    text-shadow: 0 0 20px rgba(0, 229, 255, 0.5),
+        0 0 40px rgba(0, 229, 255, 0.2);
+}
+
+.VPHero .tagline {
+    text-shadow: 0 0 12px rgba(0, 229, 255, 0.15);
+}
+
+.VPHero .text {
+    text-shadow: 0 0 10px rgba(0, 229, 255, 0.1);
+}
+
+/* Hero scanline overlay */
+.VPHero::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: repeating-linear-gradient(
+        0deg,
+        transparent,
+        transparent 2px,
+        rgba(0, 229, 255, 0.015) 2px,
+        rgba(0, 229, 255, 0.015) 4px
+    );
+    pointer-events: none;
+    z-index: 1;
+}
+
+.VPHero {
+    position: relative;
+}
+
+/* Hero image alignment (preserved from original) */
+@media (min-width: 960px) {
+    .VPHero .image-container {
+        transform: translate(0, -32px) !important;
+    }
+
+    .VPHero .image-container .image-bg {
+        left: auto !important;
+        right: 0 !important;
+        transform: translate(0, -50%) !important;
+    }
+
+    .VPHero .image-container .image-src {
+        left: auto !important;
+        right: 0 !important;
+        transform: translate(0, -50%) !important;
+    }
+}
+
+/* ============================================================
+ * Feature cards — glowing borders on hover
+ * ============================================================ */
+.VPFeature {
+    background: #0e0e18 !important;
+    border: 1px solid rgba(0, 229, 255, 0.1) !important;
+    transition: border-color 0.3s ease, box-shadow 0.3s ease !important;
+}
+
+.VPFeature:hover {
+    border-color: rgba(0, 229, 255, 0.4) !important;
+    box-shadow: 0 0 16px rgba(0, 229, 255, 0.15),
+        0 0 32px rgba(0, 229, 255, 0.06) !important;
+}
+
+/* ============================================================
+ * Brand buttons — neon glow
+ * ============================================================ */
+.VPButton.brand {
+    box-shadow: 0 0 12px rgba(0, 229, 255, 0.25),
+        0 0 24px rgba(0, 229, 255, 0.1);
+    transition: box-shadow 0.3s ease, background-color 0.3s ease,
+        border-color 0.3s ease !important;
+}
+
+.VPButton.brand:hover {
+    box-shadow: 0 0 20px rgba(0, 229, 255, 0.4),
+        0 0 40px rgba(0, 229, 255, 0.15);
+}
+
+/* ============================================================
+ * Code blocks — terminal aesthetic
+ * ============================================================ */
+div[class*="language-"] {
+    border: 1px solid rgba(0, 229, 255, 0.1) !important;
+    box-shadow: inset 0 0 20px rgba(0, 229, 255, 0.03);
+}
+
+/* Inline code */
+:not(pre) > code {
+    color: #00e5ff !important;
+    background: rgba(0, 229, 255, 0.08) !important;
+}
+
+/* ============================================================
+ * Custom blocks — glowing left borders
+ * ============================================================ */
+.custom-block.tip {
+    border-color: rgba(0, 229, 255, 0.5) !important;
+    box-shadow: inset 4px 0 8px rgba(0, 229, 255, 0.1);
+    background: rgba(0, 229, 255, 0.04) !important;
+}
+
+.custom-block.warning {
+    border-color: rgba(255, 179, 0, 0.5) !important;
+    box-shadow: inset 4px 0 8px rgba(255, 179, 0, 0.1);
+    background: rgba(255, 179, 0, 0.04) !important;
+}
+
+.custom-block.danger {
+    border-color: rgba(255, 45, 123, 0.5) !important;
+    box-shadow: inset 4px 0 8px rgba(255, 45, 123, 0.1);
+    background: rgba(255, 45, 123, 0.04) !important;
+}
+
+.custom-block.important {
+    border-color: rgba(179, 136, 255, 0.5) !important;
+    box-shadow: inset 4px 0 8px rgba(179, 136, 255, 0.1);
+    background: rgba(179, 136, 255, 0.04) !important;
+}
+
+/* ============================================================
+ * Links — cyan glow on hover
+ * ============================================================ */
+.vp-doc a {
+    color: #00e5ff;
+    transition: text-shadow 0.2s ease, color 0.2s ease;
+}
+
+.vp-doc a:hover {
+    color: #4de8ff;
+    text-shadow: 0 0 8px rgba(0, 229, 255, 0.4);
+}
+
+/* ============================================================
+ * Sidebar — active indicator glow
+ * ============================================================ */
+.VPSidebar .is-active > .item > .indicator {
+    box-shadow: 0 0 8px rgba(0, 229, 255, 0.5);
+}
+
+.VPSidebarItem.is-active > .item .link > .text {
+    color: #00e5ff !important;
+    text-shadow: 0 0 6px rgba(0, 229, 255, 0.3);
+}
+
+/* Sidebar background */
+.VPSidebar {
+    background: rgba(10, 10, 15, 0.9) !important;
+    backdrop-filter: blur(12px) !important;
+    -webkit-backdrop-filter: blur(12px) !important;
+}
+
+/* ============================================================
+ * Scrollbar — dark track with cyan thumb
+ * ============================================================ */
+::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+}
+
+::-webkit-scrollbar-track {
+    background: #0a0a0f;
+}
+
+::-webkit-scrollbar-thumb {
+    background: rgba(0, 229, 255, 0.15);
+    border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: rgba(0, 229, 255, 0.3);
+}
+
+/* Firefox */
+* {
+    scrollbar-color: rgba(0, 229, 255, 0.15) #0a0a0f;
+    scrollbar-width: thin;
+}
+
+/* ============================================================
+ * Search dialog
+ * ============================================================ */
+.VPLocalSearchBox .shell {
+    background: #0e0e18 !important;
+    border: 1px solid rgba(0, 229, 255, 0.2) !important;
+    box-shadow: 0 0 32px rgba(0, 229, 255, 0.1) !important;
+}
+
+.VPLocalSearchBox .search-input {
+    background: #0a0a0f !important;
+    border-color: rgba(0, 229, 255, 0.15) !important;
+}
+
+.VPLocalSearchBox .result.selected {
+    background: rgba(0, 229, 255, 0.1) !important;
+}
+
+/* ============================================================
+ * Content headers — subtle glow
+ * ============================================================ */
+.vp-doc h1,
+.vp-doc h2,
+.vp-doc h3 {
+    color: #e0e0eb;
+}
+
+.vp-doc h1 {
+    text-shadow: 0 0 16px rgba(0, 229, 255, 0.12);
+}
+
+/* Heading anchor links */
+.vp-doc .header-anchor:hover {
+    color: #00e5ff;
+    text-shadow: 0 0 8px rgba(0, 229, 255, 0.4);
+}
+
+/* ============================================================
+ * Footer
+ * ============================================================ */
+.VPFooter {
+    border-top: 1px solid rgba(0, 229, 255, 0.08) !important;
+    background: rgba(10, 10, 15, 0.9) !important;
+}

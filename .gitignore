@@ -1,4 +1,8 @@
+mise.local.toml
 /overseer
 /dist
 /internal/core/version.txt
-mise.local.toml
+/node_modules
+/docs/.vitepress/dist
+/docs/.vitepress/cache
+/.claude

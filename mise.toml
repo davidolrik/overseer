@@ -1,0 +1,51 @@
+[tools]
+go = "1.25.4"
+node = "latest"
+prek = "latest"
+
+[hooks]
+postinstall = ["git config --unset-all core.hooksPath || true", "rm -f .git/hooks/pre-commit*", "prek install"]
+
+[tasks.help]
+description = "📚 Help"
+alias = "default"
+run = '''# mise tasks --local
+    echo "  ___"
+    echo " / _ \__   _____ _ __ ___  ___  ___ _ __"
+    echo "| | | \ \ / / _ \ '__/ __|/ _ \/ _ \ '__|"
+    echo "| |_| |\ V /  __/ |  \__ \  __/  __/ |"
+    echo " \___/  \_/ \___|_|  |___/\___|\___|_|"
+    echo "  Contextual computing"
+    echo ""
+    mise tasks --local
+'''
+
+[tasks.build]
+description = "🛠️  Build binary"
+run = ["go generate ./...", "go mod tidy", "go build -o overseer ."]
+
+[tasks.publish]
+description = "📦 Publish to GitHub"
+run = ["git push", "git push --tags"]
+
+[tasks."build:snapshot"]
+description = "🧪 Build snapshot"
+run = ["goreleaser build --snapshot --clean"]
+
+[tasks."docs:server"]
+description = "🚀 Run documentation server"
+run = ["npm run docs:dev"]
+
+[tasks."docs:build"]
+description = "🛠️ Build documentation"
+run = ["npm run docs:build"]
+
+[tasks."docs:preview"]
+description = "👀 Preview doc site"
+depends = "docs:build"
+run = ["npm run docs:preview"]
+
+[tasks."docs:publish"]
+description = "📦 Publish to overseer.olrik.dev"
+depends = "docs:build"
+run = ["rsync -avO --no-perms --delete ./docs/.vitepress/dist/ {{ env.DOCUMENTATION_HOST }}:{{ env.DOCUMENTATION_PATH }}"]

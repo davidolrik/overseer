@@ -1,6 +1,6 @@
-<img width="25%" align="right" alt="Overseer logo" src="https://raw.githubusercontent.com/davidolrik/overseer/main/docs/static/overseer.png">
-
 # Overseer - Contextual Computing
+
+<img width="25%" align="right" alt="Overseer logo" src="https://raw.githubusercontent.com/davidolrik/overseer/main/docs/public/overseer.png">
 
 Automate your network connectivity based on where you are.
 Overseer detects your context based upon your surroundings and manages SSH tunnels, VPN clients, and helper scripts automagically.
@@ -27,13 +27,13 @@ Whatever your workflow needs.
 
 ### Install using mise
 
-```bash
+```sh
 mise use --global github:davidolrik/overseer@latest
 ```
 
 ### Install using go directly
 
-```bash
+```sh
 go install overseer.olrik.dev@latest
 ```
 
@@ -42,7 +42,7 @@ go install overseer.olrik.dev@latest
 Download a precompiled binary from the [GitHub releases page](https://github.com/davidolrik/overseer/releases/latest),
 extract it, and move it to a directory in your `PATH`:
 
-```bash
+```sh
 # Example for macOS (Apple Silicon)
 curl -L https://github.com/davidolrik/overseer/releases/latest/download/overseer_darwin_arm64.tar.gz | tar xz
 sudo mv overseer /usr/local/bin/
@@ -59,19 +59,19 @@ sudo mv overseer /usr/local/bin/
 
 1. Start the overseer daemon:
 
-   ```bash
+   ```sh
    overseer start
    ```
 
 2. Check current status:
 
-   ```bash
+   ```sh
    overseer status
    ```
 
 3. Manually connect to an SSH host:
 
-   ```bash
+   ```sh
    overseer connect my-server
    ```
 
@@ -445,7 +445,7 @@ The tunnel alias is passed as the first argument to the command, so your script 
 
 #### Managing Companions
 
-```bash
+```sh
 # List all companions and their status
 overseer companion list
 
@@ -782,7 +782,7 @@ Use these in `conditions` blocks:
 
 The `qa` command shows network quality and session history:
 
-```bash
+```sh
 # Today's statistics
 overseer qa
 
@@ -867,7 +867,7 @@ precmd_functions+=(_overseer_precmd)
 
 #### Bash (`~/.bashrc`)
 
-```bash
+```sh
 # Source overseer environment before each prompt
 PROMPT_COMMAND='[[ -f ~/.config/overseer/overseer.env ]] && source ~/.config/overseer/overseer.env'
 ```
@@ -883,7 +883,7 @@ end
 
 Use the variables in your prompt or scripts:
 
-```bash
+```sh
 # Show context in prompt
 PS1="[$OVERSEER_CONTEXT] \w $ "
 
@@ -965,7 +965,7 @@ context "public" {
 
 View current context and tunnel status:
 
-```bash
+```sh
 # Text output (default)
 overseer status
 
@@ -989,7 +989,7 @@ Tunnels:
 
 Generate completion scripts for your shell:
 
-```bash
+```sh
 # Bash
 overseer completion bash > /etc/bash_completion.d/overseer
 

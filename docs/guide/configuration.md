@@ -1,0 +1,368 @@
+# Configuration
+
+Overseer uses [HCL](https://github.com/hashicorp/hcl) format for configuration. The config file is located at `~/.config/overseer/config.hcl`.
+
+If no config file exists, overseer creates one with default values on first run.
+
+## Global Settings
+
+```hcl
+# Verbosity level (0=quiet, 1=normal, 2=verbose, 3=debug)
+verbose = 0
+```
+
+## SSH Settings
+
+The `ssh` block controls SSH connection behavior and automatic reconnection:
+
+```hcl
+ssh {
+  # Keepalive — detect dead connections
+  server_alive_interval = 15    # Send keepalive every N seconds (0 to disable)
+  server_alive_count_max = 3    # Exit after N failed keepalives
+
+  # Automatic reconnection
+  reconnect_enabled = true      # Enable/disable auto-reconnect
+  initial_backoff   = "1s"      # First retry delay
+  max_backoff       = "5m"      # Maximum delay between retries
+  backoff_factor    = 2         # Multiplier for each retry
+  max_retries       = 10        # Give up after this many attempts
+}
+```
+
+All values shown are the defaults. You only need to include settings you want to change.
+
+## Sensors
+
+Overseer detects your network environment through sensors:
+
+| Sensor | Type | Description |
+|--------|------|-------------|
+| `public_ipv4` | string | Public IPv4 address (detected via DNS consensus) |
+| `public_ipv6` | string | Public IPv6 /64 prefix (privacy extensions ignored) |
+| `local_ipv4` | string | Local LAN IPv4 address |
+| `online` | boolean | Network connectivity (TCP probe to well-known hosts) |
+
+Use these sensor names in `conditions` blocks to match your network.
+
+### Condition Types
+
+| Condition | Syntax | Description |
+|-----------|--------|-------------|
+| `public_ip` | `public_ip = ["<ip>", ...]` | Match public IP address or CIDR range |
+| `online` | `online = true/false` | Check online status |
+| `env` | `env = { "VAR" = "value" }` | Match environment variable |
+
+::: info
+`public_ip` conditions match against the `public_ipv4` sensor. Multiple values in a list are OR'd together.
+:::
+
+## Locations
+
+Locations represent physical or network environments identified by sensor conditions.
+
+### Simple Conditions
+
+```hcl
+location "home" {
+  display_name = "Home Network"
+
+  conditions {
+    public_ip = ["203.0.113.42"]
+  }
+
+  environment = {
+    LOCATION_TYPE = "residential"
+  }
+}
+```
+
+Multiple IPs in the list are OR'd — any match activates the location:
+
+```hcl
+location "office" {
+  display_name = "Office"
+
+  conditions {
+    public_ip = ["198.51.100.0/24", "203.0.113.0/24"]
+  }
+}
+```
+
+### Structured Conditions
+
+For complex matching logic, use `any{}` (OR) and `all{}` (AND) blocks:
+
+```hcl
+location "corporate" {
+  display_name = "Corporate Network"
+
+  conditions {
+    all {
+      online = true
+      any {
+        public_ip = ["198.51.100.0/24"]
+        public_ip = ["203.0.113.0/24"]
+      }
+    }
+  }
+}
+```
+
+Structured conditions can be nested arbitrarily:
+
+```hcl
+location "trusted_network" {
+  conditions {
+    all {
+      online = true
+      any {
+        public_ip = ["192.168.1.0/24"]
+        public_ip = ["10.0.1.0/24"]
+        env = { "TRUSTED_NETWORK" = "yes" }
+      }
+    }
+  }
+}
+```
+
+### Environment Variables
+
+Locations can define custom environment variables that are exported when the location is active:
+
+```hcl
+location "home" {
+  display_name = "Home"
+  conditions {
+    public_ip = ["203.0.113.42"]
+  }
+  environment = {
+    LOCATION_TYPE  = "residential"
+    NETWORK_SPEED  = "1000"
+  }
+}
+```
+
+These variables appear in the [dotenv export](/advanced/shell-integration) alongside the built-in `OVERSEER_*` variables.
+
+### Special Locations
+
+Two locations have special behavior:
+
+| Location | Behavior |
+|----------|----------|
+| `offline` | Matches when `online = false`. Auto-generated if not defined. |
+| `unknown` | Fallback when no other location matches. Auto-generated if not defined. |
+
+You can customize these to add display names or environment variables:
+
+```hcl
+location "offline" {
+  display_name = "Offline"
+  environment = {
+    OVERSEER_LOCATION_COLOR = "#999999"
+  }
+}
+
+location "unknown" {
+  display_name = "Unknown Network"
+  environment = {
+    OVERSEER_LOCATION_COLOR = "#aa0000"
+  }
+}
+```
+
+## Contexts
+
+Contexts group locations into a security posture and define tunnel actions. They are evaluated in order — the **first match wins**.
+
+### Referencing Locations
+
+The most common pattern references one or more locations:
+
+```hcl
+context "trusted" {
+  display_name = "Trusted Network"
+  locations = ["home", "office"]
+
+  actions {
+    connect    = ["dev-server", "home-lab"]
+    disconnect = ["vpn"]
+  }
+
+  environment = {
+    TRUST_LEVEL = "high"
+  }
+}
+```
+
+### Inline Conditions
+
+Contexts can also define their own conditions directly:
+
+```hcl
+context "mobile" {
+  display_name = "Mobile Hotspot"
+  conditions {
+    env = { "MOBILE_HOTSPOT" = "yes" }
+  }
+  actions {
+    connect = ["vpn"]
+  }
+}
+```
+
+### Actions
+
+The `actions` block specifies which SSH tunnels to connect and disconnect when entering this context:
+
+```hcl
+actions {
+  connect    = ["tunnel-a", "tunnel-b"]  # SSH host aliases to connect
+  disconnect = ["tunnel-c"]              # SSH host aliases to disconnect
+}
+```
+
+Host aliases must correspond to `Host` entries in your `~/.ssh/config`.
+
+### The `untrusted` Context
+
+The `untrusted` context is special — it acts as the catch-all fallback when no other context matches. It is always evaluated last regardless of where you define it in your config:
+
+```hcl
+context "untrusted" {
+  display_name = "Untrusted Network"
+  actions {
+    connect    = ["vpn"]
+    disconnect = ["home-lab", "dev-server"]
+  }
+}
+```
+
+If you don't define an `untrusted` context, overseer creates a default one with no actions.
+
+### Environment Variables in Contexts
+
+Context environment variables are merged with location environment variables (context takes precedence):
+
+```hcl
+context "work" {
+  locations = ["office"]
+  environment = {
+    TRUST_LEVEL  = "high"      # Overrides location's TRUST_LEVEL if set
+    CONTEXT_TYPE = "corporate"
+  }
+}
+```
+
+## Exports
+
+The `exports` block configures files that overseer writes whenever state changes. These files enable [shell integration](/advanced/shell-integration) and scripting.
+
+```hcl
+exports {
+  dotenv      = "~/.config/overseer/overseer.env"  # Shell-sourceable env file
+  context     = "~/.config/overseer/context.txt"    # Context name only
+  location    = "~/.config/overseer/location.txt"   # Location name only
+  public_ip   = "~/.config/overseer/ip.txt"         # Public IP only
+  preferred_ip = "ipv4"                              # ipv4 (default) or ipv6
+}
+```
+
+All export paths support `~` for home directory expansion.
+
+### Export Types
+
+| Type | Content | Example |
+|------|---------|---------|
+| `dotenv` | Shell-sourceable file with all variables | `export OVERSEER_CONTEXT="home"` |
+| `context` | Plain text context name | `home` |
+| `location` | Plain text location name | `hq` |
+| `public_ip` | Plain text IP address | `203.0.113.42` |
+
+### Dotenv Variables
+
+The `dotenv` file includes these built-in variables:
+
+| Variable | Description |
+|----------|-------------|
+| `OVERSEER_CONTEXT` | Current context name |
+| `OVERSEER_CONTEXT_DISPLAY_NAME` | Context display name |
+| `OVERSEER_LOCATION` | Current location name |
+| `OVERSEER_LOCATION_DISPLAY_NAME` | Location display name |
+| `OVERSEER_PUBLIC_IP` | Preferred public IP (based on `preferred_ip`) |
+| `OVERSEER_PUBLIC_IPV4` | Public IPv4 address |
+| `OVERSEER_PUBLIC_IPV6` | Public IPv6 /64 prefix |
+| `OVERSEER_LOCAL_IP` | Local LAN IPv4 address |
+| `OVERSEER_LOCAL_IPV4` | Local LAN IPv4 address |
+
+Plus any custom variables defined in the active location's and context's `environment` blocks.
+
+When switching contexts, all custom variables from the previous context/location are automatically unset before the new ones are exported.
+
+## Complete Example
+
+A real-world configuration with multiple locations and contexts:
+
+```hcl
+verbose = 0
+
+ssh {
+  server_alive_interval = 15
+  server_alive_count_max = 3
+  reconnect_enabled = true
+  initial_backoff   = "1s"
+  max_backoff       = "5m"
+  backoff_factor    = 2
+  max_retries       = 10
+}
+
+exports {
+  dotenv    = "~/.local/var/overseer.env"
+  context   = "~/.local/var/overseer_context"
+  location  = "~/.local/var/overseer_location"
+  public_ip = "~/.local/var/overseer_ip"
+}
+
+# --- Locations ---
+
+location "home" {
+  display_name = "Home"
+  conditions {
+    public_ip = ["203.0.113.42"]
+  }
+}
+
+location "office" {
+  display_name = "Office"
+  conditions {
+    public_ip = ["198.51.100.0/24"]
+  }
+}
+
+# --- Contexts ---
+
+context "corporate" {
+  display_name = "At Office"
+  locations = ["office"]
+  actions {
+    connect    = ["corp-gateway", "dev-cluster"]
+  }
+}
+
+context "remote-work" {
+  display_name = "Working from Home"
+  locations = ["home"]
+  actions {
+    connect    = ["corp-vpn", "dev-cluster"]
+  }
+}
+
+context "untrusted" {
+  display_name = "Public Network"
+  actions {
+    connect    = ["secure-vpn"]
+    disconnect = ["corp-gateway", "dev-cluster"]
+  }
+}
+```

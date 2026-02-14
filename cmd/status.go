@@ -642,4 +642,3 @@ func displayRecentEvents(data interface{}) {
 
 	fmt.Println()
 }
-

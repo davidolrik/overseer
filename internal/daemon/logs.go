@@ -314,4 +314,3 @@ func (d *Daemon) handleLogsWithStateAndHistory(conn net.Conn, showHistory bool, 
 		}
 	}
 }
-
