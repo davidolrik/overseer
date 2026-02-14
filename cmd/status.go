@@ -71,6 +71,7 @@ and rules defined in your configuration. Context changes automatically connect o
 						colorGreen    = "\033[32m"
 						colorYellow   = "\033[33m"
 						colorRed      = "\033[31m"
+						colorBlue     = "\033[34m"
 						colorGray     = "\033[90m"
 						colorBoldBlue = "\033[1;34m"
 						colorReset    = "\033[0m"
@@ -145,7 +146,7 @@ and rules defined in your configuration. Context changes automatically connect o
 					if status.ResolvedHost != "" {
 						host, port, err := net.SplitHostPort(status.ResolvedHost)
 						if err == nil {
-							resolvedHostInfo = fmt.Sprintf(", %sHost:%s %s%s%s:%s%s", colorGray, colorReset, colorBoldBlue, host, colorGray, colorReset, port)
+							resolvedHostInfo = fmt.Sprintf(", %sHost:%s %s%s%s:%s%s%s%s", colorGray, colorReset, colorBoldBlue, host, colorGray, colorReset, colorBlue, port, colorReset)
 						} else {
 							resolvedHostInfo = fmt.Sprintf(", %sHost:%s %s%s%s", colorGray, colorReset, colorBoldBlue, status.ResolvedHost, colorReset)
 						}
