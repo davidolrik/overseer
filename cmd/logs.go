@@ -49,7 +49,7 @@ Automatically reconnects if the daemon is reloaded.`,
 		Run: func(cmd *cobra.Command, args []string) {
 			// Check if daemon is running
 			if _, err := daemon.SendCommand("STATUS"); err != nil {
-				slog.Error("Daemon is not running. Start a tunnel first.")
+				slog.Error("Daemon is not running. Use 'overseer start' to start it.")
 				os.Exit(1)
 			}
 

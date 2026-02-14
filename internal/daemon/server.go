@@ -2357,6 +2357,7 @@ func findOverseerSSHProcesses() ([]int, error) {
 	// Parse PIDs from output (one per line)
 	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
 	pids := make([]int, 0, len(lines))
+	myPID := os.Getpid()
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
 		if line == "" {
@@ -2365,6 +2366,11 @@ func findOverseerSSHProcesses() ([]int, error) {
 		pid, err := strconv.Atoi(line)
 		if err != nil {
 			slog.Warn("Failed to parse PID from pgrep output", "line", line, "error", err)
+			continue
+		}
+		// Skip our own PID — pgrep -f "overseer-daemon" matches the daemon itself
+		// since its cmdline contains "--overseer-daemon"
+		if pid == myPID {
 			continue
 		}
 		pids = append(pids, pid)

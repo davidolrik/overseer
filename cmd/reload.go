@@ -59,7 +59,8 @@ reconnected automatically based on security context rules.`,
 			}
 
 			// Start new daemon (uses same logic as 'overseer start')
-			if err := daemon.StartDaemon(); err != nil {
+			daemonCmd, err := daemon.StartDaemon()
+			if err != nil {
 				if !quiet {
 					slog.Error(fmt.Sprintf("Failed to start daemon: %v", err))
 				}
@@ -67,7 +68,7 @@ reconnected automatically based on security context rules.`,
 			}
 
 			// Wait for daemon to be ready
-			if err := daemon.WaitForDaemon(); err != nil {
+			if err := daemon.WaitForDaemon(daemonCmd); err != nil {
 				if !quiet {
 					slog.Error(fmt.Sprintf("Daemon failed to start: %v", err))
 				}

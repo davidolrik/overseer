@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"strings"
 	"sync"
 	"time"
 
@@ -29,6 +30,35 @@ func SendCommand(command string) (Response, error) {
 		return response, err
 	}
 	defer conn.Close()
+
+	if _, err := conn.Write([]byte(command + "\n")); err != nil {
+		return response, fmt.Errorf("failed to send command to daemon: %w", err)
+	}
+	bytes, err := io.ReadAll(conn)
+	if err != nil {
+		return response, fmt.Errorf("failed to read response from daemon: %w", err)
+	}
+
+	if err := json.Unmarshal(bytes, &response); err != nil {
+		return response, fmt.Errorf("failed to parse response from daemon: %w", err)
+	}
+
+	return response, nil
+}
+
+// sendCommandWithTimeout connects to the daemon with a timeout, preventing the polling loop
+// from blocking indefinitely if the socket exists but Accept hasn't been called yet.
+func sendCommandWithTimeout(command string, timeout time.Duration) (Response, error) {
+	response := Response{}
+
+	conn, err := net.DialTimeout("unix", core.GetSocketPath(), timeout)
+	if err != nil {
+		return response, err
+	}
+	defer conn.Close()
+
+	deadline := time.Now().Add(timeout)
+	conn.SetDeadline(deadline)
 
 	if _, err := conn.Write([]byte(command + "\n")); err != nil {
 		return response, fmt.Errorf("failed to send command to daemon: %w", err)
@@ -103,24 +133,18 @@ func EnsureDaemonIsRunning() {
 	}
 
 	slog.Info("Daemon not running. Starting it now...")
-	cmd := exec.Command(os.Args[0], "daemon", "--overseer-daemon")
-	if err := cmd.Start(); err != nil {
-		slog.Error(fmt.Sprintf("Fatal: Could not fork daemon process: %v", err))
+	cmd, err := StartDaemon()
+	if err != nil {
+		slog.Error(fmt.Sprintf("Fatal: %v", err))
 		os.Exit(1)
 	}
 	slog.Info(fmt.Sprintf("Daemon process launched with PID: %d", cmd.Process.Pid))
 
-	// Wait for the daemon to create the socket and be ready to accept connections
-	for range 20 {
-		time.Sleep(100 * time.Millisecond)
-		// Try to connect to the socket to verify daemon is actually listening
-		if _, err := SendCommand("STATUS"); err == nil {
-			slog.Info("Daemon is ready.")
-			return
-		}
+	if err := WaitForDaemon(cmd); err != nil {
+		slog.Error(fmt.Sprintf("Fatal: %v", err))
+		os.Exit(1)
 	}
-	slog.Error("Fatal: Daemon process was launched but socket was not created in time.")
-	os.Exit(1)
+	slog.Info("Daemon is ready.")
 }
 
 // CheckVersionMismatch checks if the client and daemon versions match and warns if they don't.
@@ -153,8 +177,9 @@ func CheckVersionMismatch() {
 	})
 }
 
-// StartDaemon starts the daemon process in the background
-func StartDaemon() error {
+// StartDaemon starts the daemon process in the background and returns the
+// exec.Cmd so callers can monitor the subprocess for early crashes.
+func StartDaemon() (*exec.Cmd, error) {
 	cmd := exec.Command(os.Args[0], "daemon", "--overseer-daemon")
 
 	// Pass the parent PID (shell/SSH session) to the daemon
@@ -164,20 +189,71 @@ func StartDaemon() error {
 	parentPID := os.Getppid()
 	cmd.Env = append(os.Environ(), fmt.Sprintf("OVERSEER_MONITOR_PID=%d", parentPID))
 
-	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("could not fork daemon process: %w", err)
+	// Capture stderr to a temp file for crash diagnostics.
+	// IMPORTANT: Must use *os.File, not *bytes.Buffer. A Buffer creates a pipe,
+	// and when the parent exits the broken pipe sends SIGPIPE to the daemon
+	// on fd 2 (stderr), which Go terminates the process for by default.
+	stderrFile, err := os.CreateTemp("", "overseer-daemon-stderr-*")
+	if err != nil {
+		return nil, fmt.Errorf("failed to create stderr capture file: %w", err)
 	}
-	return nil
+	cmd.Stderr = stderrFile
+
+	if err := cmd.Start(); err != nil {
+		stderrFile.Close()
+		os.Remove(stderrFile.Name())
+		return nil, fmt.Errorf("could not fork daemon process: %w", err)
+	}
+	return cmd, nil
 }
 
-// WaitForDaemon waits for the daemon to be ready
-func WaitForDaemon() error {
-	for range 20 {
+// WaitForDaemon waits for the daemon to be ready, monitoring for early crashes.
+// If the daemon process exits before becoming ready, the captured stderr is
+// included in the error message so the user can see what went wrong.
+func WaitForDaemon(cmd *exec.Cmd) error {
+	// Clean up stderr capture file when done
+	defer func() {
+		if f, ok := cmd.Stderr.(*os.File); ok {
+			name := f.Name()
+			f.Close()
+			os.Remove(name)
+		}
+	}()
+
+	// Monitor the subprocess for early exit in a goroutine
+	type waitResult struct {
+		err error
+	}
+	exited := make(chan waitResult, 1)
+	go func() {
+		exited <- waitResult{err: cmd.Wait()}
+	}()
+
+	for range 50 {
 		time.Sleep(100 * time.Millisecond)
-		if _, err := SendCommand("STATUS"); err == nil {
+
+		// Check if the process has crashed
+		select {
+		case result := <-exited:
+			stderr := ""
+			if f, ok := cmd.Stderr.(*os.File); ok {
+				f.Seek(0, 0)
+				data, _ := io.ReadAll(f)
+				stderr = strings.TrimSpace(string(data))
+			}
+			if stderr != "" {
+				return fmt.Errorf("daemon crashed during startup (exit status: %v):\n%s", result.err, stderr)
+			}
+			return fmt.Errorf("daemon crashed during startup (exit status: %v). Run 'overseer daemon' to see the error output", result.err)
+		default:
+			// Process still running, try connecting
+		}
+
+		if _, err := sendCommandWithTimeout("STATUS", 500*time.Millisecond); err == nil {
 			return nil
 		}
 	}
+
 	return fmt.Errorf("daemon was launched but socket was not created in time")
 }
 
