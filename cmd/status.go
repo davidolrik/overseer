@@ -53,6 +53,19 @@ and rules defined in your configuration. Context changes automatically connect o
 			companionResponse, _ := daemon.SendCommand("COMPANION_STATUS")
 			companionMap := getCompanionMap(companionResponse)
 
+			// Resolve IPs in jump chain/host if requested
+			resolve, _ := cmd.Flags().GetBool("resolve")
+			if resolve {
+				for i := range statuses {
+					for j := range statuses[i].JumpChain {
+						statuses[i].JumpChain[j] = resolveHop(statuses[i].JumpChain[j])
+					}
+					if statuses[i].ResolvedHost != "" {
+						statuses[i].ResolvedHost = resolveHop(statuses[i].ResolvedHost)
+					}
+				}
+			}
+
 			switch format {
 			case "text":
 				// Show comprehensive context information
@@ -142,29 +155,62 @@ and rules defined in your configuration. Context changes automatically connect o
 						tagInfo = fmt.Sprintf(" \033[2m[%s]\033[0m", status.Tag)
 					}
 
-					resolvedHostInfo := ""
-					if status.ResolvedHost != "" {
-						host, port, err := net.SplitHostPort(status.ResolvedHost)
-						if err == nil {
-							resolvedHostInfo = fmt.Sprintf(", %sHost:%s %s%s%s:%s%s%s%s", colorGray, colorReset, colorBoldBlue, host, colorGray, colorReset, colorBlue, port, colorReset)
-						} else {
-							resolvedHostInfo = fmt.Sprintf(", %sHost:%s %s%s%s", colorGray, colorReset, colorBoldBlue, status.ResolvedHost, colorReset)
-						}
-					}
-
 					fmt.Printf(
-						"  %s%s%s %s%s%s%s %s(PID:%s %d%s, %s%s%s)%s%s\n",
+						"  %s%s%s %s%s%s%s %s(PID:%s %d, %s%s%s)%s%s\n",
 						color, icon, colorReset,
 						color, status.Hostname, colorReset,
 						tagInfo,
-						colorGray, colorReset, status.Pid, resolvedHostInfo, timeInfo,
+						colorGray, colorReset, status.Pid, timeInfo,
 						reconnectInfo,
 						colorGray, colorReset,
 						extraInfo,
 					)
 
+					// Build hops list for tree display
+					var hops []string
+					if len(status.JumpChain) > 0 {
+						hops = status.JumpChain
+					} else if status.ResolvedHost != "" {
+						hops = []string{status.ResolvedHost}
+					}
+
+					companions := companionMap[status.Hostname]
+					hasCompanions := len(companions) > 0
+
+					// Print hops as cascading tree
+					for i, hop := range hops {
+						// Format hop with colors
+						var hopStr string
+						host, port, err := net.SplitHostPort(hop)
+						if err == nil {
+							hopStr = fmt.Sprintf("%s%s%s:%s%s%s%s", colorBoldBlue, host, colorGray, colorReset, colorBlue, port, colorReset)
+						} else {
+							hopStr = fmt.Sprintf("%s%s%s", colorBoldBlue, hop, colorReset)
+						}
+
+						// Build prefix for nesting depth
+						var prefix string
+						if i > 0 {
+							if hasCompanions {
+								prefix = "│   "
+							} else {
+								prefix = "    "
+							}
+							for j := 1; j < i; j++ {
+								prefix += "    "
+							}
+						}
+
+						connector := "└──"
+						if i == 0 && hasCompanions {
+							connector = "├──"
+						}
+
+						fmt.Printf("  %s%s %s→%s %s\n", prefix, connector, colorGray, colorReset, hopStr)
+					}
+
 					// Show companions for this tunnel in tree format
-					if companions, ok := companionMap[status.Hostname]; ok && len(companions) > 0 {
+					if hasCompanions {
 						for i, comp := range companions {
 							// Tree connector: └── for last item, ├── for others
 							connector := "├──"
@@ -192,7 +238,7 @@ and rules defined in your configuration. Context changes automatically connect o
 								compIcon = "?"
 							}
 
-							fmt.Printf("      %s %s%s%s %s %s[%s]%s\n",
+							fmt.Printf("  %s %s%s%s %s %s[%s]%s\n",
 								connector,
 								compColor, compIcon, colorReset,
 								comp.Name,
@@ -222,8 +268,27 @@ and rules defined in your configuration. Context changes automatically connect o
 	}
 	statusCmd.Flags().StringP("format", "F", "text", "Format to use (text/json)")
 	statusCmd.Flags().IntP("events", "E", 20, "Number of recent events to show")
+	statusCmd.Flags().BoolP("resolve", "R", false, "Resolve IPs in jump chain to hostnames via reverse DNS")
 
 	return statusCmd
+}
+
+// resolveHop takes a "host:port" string and, if host is an IP, attempts
+// reverse DNS resolution. Returns the original string unchanged if host
+// is not an IP or lookup fails.
+func resolveHop(hop string) string {
+	host, port, err := net.SplitHostPort(hop)
+	if err != nil {
+		return hop
+	}
+	if net.ParseIP(host) == nil {
+		return hop
+	}
+	names, err := net.LookupAddr(host)
+	if err != nil || len(names) == 0 {
+		return hop
+	}
+	return net.JoinHostPort(strings.TrimRight(names[0], "."), port)
 }
 
 // companionInfo holds parsed companion information for display

@@ -128,6 +128,19 @@ Host dc1-*
 SSH processes `Match` blocks in order. Place the direct-connection match **before** the `Host` block with `ProxyJump` to ensure it takes precedence.
 :::
 
+## Status Output
+
+When you use ProxyJump with overseer-managed tunnels, `overseer status` displays the full hop chain as a cascading tree:
+
+```plain
+  ✓ deep-internal (PID: 4521, Age: 1h 30m)
+  └── → gate.example.com:22
+      └── → dmz.example.com:22
+          └── → 10.10.1.50:22
+```
+
+Use `overseer status -R` to resolve IP addresses in the hop chain to hostnames via reverse DNS.
+
 ## Combining with ControlMaster
 
 ProxyJump and ControlMaster work together — the jump host connection is multiplexed:

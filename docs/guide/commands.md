@@ -84,10 +84,11 @@ overseer status [flags]
 
 Displays your current security context, sensor values, active tunnels, and recent events.
 
-| Flag                        | Description                                     |
-| --------------------------- | ----------------------------------------------- |
-| `-F, --format <text\|json>` | Output format (default: `text`)                 |
-| `-n, --events <count>`      | Number of recent events to show (default: `20`) |
+| Flag                        | Description                                            |
+| --------------------------- | ------------------------------------------------------ |
+| `-F, --format <text\|json>` | Output format (default: `text`)                        |
+| `-n, --events <count>`      | Number of recent events to show (default: `20`)        |
+| `-R, --resolve`             | Resolve IPs in jump chain to hostnames via reverse DNS |
 
 The text output includes:
 
@@ -95,7 +96,30 @@ The text output includes:
 - Context age (how long you've been in the current context)
 - All sensor readings with values
 - Active tunnels with state icons, PIDs, connection age, and reconnect counts
+- SSH hops displayed as a cascading tree beneath each tunnel
+- Companion scripts shown as tree siblings below hops
 - Recent events (sensor changes, tunnel events, context transitions)
+
+Example output with a single-hop tunnel with a companion, and a single-hop tunnel without:
+
+```plain
+  ✓ gateway (PID: 22187, Age: 6m17s)
+  ├── → 203.0.113.10:22
+  └── ✓ vpn [running]
+  ✓ dev-server (PID: 74917, Age: 1h1m7s)
+  └── → 198.51.100.50:22
+```
+
+Multi-hop tunnels show a cascading tree of hops:
+
+```plain
+  ✓ deep-internal (PID: 4521, Age: 1h30m)
+  └── → gate.example.com:22
+      └── → dmz.example.com:22
+          └── → 10.10.1.50:22
+```
+
+Use `--resolve` to translate IP addresses in the hop chain to hostnames via reverse DNS.
 
 JSON output includes all the same data in a structured format for scripting.
 
@@ -125,13 +149,13 @@ overseer qa -s 2025-01-01 -d 7   # Specific date range
 
 Networks are rated based on connection stability:
 
-| Rating | Description |
-|--------|-------------|
+| Rating        | Description                                                      |
+| ------------- | ---------------------------------------------------------------- |
 | **Excellent** | Stable connection with long sessions, no consecutive disconnects |
-| **Good** | Mostly stable with occasional brief interruptions |
-| **Fair** | Some stability issues detected |
-| **Poor** | Frequent disconnects or many consecutive short sessions |
-| **New** | Single session — insufficient data to assess stability |
+| **Good**      | Mostly stable with occasional brief interruptions                |
+| **Fair**      | Some stability issues detected                                   |
+| **Poor**      | Frequent disconnects or many consecutive short sessions          |
+| **New**       | Single session - insufficient data to assess stability           |
 
 Quality assessment considers consecutive short sessions (strongest instability indicator), total number of brief sessions (< 5 minutes), and reconnection rate per hour of online time.
 

@@ -976,13 +976,15 @@ overseer status --format json
 overseer status -N 50
 ```
 
-The status output displays companions in a tree format beneath their tunnels:
+The status output displays SSH hops and companions in a tree beneath each tunnel:
 
 ```plain
-Tunnels:
-  ✓ corporate        Connected: 2h 15m
-    ├── ✓ vpn-client [running]
-    └── ✓ socks-proxy [running]
+Active Tunnels:
+  ✓ gateway (PID: 22187, Age: 6m17s)
+  ├── → 203.0.113.10:22
+  └── ✓ vpn [running]
+  ✓ dev-server (PID: 74917, Age: 1h1m7s)
+  └── → 198.51.100.50:22
 ```
 
 ## Shell Completion

@@ -69,6 +69,7 @@ type Tunnel struct {
 	Tag                 string      // Custom SSH tag for -P argument (used with Match tagged in ssh_config)
 	HealthCheckFailures int         // Consecutive health check failures (requires multiple before killing)
 	ResolvedHost        string      // Actual IP:port from SSH "Authenticated to" output
+	JumpChain           []string    // All resolved IP:port hops in order (jump hosts first, destination last)
 }
 
 func New() *Daemon {
@@ -746,6 +747,9 @@ func (d *Daemon) startTunnelStreaming(alias string, tag string, stream *Streamin
 		}
 	}
 
+	// Resolve ProxyJump chain from SSH config for multi-hop display
+	jumpChain := resolveJumpChain(alias, tag)
+
 	// Create SSH command with verbose mode to detect connection status
 	// Build SSH options from config
 	sshArgs := []string{alias, "-N", "-o", "IgnoreUnknown=overseer-daemon", "-o", "overseer-daemon=true", "-o", "ExitOnForwardFailure=yes", "-v"}
@@ -814,6 +818,7 @@ func (d *Daemon) startTunnelStreaming(alias string, tag string, stream *Streamin
 		AutoReconnect:     core.Config.SSH.ReconnectEnabled, // Use config value
 		State:             StateConnecting,                  // Initial state is connecting, updated to connected after verification
 		Tag:               tag,                              // Store tag for reconnection
+		JumpChain:         jumpChain,
 	}
 	slog.Info(fmt.Sprintf("Attempting to start tunnel for '%s' (PID %d)", alias, cmd.Process.Pid))
 
@@ -1255,8 +1260,95 @@ func (d *Daemon) monitorTunnel(alias string) {
 	}
 }
 
+// resolveJumpChain uses `ssh -G` to resolve the ProxyJump chain for an alias.
+// Returns a slice of "hostname:port" strings representing each hop in order
+// (first jump host first, final destination last).
+// Returns nil if there is no ProxyJump (direct connection).
+func resolveJumpChain(alias string, tag string) []string {
+	type hopInfo struct {
+		hostname  string
+		port      string
+		proxyJump string
+	}
+
+	resolve := func(a string) hopInfo {
+		args := []string{"-G"}
+		if tag != "" {
+			args = append(args, "-P", tag)
+		}
+		args = append(args, a)
+		out, err := exec.Command("ssh", args...).Output()
+		if err != nil {
+			return hopInfo{}
+		}
+
+		var info hopInfo
+		for _, line := range strings.Split(string(out), "\n") {
+			parts := strings.SplitN(strings.TrimSpace(line), " ", 2)
+			if len(parts) != 2 {
+				continue
+			}
+			switch parts[0] {
+			case "hostname":
+				info.hostname = parts[1]
+			case "port":
+				info.port = parts[1]
+			case "proxyjump":
+				info.proxyJump = parts[1]
+			}
+		}
+		return info
+	}
+
+	// Resolve the destination
+	destInfo := resolve(alias)
+	if destInfo.hostname == "" {
+		return nil
+	}
+
+	if destInfo.proxyJump == "" || destInfo.proxyJump == "none" {
+		return nil // Direct connection, no chain
+	}
+
+	// Walk the ProxyJump chain recursively.
+	// Each hop may itself have a ProxyJump, or the ProxyJump may be comma-separated.
+	var chain []string
+	seen := make(map[string]bool)
+
+	var walk func(proxyJump string)
+	walk = func(proxyJump string) {
+		for _, hop := range strings.Split(proxyJump, ",") {
+			hop = strings.TrimSpace(hop)
+			if hop == "" || hop == "none" || seen[hop] {
+				continue
+			}
+			seen[hop] = true
+
+			info := resolve(hop)
+			if info.hostname == "" {
+				continue
+			}
+
+			// Resolve upstream jumps first (so they appear earlier in chain)
+			if info.proxyJump != "" && info.proxyJump != "none" {
+				walk(info.proxyJump)
+			}
+
+			chain = append(chain, net.JoinHostPort(info.hostname, info.port))
+		}
+	}
+
+	walk(destInfo.proxyJump)
+
+	// Add the destination as the last hop
+	chain = append(chain, net.JoinHostPort(destInfo.hostname, destInfo.port))
+
+	return chain
+}
+
 // verifyConnection monitors SSH stderr output to detect connection success or failure
 var authenticatedToRe = regexp.MustCompile(`Authenticated to \S+ \(\[([^\]]+)\]:(\d+)\)`)
+var authenticatingToRe = regexp.MustCompile(`Authenticating to (.+):(\d+) as '`)
 
 func (d *Daemon) verifyConnection(stderr io.ReadCloser, alias string, result chan<- error) {
 	defer func() {
@@ -1271,10 +1363,17 @@ func (d *Daemon) verifyConnection(stderr io.ReadCloser, alias string, result cha
 	scanner := bufio.NewScanner(stderr)
 	authenticated := false
 	verified := false
+	var lastAuthenticatingTo string // host:port from "Authenticating to" line (for proxy hops)
 
 	for scanner.Scan() {
 		line := scanner.Text()
 		slog.Debug(fmt.Sprintf("[%s] SSH: %s", alias, line))
+
+		// Track "Authenticating to host:port as 'user'" — gives us host:port for proxy
+		// hops where "Authenticated to" only says "(via proxy)" without IP:port.
+		if matches := authenticatingToRe.FindStringSubmatch(line); len(matches) == 3 {
+			lastAuthenticatingTo = matches[1] + ":" + matches[2]
+		}
 
 		// After verification, keep reading to drain stderr and prevent pipe buffer deadlock.
 		// If we stop reading, SSH's stderr pipe buffer fills up (~64KB) and the SSH process
@@ -1283,12 +1382,22 @@ func (d *Daemon) verifyConnection(stderr io.ReadCloser, alias string, result cha
 			continue
 		}
 
-		// Track authentication completion
+		// Track authentication completion and resolve the destination host.
 		if strings.Contains(line, "Authentication succeeded") ||
 			strings.Contains(line, "Authenticated to") {
 			authenticated = true
+
+			// Extract ResolvedHost from the "Authenticated to" line.
+			// Direct connections: "Authenticated to host ([IP]:port)" — use IP:port.
+			// Proxy connections:  "Authenticated to host (via proxy)" — use host:port
+			// from the prior "Authenticating to host:port" line.
+			var resolvedHost string
 			if matches := authenticatedToRe.FindStringSubmatch(line); len(matches) == 3 {
-				resolvedHost := matches[1] + ":" + matches[2]
+				resolvedHost = matches[1] + ":" + matches[2]
+			} else if lastAuthenticatingTo != "" {
+				resolvedHost = lastAuthenticatingTo
+			}
+			if resolvedHost != "" {
 				d.mu.Lock()
 				if t, exists := d.tunnels[alias]; exists {
 					t.ResolvedHost = resolvedHost
@@ -1296,6 +1405,7 @@ func (d *Daemon) verifyConnection(stderr io.ReadCloser, alias string, result cha
 				}
 				d.mu.Unlock()
 			}
+			lastAuthenticatingTo = ""
 			// Don't return yet - we need to wait for the session to be established
 		}
 
@@ -1473,6 +1583,7 @@ type DaemonStatus struct {
 	NextRetry         string      `json:"next_retry,omitempty"` // ISO 8601 format
 	Tag               string      `json:"tag,omitempty"`
 	ResolvedHost      string      `json:"resolved_host,omitempty"`
+	JumpChain         []string    `json:"jump_chain,omitempty"`
 }
 
 func (d *Daemon) getStatus() Response {
@@ -1504,6 +1615,7 @@ func (d *Daemon) getStatus() Response {
 			State:             tunnel.State,
 			Tag:               tunnel.Tag,
 			ResolvedHost:      tunnel.ResolvedHost,
+			JumpChain:         tunnel.JumpChain,
 		}
 
 		// Add disconnected time if tunnel is disconnected or reconnecting
@@ -2527,6 +2639,7 @@ func (d *Daemon) adoptTunnel(info TunnelInfo) bool {
 		State:             TunnelState(info.State),
 		Tag:               info.Tag,
 		ResolvedHost:      info.ResolvedHost,
+		JumpChain:         info.JumpChain,
 	}
 
 	d.tunnels[info.Alias] = tunnel

@@ -32,6 +32,7 @@ type TunnelInfo struct {
 	State             string    `json:"state"`
 	Tag               string    `json:"tag,omitempty"`
 	ResolvedHost      string    `json:"resolved_host,omitempty"`
+	JumpChain         []string  `json:"jump_chain,omitempty"`
 	// Note: AskpassToken is NOT persisted for security reasons
 	// New tokens will be generated when adopting tunnels
 }
@@ -77,6 +78,7 @@ func (d *Daemon) SaveTunnelState() error {
 			State:             string(tunnel.State),
 			Tag:               tunnel.Tag,
 			ResolvedHost:      tunnel.ResolvedHost,
+			JumpChain:         tunnel.JumpChain,
 			// AskpassToken intentionally omitted for security
 		}
 
