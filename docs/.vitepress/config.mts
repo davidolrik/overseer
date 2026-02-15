@@ -31,6 +31,14 @@ export default withMermaid(
                     href: "https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&display=swap",
                 },
             ],
+            [
+                "link",
+                {
+                    rel: "icon",
+                    type: "image/svg+xml",
+                    href: "/favicon.svg",
+                },
+            ],
             ["meta", { name: "author", content: "David Jack Wange Olrik" }],
             [
                 "meta",

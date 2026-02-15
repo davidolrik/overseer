@@ -126,6 +126,44 @@ body {
     background-size: 40px 40px;
 }
 
+/* ============================================================
+ * Ambient glitch overlay
+ * ============================================================ */
+body::after {
+    content: "";
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: 0;
+    background: radial-gradient(
+        ellipse 100% 6% at 50% 50%,
+        rgba(57, 255, 20, 0.04) 0%,
+        rgba(57, 255, 20, 0.02) 50%,
+        transparent 100%
+    );
+    background-size: 140% 250%;
+    animation: crt-roll 18s linear infinite;
+    mix-blend-mode: screen;
+}
+
+@keyframes crt-roll {
+    0% {
+        background-position: 50% 160%;
+    }
+    25% {
+        background-position: 35% 70%;
+    }
+    50% {
+        background-position: 60% -20%;
+    }
+    75% {
+        background-position: 42% -110%;
+    }
+    100% {
+        background-position: 50% -200%;
+    }
+}
+
 /* Text selection */
 ::selection {
     background: rgba(0, 229, 255, 0.25);
@@ -183,22 +221,6 @@ body {
 
 .VPHero .text {
     text-shadow: 0 0 10px rgba(0, 229, 255, 0.1);
-}
-
-/* Hero scanline overlay */
-.VPHero::before {
-    content: "";
-    position: absolute;
-    inset: 0;
-    background: repeating-linear-gradient(
-        0deg,
-        transparent,
-        transparent 2px,
-        rgba(0, 229, 255, 0.015) 2px,
-        rgba(0, 229, 255, 0.015) 4px
-    );
-    pointer-events: none;
-    z-index: 1;
 }
 
 .VPHero {
