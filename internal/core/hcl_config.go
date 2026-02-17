@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/hashicorp/hcl/v2/hclsimple"
-	"overseer.olrik.dev/internal/awareness"
+	"go.olrik.dev/overseer/internal/awareness"
 )
 
 // Config is the global configuration instance

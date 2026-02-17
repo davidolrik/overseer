@@ -15,7 +15,7 @@ import (
 
 	"github.com/creack/pty"
 	"github.com/spf13/cobra"
-	"overseer.olrik.dev/internal/daemon"
+	"go.olrik.dev/overseer/internal/daemon"
 )
 
 // OutputCache maintains a ring buffer of recent output lines for replay after daemon restart

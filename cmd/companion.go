@@ -14,8 +14,8 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
-	"overseer.olrik.dev/internal/core"
-	"overseer.olrik.dev/internal/daemon"
+	"go.olrik.dev/overseer/internal/core"
+	"go.olrik.dev/overseer/internal/daemon"
 )
 
 // formatDaemonMessage formats a message with timestamp and [DAEMON] prefix

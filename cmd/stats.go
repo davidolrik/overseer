@@ -9,9 +9,9 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
-	"overseer.olrik.dev/internal/core"
-	"overseer.olrik.dev/internal/db"
-	"overseer.olrik.dev/internal/awareness"
+	"go.olrik.dev/overseer/internal/core"
+	"go.olrik.dev/overseer/internal/db"
+	"go.olrik.dev/overseer/internal/awareness"
 )
 
 // ANSI color codes

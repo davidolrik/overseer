@@ -5,10 +5,10 @@ import (
 	"log/slog"
 	"time"
 
-	"overseer.olrik.dev/internal/core"
-	"overseer.olrik.dev/internal/db"
-	"overseer.olrik.dev/internal/awareness"
-	"overseer.olrik.dev/internal/awareness/state"
+	"go.olrik.dev/overseer/internal/core"
+	"go.olrik.dev/overseer/internal/db"
+	"go.olrik.dev/overseer/internal/awareness"
+	"go.olrik.dev/overseer/internal/awareness/state"
 )
 
 // stateOrchestrator is the state management system

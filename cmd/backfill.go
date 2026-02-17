@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
-	"overseer.olrik.dev/internal/db"
+	"go.olrik.dev/overseer/internal/db"
 )
 
 func NewBackfillCommand() *cobra.Command {

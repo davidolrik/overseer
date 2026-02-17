@@ -46,6 +46,6 @@ depends = "docs:build"
 run = ["npm run docs:preview"]
 
 [tasks."docs:publish"]
-description = "📦 Publish to overseer.olrik.dev"
+description = "📦 Publish to go.olrik.dev/overseer"
 depends = "docs:build"
 run = ["rsync -avO --no-perms --delete ./docs/.vitepress/dist/ {{ env.DOCUMENTATION_HOST }}:{{ env.DOCUMENTATION_PATH }}"]

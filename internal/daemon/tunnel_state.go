@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"overseer.olrik.dev/internal/core"
+	"go.olrik.dev/overseer/internal/core"
 )
 
 // TunnelStateFile contains the schema version and tunnel information

@@ -18,7 +18,7 @@ import (
 	"syscall"
 	"time"
 
-	"overseer.olrik.dev/internal/core"
+	"go.olrik.dev/overseer/internal/core"
 )
 
 // formatDaemonMessage formats a daemon message with timestamp

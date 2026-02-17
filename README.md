@@ -34,7 +34,7 @@ mise use --global github:davidolrik/overseer@latest
 ### Install using go directly
 
 ```sh
-go install overseer.olrik.dev@latest
+go install go.olrik.dev/overseer@latest
 ```
 
 ### Manual installation

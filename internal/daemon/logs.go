@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/lmittmann/tint"
-	"overseer.olrik.dev/internal/awareness/state"
+	"go.olrik.dev/overseer/internal/awareness/state"
 )
 
 // LogBroadcaster manages streaming logs to multiple clients

@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"overseer.olrik.dev/internal/core"
+	"go.olrik.dev/overseer/internal/core"
 )
 
 func TestMain(m *testing.M) {

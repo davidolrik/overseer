@@ -9,7 +9,7 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
-	"overseer.olrik.dev/internal/core"
+	"go.olrik.dev/overseer/internal/core"
 )
 
 // extractHostAliases is a simple, robust parser that only looks for the `Host` keyword

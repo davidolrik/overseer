@@ -1,4 +1,4 @@
-module overseer.olrik.dev
+module go.olrik.dev/overseer
 
 go 1.26.0
 

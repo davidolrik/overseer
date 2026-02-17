@@ -19,7 +19,7 @@ mise upgrade overseer
 If you have Go installed:
 
 ```sh
-go install overseer.olrik.dev@latest
+go install go.olrik.dev/overseer@latest
 ```
 
 This installs to your `$GOPATH/bin` directory (usually `~/go/bin`). Make sure it's in your `PATH`.

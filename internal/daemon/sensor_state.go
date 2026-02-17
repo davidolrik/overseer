@@ -7,8 +7,8 @@ import (
 	"path/filepath"
 	"time"
 
-	"overseer.olrik.dev/internal/awareness/state"
-	"overseer.olrik.dev/internal/core"
+	"go.olrik.dev/overseer/internal/awareness/state"
+	"go.olrik.dev/overseer/internal/core"
 )
 
 // SensorStateFile contains the sensor cache for hot reload preservation

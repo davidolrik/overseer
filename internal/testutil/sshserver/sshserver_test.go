@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"overseer.olrik.dev/internal/testutil/sshserver"
+	"go.olrik.dev/overseer/internal/testutil/sshserver"
 )
 
 // makeAskpassScript creates a temporary script that echoes the given password.

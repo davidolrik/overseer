@@ -21,10 +21,10 @@ import (
 
 	"github.com/fsnotify/fsnotify"
 	psnet "github.com/shirou/gopsutil/v3/net"
-	"overseer.olrik.dev/internal/awareness"
-	"overseer.olrik.dev/internal/core"
-	"overseer.olrik.dev/internal/db"
-	"overseer.olrik.dev/internal/keyring"
+	"go.olrik.dev/overseer/internal/awareness"
+	"go.olrik.dev/overseer/internal/core"
+	"go.olrik.dev/overseer/internal/db"
+	"go.olrik.dev/overseer/internal/keyring"
 )
 
 // Daemon manages the SSH tunnel processes and security context.

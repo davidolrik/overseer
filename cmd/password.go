@@ -9,7 +9,7 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
-	"overseer.olrik.dev/internal/keyring"
+	"go.olrik.dev/overseer/internal/keyring"
 )
 
 func NewPasswordCommand() *cobra.Command {

@@ -54,7 +54,7 @@ export default withMermaid(
                 {
                     name: "go-import",
                     content:
-                        "overseer.olrik.dev git https://github.com/davidolrik/overseer",
+                        "go.olrik.dev/overseer git https://github.com/davidolrik/overseer",
                 },
             ],
             [
@@ -62,7 +62,7 @@ export default withMermaid(
                 {
                     name: "go-source",
                     content:
-                        "overseer.olrik.dev https://github.com/davidolrik/overseer https://github.com/davidolrik/overseer/tree/master{/dir} https://github.com/davidolrik/overseer/blob/master{/dir}/{file}#L{line}",
+                        "go.olrik.dev/overseer https://github.com/davidolrik/overseer https://github.com/davidolrik/overseer/tree/master{/dir} https://github.com/davidolrik/overseer/blob/master{/dir}/{file}#L{line}",
                 },
             ],
         ],

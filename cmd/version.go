@@ -6,8 +6,8 @@ import (
 	"os"
 
 	"github.com/spf13/cobra"
-	"overseer.olrik.dev/internal/core"
-	"overseer.olrik.dev/internal/daemon"
+	"go.olrik.dev/overseer/internal/core"
+	"go.olrik.dev/overseer/internal/daemon"
 )
 
 func NewVersionCommand() *cobra.Command {

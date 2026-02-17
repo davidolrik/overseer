@@ -13,7 +13,7 @@ import (
 	"sync"
 	"time"
 
-	"overseer.olrik.dev/internal/core"
+	"go.olrik.dev/overseer/internal/core"
 )
 
 var (
