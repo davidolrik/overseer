@@ -1,7 +1,6 @@
 mise.local.toml
 /overseer
 /dist
-/internal/core/version.txt
 /node_modules
 /docs/.vitepress/dist
 /docs/.vitepress/cache

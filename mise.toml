@@ -22,7 +22,7 @@ run = '''# mise tasks --local
 
 [tasks.build]
 description = "🛠️  Build binary"
-run = ["go generate ./...", "go mod tidy", "go build -o overseer ."]
+run = ["go mod tidy", "go build -o overseer ."]
 
 [tasks.publish]
 description = "📦 Publish to GitHub"

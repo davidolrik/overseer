@@ -1,55 +1,87 @@
 package core
 
 import (
-	_ "embed"
 	"fmt"
+	"runtime/debug"
 	"strings"
 )
 
-//go:generate sh -c "(git describe --tags --long --dirty='-devel' --match '[0-9]*.[0-9]*.[0-9]*' || echo '0.0.0') > version.txt"
-//go:embed version.txt
-var version string
+var Version string
 
-var Version string = strings.TrimSpace(version)
+func init() {
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		Version = "devel"
+		return
+	}
 
-// FormatVersion formats the version string for nice display.
-// Input format: "v0.7.0-5-g9154987-devel"
-// Output examples:
-//   - "0.7.0 (9154987)" - clean release
-//   - "0.7.0+5 (9154987+5)" - 5 commits after tag
+	// Use module version for tagged releases (set by go install or goreleaser).
+	// Skip pseudo-versions (local builds in Go 1.24+) — we use VCS info instead.
+	if v := info.Main.Version; v != "" && v != "(devel)" && !isPseudoVersion(v) {
+		Version = v
+		return
+	}
+
+	// Fall back to VCS info for local builds
+	var revision string
+	var dirty bool
+
+	for _, s := range info.Settings {
+		switch s.Key {
+		case "vcs.revision":
+			revision = s.Value
+		case "vcs.modified":
+			dirty = s.Value == "true"
+		}
+	}
+
+	if revision == "" {
+		Version = "devel"
+		return
+	}
+
+	short := revision
+	if len(short) > 7 {
+		short = short[:7]
+	}
+
+	Version = fmt.Sprintf("devel-%s", short)
+	if dirty {
+		Version += "-dirty"
+	}
+}
+
+// FormatVersion formats the version string for display.
+// Tagged releases have the "v" prefix stripped; devel versions pass through as-is.
+// Input/output examples:
+//   - "v1.12.0" → "1.12.0"
+//   - "devel-ad721b3" → "devel-ad721b3"
+//   - "devel-ad721b3-dirty" → "devel-ad721b3-dirty"
+//   - "devel" → "devel"
 func FormatVersion(v string) string {
-	// Remove 'v' prefix if present
-	v = strings.TrimPrefix(v, "v")
+	return strings.TrimPrefix(v, "v")
+}
 
-	// Split by '-' to parse components
-	parts := strings.Split(v, "-")
-
-	if len(parts) < 3 {
-		// Fallback for unexpected format
-		return v
+// isPseudoVersion reports whether v looks like a Go module pseudo-version.
+// Pseudo-versions end with a 12-character hex commit hash, e.g.
+// v0.0.0-20260217105831-82903d1d8810 or v1.12.1-0.20260217105831-82903d1d8810.
+func isPseudoVersion(v string) bool {
+	// Strip build metadata (+dirty, +incompatible, etc.)
+	if i := strings.Index(v, "+"); i >= 0 {
+		v = v[:i]
 	}
-
-	baseVersion := parts[0]                  // e.g., "0.7.0"
-	commitsSinceTag := parts[1]              // e.g., "5" or "0"
-	sha := strings.TrimPrefix(parts[2], "g") // e.g., "9154987" (remove 'g' prefix)
-
-	// Check if this is a development version (has uncommitted changes)
-	isDevel := len(parts) > 3 && parts[3] == "devel"
-
-	// Build the formatted version
-	result := baseVersion
-
-	// Add commit count to base version if not zero
-	if commitsSinceTag != "0" {
-		result += fmt.Sprintf("+%s", commitsSinceTag)
+	i := strings.LastIndex(v, "-")
+	if i < 0 {
+		return false
 	}
-
-	// Add SHA with commit count for development versions
-	if isDevel || commitsSinceTag != "0" {
-		result += fmt.Sprintf(" (%s+%s)", sha, commitsSinceTag)
-	} else {
-		result += fmt.Sprintf(" (%s)", sha)
+	hash := v[i+1:]
+	if len(hash) != 12 {
+		return false
 	}
-
-	return result
+	for _, c := range hash {
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+			return false
+		}
+	}
+	return true
 }

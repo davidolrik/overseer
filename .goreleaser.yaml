@@ -6,7 +6,6 @@ force_token: github
 before:
   hooks:
     - go mod tidy
-    - go generate ./...
 
 builds:
   # Linux builds - CGO disabled for static linking
@@ -33,8 +32,6 @@ builds:
       - amd64
     flags:
       - -mod=readonly
-    ldflags:
-      - -X main.version={{.Version}} -X main.commit={{.Commit}} -X main.date={{.Date}}
     hooks:
       post:
         - sh -c 'if [ -n "$CODESIGN_IDENTITY" ]; then codesign --sign "$CODESIGN_IDENTITY" --options runtime --entitlements entitlements.plist --timestamp --force --verbose "{{ .Path }}"; else echo "Skipping code signing (CODESIGN_IDENTITY not set)"; fi'
@@ -51,8 +48,6 @@ builds:
       - arm64
     flags:
       - -mod=readonly
-    ldflags:
-      - -X main.version={{.Version}} -X main.commit={{.Commit}} -X main.date={{.Date}}
     hooks:
       post:
         - sh -c 'if [ -n "$CODESIGN_IDENTITY" ]; then codesign --sign "$CODESIGN_IDENTITY" --options runtime --entitlements entitlements.plist --timestamp --force --verbose "{{ .Path }}"; else echo "Skipping code signing (CODESIGN_IDENTITY not set)"; fi'
