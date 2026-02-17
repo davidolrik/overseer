@@ -41,6 +41,7 @@ type Daemon struct {
 	parentMonitor *ParentMonitor    // Monitors parent process in remote mode
 	ctx           context.Context   // Context for lifecycle management
 	cancelFunc    context.CancelFunc
+	sshConfigFile string // Path to SSH config file (empty = use system default)
 }
 
 type TunnelState string
@@ -89,6 +90,12 @@ func New() *Daemon {
 		d.mu.Unlock()
 	})
 	return d
+}
+
+// SetSSHConfigFile sets a custom SSH config file path. When set, all SSH
+// invocations will use `-F <path>` instead of the system default config.
+func (d *Daemon) SetSSHConfigFile(path string) {
+	d.sshConfigFile = path
 }
 
 // mergeEnvironment merges user environment variables into default environment
@@ -748,11 +755,15 @@ func (d *Daemon) startTunnelStreaming(alias string, tag string, stream *Streamin
 	}
 
 	// Resolve ProxyJump chain from SSH config for multi-hop display
-	jumpChain := resolveJumpChain(alias, tag)
+	jumpChain := resolveJumpChain(alias, tag, d.sshConfigFile)
 
 	// Create SSH command with verbose mode to detect connection status
 	// Build SSH options from config
 	sshArgs := []string{alias, "-N", "-o", "IgnoreUnknown=overseer-daemon", "-o", "overseer-daemon=true", "-o", "ExitOnForwardFailure=yes", "-v"}
+
+	if d.sshConfigFile != "" {
+		sshArgs = append([]string{"-F", d.sshConfigFile}, sshArgs...)
+	}
 
 	// Add custom tag for SSH config matching (Match tagged)
 	if tag != "" {
@@ -1136,6 +1147,10 @@ func (d *Daemon) monitorTunnel(alias string) {
 		// Build SSH options from config
 		sshArgs := []string{alias, "-N", "-o", "IgnoreUnknown=overseer-daemon", "-o", "overseer-daemon=true", "-o", "ExitOnForwardFailure=yes", "-v"}
 
+		if d.sshConfigFile != "" {
+			sshArgs = append([]string{"-F", d.sshConfigFile}, sshArgs...)
+		}
+
 		// Add custom tag (preserved from original connection)
 		if tunnel.Tag != "" {
 			sshArgs = append(sshArgs, "-P", tunnel.Tag)
@@ -1264,7 +1279,7 @@ func (d *Daemon) monitorTunnel(alias string) {
 // Returns a slice of "hostname:port" strings representing each hop in order
 // (first jump host first, final destination last).
 // Returns nil if there is no ProxyJump (direct connection).
-func resolveJumpChain(alias string, tag string) []string {
+func resolveJumpChain(alias string, tag string, sshConfigFile string) []string {
 	type hopInfo struct {
 		hostname  string
 		port      string
@@ -1273,6 +1288,9 @@ func resolveJumpChain(alias string, tag string) []string {
 
 	resolve := func(a string) hopInfo {
 		args := []string{"-G"}
+		if sshConfigFile != "" {
+			args = append(args, "-F", sshConfigFile)
+		}
 		if tag != "" {
 			args = append(args, "-P", tag)
 		}

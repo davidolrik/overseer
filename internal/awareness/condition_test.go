@@ -532,6 +532,364 @@ func TestConditionFromMap(t *testing.T) {
 	}
 }
 
+func TestNewBooleanCondition(t *testing.T) {
+	t.Run("true value", func(t *testing.T) {
+		cond := NewBooleanCondition("online", true)
+		if cond.SensorName != "online" {
+			t.Errorf("SensorName = %q, want %q", cond.SensorName, "online")
+		}
+		if cond.BoolValue == nil || *cond.BoolValue != true {
+			t.Errorf("BoolValue = %v, want true", cond.BoolValue)
+		}
+		if cond.Pattern != "" {
+			t.Errorf("Pattern = %q, want empty", cond.Pattern)
+		}
+	})
+
+	t.Run("false value", func(t *testing.T) {
+		cond := NewBooleanCondition("online", false)
+		if cond.BoolValue == nil || *cond.BoolValue != false {
+			t.Errorf("BoolValue = %v, want false", cond.BoolValue)
+		}
+	})
+}
+
+func TestSensorCondition_String(t *testing.T) {
+	tests := []struct {
+		name string
+		cond *SensorCondition
+		want string
+	}{
+		{
+			name: "boolean condition",
+			cond: NewBooleanCondition("online", true),
+			want: "online=true",
+		},
+		{
+			name: "boolean condition false",
+			cond: NewBooleanCondition("online", false),
+			want: "online=false",
+		},
+		{
+			name: "pattern condition",
+			cond: NewSensorCondition("public_ip", "192.168.*"),
+			want: "public_ip~192.168.*",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := tt.cond.String()
+			if got != tt.want {
+				t.Errorf("String() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestGroupCondition_String(t *testing.T) {
+	tests := []struct {
+		name string
+		cond *GroupCondition
+		want string
+	}{
+		{
+			name: "all group",
+			cond: NewAllCondition(
+				NewSensorCondition("ip", "1.2.3.4"),
+				NewBooleanCondition("online", true),
+			),
+			want: "all{ip~1.2.3.4, online=true}",
+		},
+		{
+			name: "any group",
+			cond: NewAnyCondition(
+				NewSensorCondition("ip", "1.0.0.0/8"),
+				NewSensorCondition("ip", "2.0.0.0/8"),
+			),
+			want: "any{ip~1.0.0.0/8, ip~2.0.0.0/8}",
+		},
+		{
+			name: "empty group",
+			cond: NewAllCondition(),
+			want: "all{}",
+		},
+		{
+			name: "nested group",
+			cond: NewAllCondition(
+				NewBooleanCondition("online", true),
+				NewAnyCondition(
+					NewSensorCondition("ip", "10.*"),
+					NewSensorCondition("ip", "172.*"),
+				),
+			),
+			want: "all{online=true, any{ip~10.*, ip~172.*}}",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := tt.cond.String()
+			if got != tt.want {
+				t.Errorf("String() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSensorCondition_Evaluate_ErrorCases(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("bool condition on string sensor", func(t *testing.T) {
+		cond := NewBooleanCondition("sensor", true)
+		sensors := map[string]Sensor{
+			"sensor": &MockSensor{
+				name:       "sensor",
+				sensorType: SensorTypeString,
+				value:      "not-a-bool",
+			},
+		}
+		_, err := cond.Evaluate(ctx, sensors)
+		if err == nil {
+			t.Error("expected error for bool condition on string sensor")
+		}
+	})
+
+	t.Run("string condition on bool sensor", func(t *testing.T) {
+		cond := NewSensorCondition("sensor", "pattern")
+		sensors := map[string]Sensor{
+			"sensor": &MockSensor{
+				name:       "sensor",
+				sensorType: SensorTypeBoolean,
+				value:      true,
+			},
+		}
+		_, err := cond.Evaluate(ctx, sensors)
+		if err == nil {
+			t.Error("expected error for string condition on bool sensor")
+		}
+	})
+
+	t.Run("empty string value does not match wildcard", func(t *testing.T) {
+		cond := NewSensorCondition("sensor", "*")
+		sensors := map[string]Sensor{
+			"sensor": &MockSensor{
+				name:       "sensor",
+				sensorType: SensorTypeString,
+				value:      "",
+			},
+		}
+		got, err := cond.Evaluate(ctx, sensors)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got != false {
+			t.Error("expected false for empty string value against wildcard")
+		}
+	})
+
+	t.Run("no-cache sensor falls back to Check", func(t *testing.T) {
+		cond := NewSensorCondition("sensor", "hello")
+		sensors := map[string]Sensor{
+			"sensor": &MockSensorNoCache{
+				MockSensor: MockSensor{
+					name:       "sensor",
+					sensorType: SensorTypeString,
+					value:      "hello",
+				},
+			},
+		}
+		got, err := cond.Evaluate(ctx, sensors)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got != true {
+			t.Error("expected true after fallback to Check()")
+		}
+	})
+}
+
+func TestGroupCondition_Evaluate_UnknownOperator(t *testing.T) {
+	cond := &GroupCondition{
+		Operator: "xor",
+		Conditions: []Condition{
+			NewBooleanCondition("online", true),
+		},
+	}
+	sensors := map[string]Sensor{
+		"online": &MockSensor{
+			name:       "online",
+			sensorType: SensorTypeBoolean,
+			value:      true,
+		},
+	}
+
+	_, err := cond.Evaluate(context.Background(), sensors)
+	if err == nil {
+		t.Error("expected error for unknown operator")
+	}
+}
+
+func TestExtractRequiredSensors(t *testing.T) {
+	tests := []struct {
+		name string
+		cond Condition
+		want map[string]bool
+	}{
+		{
+			name: "nil condition",
+			cond: nil,
+			want: nil,
+		},
+		{
+			name: "single sensor",
+			cond: NewSensorCondition("public_ip", "1.2.3.4"),
+			want: map[string]bool{"public_ip": true},
+		},
+		{
+			name: "group with multiple sensors",
+			cond: NewAllCondition(
+				NewBooleanCondition("online", true),
+				NewSensorCondition("public_ip", "1.2.3.4"),
+			),
+			want: map[string]bool{"online": true, "public_ip": true},
+		},
+		{
+			name: "nested with dedup",
+			cond: NewAllCondition(
+				NewSensorCondition("public_ip", "1.2.3.4"),
+				NewAnyCondition(
+					NewSensorCondition("public_ip", "10.0.0.0/8"),
+					NewSensorCondition("ssid", "HomeNet"),
+				),
+			),
+			want: map[string]bool{"public_ip": true, "ssid": true},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ExtractRequiredSensors(tt.cond)
+			if tt.want == nil {
+				if got != nil {
+					t.Errorf("expected nil, got %v", got)
+				}
+				return
+			}
+			gotMap := make(map[string]bool)
+			for _, s := range got {
+				gotMap[s] = true
+			}
+			for k := range tt.want {
+				if !gotMap[k] {
+					t.Errorf("missing sensor %q", k)
+				}
+			}
+			if len(gotMap) != len(tt.want) {
+				t.Errorf("got %d sensors, want %d", len(gotMap), len(tt.want))
+			}
+		})
+	}
+}
+
+func TestExtractPatternsForSensor(t *testing.T) {
+	tests := []struct {
+		name       string
+		cond       Condition
+		sensorName string
+		want       map[string]bool
+	}{
+		{
+			name:       "matching sensor",
+			cond:       NewSensorCondition("public_ip", "1.2.3.4"),
+			sensorName: "public_ip",
+			want:       map[string]bool{"1.2.3.4": true},
+		},
+		{
+			name:       "non-matching sensor",
+			cond:       NewSensorCondition("public_ip", "1.2.3.4"),
+			sensorName: "ssid",
+			want:       map[string]bool{},
+		},
+		{
+			name: "nested patterns with dedup",
+			cond: NewAllCondition(
+				NewSensorCondition("public_ip", "1.2.3.4"),
+				NewAnyCondition(
+					NewSensorCondition("public_ip", "10.0.0.0/8"),
+					NewSensorCondition("public_ip", "1.2.3.4"), // duplicate
+				),
+			),
+			sensorName: "public_ip",
+			want:       map[string]bool{"1.2.3.4": true, "10.0.0.0/8": true},
+		},
+		{
+			name:       "boolean condition excluded",
+			cond:       NewBooleanCondition("online", true),
+			sensorName: "online",
+			want:       map[string]bool{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ExtractPatternsForSensor(tt.cond, tt.sensorName)
+			gotMap := make(map[string]bool)
+			for _, p := range got {
+				gotMap[p] = true
+			}
+			for k := range tt.want {
+				if !gotMap[k] {
+					t.Errorf("missing pattern %q", k)
+				}
+			}
+			if len(gotMap) != len(tt.want) {
+				t.Errorf("got %d patterns, want %d", len(gotMap), len(tt.want))
+			}
+		})
+	}
+}
+
+func TestConditionFromMap_EdgeCases(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("sensor with empty patterns is skipped", func(t *testing.T) {
+		cond := ConditionFromMap(map[string][]string{
+			"public_ip": {},
+			"ssid":      {"HomeNet"},
+		})
+		sensors := map[string]Sensor{
+			"ssid": &MockSensor{
+				name:       "ssid",
+				sensorType: SensorTypeString,
+				value:      "HomeNet",
+			},
+		}
+		got, err := cond.Evaluate(ctx, sensors)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !got {
+			t.Error("expected true: empty patterns should be skipped")
+		}
+	})
+
+	t.Run("all sensors have empty patterns", func(t *testing.T) {
+		cond := ConditionFromMap(map[string][]string{
+			"public_ip": {},
+			"ssid":      {},
+		})
+		// Should be vacuously true (like empty conditions)
+		got, err := cond.Evaluate(ctx, map[string]Sensor{})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !got {
+			t.Error("expected true: all empty patterns should be vacuously true")
+		}
+	})
+}
+
 // Helper function to create bool pointers
 func boolPtr(b bool) *bool {
 	return &b
