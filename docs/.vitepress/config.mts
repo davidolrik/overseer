@@ -49,22 +49,6 @@ export default withMermaid(
                 },
             ],
             ["meta", { property: "og:type", content: "website" }],
-            [
-                "meta",
-                {
-                    name: "go-import",
-                    content:
-                        "go.olrik.dev/overseer git https://github.com/davidolrik/overseer",
-                },
-            ],
-            [
-                "meta",
-                {
-                    name: "go-source",
-                    content:
-                        "go.olrik.dev/overseer https://github.com/davidolrik/overseer https://github.com/davidolrik/overseer/tree/master{/dir} https://github.com/davidolrik/overseer/blob/master{/dir}/{file}#L{line}",
-                },
-            ],
         ],
         themeConfig: {
             logo: "/overseer.png",
