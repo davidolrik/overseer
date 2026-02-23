@@ -626,7 +626,9 @@ func LoadConfigDir(mainFile string, configDir string) (*Configuration, error) {
 
 // mergeHCLConfig merges src into dst at the hclConfig level.
 // Scalar fields use last-non-zero-wins. Singleton blocks error if both define them.
-// Locations and tunnels accumulate with duplicate-name errors. Contexts accumulate in order.
+// Locations and tunnels accumulate with duplicate-name errors.
+// Contexts with the same name are deep-merged (retaining the first occurrence's position);
+// contexts with distinct names accumulate in order.
 func mergeHCLConfig(dst, src *hclConfig) error {
 	// Verbose: last non-zero wins
 	if src.Verbose != 0 {
@@ -710,8 +712,19 @@ func mergeHCLConfig(dst, src *hclConfig) error {
 		dst.Tunnels = append(dst.Tunnels, tun)
 	}
 
-	// Contexts: accumulate in order
-	dst.Contexts = append(dst.Contexts, src.Contexts...)
+	// Contexts: same-name contexts are deep-merged; distinct names are appended
+	contextIndex := make(map[string]int, len(dst.Contexts))
+	for i, ctx := range dst.Contexts {
+		contextIndex[ctx.Name] = i
+	}
+	for i := range src.Contexts {
+		if idx, exists := contextIndex[src.Contexts[i].Name]; exists {
+			mergeHCLContext(&dst.Contexts[idx], &src.Contexts[i])
+		} else {
+			contextIndex[src.Contexts[i].Name] = len(dst.Contexts)
+			dst.Contexts = append(dst.Contexts, src.Contexts[i])
+		}
+	}
 
 	return nil
 }
@@ -851,6 +864,73 @@ func parseHCLTunnelHooks(hooks *hclTunnelHooks) (*TunnelHooksConfig, error) {
 	}
 
 	return result, nil
+}
+
+// appendUnique appends items from src to dst, skipping any that already exist in dst.
+func appendUnique(dst, src []string) []string {
+	if len(src) == 0 {
+		return dst
+	}
+	seen := make(map[string]bool, len(dst))
+	for _, s := range dst {
+		seen[s] = true
+	}
+	for _, s := range src {
+		if !seen[s] {
+			seen[s] = true
+			dst = append(dst, s)
+		}
+	}
+	return dst
+}
+
+// mergeHCLContext deep-merges src into dst at the hclContext level.
+// Scalar fields use first-non-empty-wins. List fields append + deduplicate.
+// Map fields merge keys with first-defined value winning on conflicts.
+// Pointer/block fields use first-non-nil-wins.
+func mergeHCLContext(dst, src *hclContext) {
+	// display_name: first-non-empty wins
+	if dst.DisplayName == "" {
+		dst.DisplayName = src.DisplayName
+	}
+
+	// locations: append + deduplicate
+	dst.Locations = appendUnique(dst.Locations, src.Locations)
+
+	// conditions: first-non-nil wins
+	if dst.Conditions == nil {
+		dst.Conditions = src.Conditions
+	}
+
+	// actions: append + deduplicate connect/disconnect lists
+	if dst.Actions == nil && src.Actions != nil {
+		dst.Actions = src.Actions
+	} else if dst.Actions != nil && src.Actions != nil {
+		dst.Actions.Connect = appendUnique(dst.Actions.Connect, src.Actions.Connect)
+		dst.Actions.Disconnect = appendUnique(dst.Actions.Disconnect, src.Actions.Disconnect)
+	}
+
+	// environment: merge keys; first-defined value wins on conflicts
+	if dst.Environment == nil && src.Environment != nil {
+		dst.Environment = src.Environment
+	} else if dst.Environment != nil && src.Environment != nil {
+		for k, v := range src.Environment {
+			if _, exists := dst.Environment[k]; !exists {
+				dst.Environment[k] = v
+			}
+		}
+	}
+
+	// hooks: append + deduplicate lists; timeout first-non-empty wins
+	if dst.Hooks == nil && src.Hooks != nil {
+		dst.Hooks = src.Hooks
+	} else if dst.Hooks != nil && src.Hooks != nil {
+		dst.Hooks.OnEnter = appendUnique(dst.Hooks.OnEnter, src.Hooks.OnEnter)
+		dst.Hooks.OnLeave = appendUnique(dst.Hooks.OnLeave, src.Hooks.OnLeave)
+		if dst.Hooks.Timeout == "" {
+			dst.Hooks.Timeout = src.Hooks.Timeout
+		}
+	}
 }
 
 // GetDefaultConfig returns a Configuration with default values

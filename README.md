@@ -191,7 +191,7 @@ Files in `config.d/` are loaded in **alphabetical order** after the main config.
 | Scalars (`verbose`)                                            | Last non-zero value wins                                                                                 |
 | Singleton blocks (`exports`, `ssh`, `companion`, global hooks) | Must only appear in one file (error if duplicated)                                                       |
 | Locations / Tunnels                                            | Accumulated across files; duplicate names are an error                                                   |
-| Contexts                                                       | Accumulated in load order (main first, then `config.d/` alphabetically). Order matters: first match wins |
+| Contexts                                                       | Same-name contexts are deep-merged (locations, actions, hooks append + deduplicate; environment merges keys; scalars use first-non-empty). Distinct names accumulate in load order. Order matters: first match wins |
 
 Changes to files in `config.d/` trigger an automatic daemon reload. If you create `config.d/` after the daemon is already running, use `overseer reload` to pick it up.
 

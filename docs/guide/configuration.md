@@ -29,7 +29,7 @@ The `config.d/` directory is optional. If it doesn't exist, behavior is unchange
 | Singleton blocks (`exports`, `ssh`, `companion`, `environment`, global hooks) | Main config only — defining these in more than one file is an error |
 | Locations | Any file — accumulated across files; duplicate names are an error |
 | Tunnels | Any file — accumulated across files; duplicate names are an error |
-| Contexts | Any file — accumulated in load order (main first, then `config.d/` alphabetically). Order matters: first match wins |
+| Contexts | Any file — same-name contexts are deep-merged (locations, actions, hooks append + deduplicate; environment merges keys; scalars use first-non-empty). Distinct names accumulate in load order. Order matters: first match wins |
 
 ### Example
 

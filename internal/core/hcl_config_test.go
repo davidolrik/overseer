@@ -1848,3 +1848,586 @@ func TestGetDefaultConfig_EnvironmentInitialized(t *testing.T) {
 		t.Error("expected Environment map to be initialized")
 	}
 }
+
+// --- appendUnique tests ---
+
+func TestAppendUnique(t *testing.T) {
+	t.Run("no overlap", func(t *testing.T) {
+		got := appendUnique([]string{"a", "b"}, []string{"c", "d"})
+		want := []string{"a", "b", "c", "d"}
+		if len(got) != len(want) {
+			t.Fatalf("expected %v, got %v", want, got)
+		}
+		for i := range want {
+			if got[i] != want[i] {
+				t.Errorf("index %d: expected %q, got %q", i, want[i], got[i])
+			}
+		}
+	})
+
+	t.Run("with overlap", func(t *testing.T) {
+		got := appendUnique([]string{"a", "b"}, []string{"b", "c"})
+		want := []string{"a", "b", "c"}
+		if len(got) != len(want) {
+			t.Fatalf("expected %v, got %v", want, got)
+		}
+		for i := range want {
+			if got[i] != want[i] {
+				t.Errorf("index %d: expected %q, got %q", i, want[i], got[i])
+			}
+		}
+	})
+
+	t.Run("nil dst", func(t *testing.T) {
+		got := appendUnique(nil, []string{"a", "b"})
+		if len(got) != 2 || got[0] != "a" || got[1] != "b" {
+			t.Errorf("expected [a b], got %v", got)
+		}
+	})
+
+	t.Run("nil src", func(t *testing.T) {
+		got := appendUnique([]string{"a"}, nil)
+		if len(got) != 1 || got[0] != "a" {
+			t.Errorf("expected [a], got %v", got)
+		}
+	})
+
+	t.Run("both nil", func(t *testing.T) {
+		got := appendUnique(nil, nil)
+		if got != nil {
+			t.Errorf("expected nil, got %v", got)
+		}
+	})
+
+	t.Run("all duplicates", func(t *testing.T) {
+		got := appendUnique([]string{"a", "b"}, []string{"a", "b"})
+		if len(got) != 2 || got[0] != "a" || got[1] != "b" {
+			t.Errorf("expected [a b], got %v", got)
+		}
+	})
+}
+
+// --- mergeHCLContext tests ---
+
+func TestMergeHCLContext_DisplayName(t *testing.T) {
+	t.Run("first non-empty wins", func(t *testing.T) {
+		dst := &hclContext{Name: "ctx", DisplayName: "First"}
+		src := &hclContext{Name: "ctx", DisplayName: "Second"}
+		mergeHCLContext(dst, src)
+		if dst.DisplayName != "First" {
+			t.Errorf("expected DisplayName='First', got %q", dst.DisplayName)
+		}
+	})
+
+	t.Run("empty dst gets src value", func(t *testing.T) {
+		dst := &hclContext{Name: "ctx"}
+		src := &hclContext{Name: "ctx", DisplayName: "FromSrc"}
+		mergeHCLContext(dst, src)
+		if dst.DisplayName != "FromSrc" {
+			t.Errorf("expected DisplayName='FromSrc', got %q", dst.DisplayName)
+		}
+	})
+
+	t.Run("both empty stays empty", func(t *testing.T) {
+		dst := &hclContext{Name: "ctx"}
+		src := &hclContext{Name: "ctx"}
+		mergeHCLContext(dst, src)
+		if dst.DisplayName != "" {
+			t.Errorf("expected empty DisplayName, got %q", dst.DisplayName)
+		}
+	})
+}
+
+func TestMergeHCLContext_Locations(t *testing.T) {
+	t.Run("append and dedup", func(t *testing.T) {
+		dst := &hclContext{Name: "ctx", Locations: []string{"a", "b"}}
+		src := &hclContext{Name: "ctx", Locations: []string{"b", "c"}}
+		mergeHCLContext(dst, src)
+		want := []string{"a", "b", "c"}
+		if len(dst.Locations) != len(want) {
+			t.Fatalf("expected %v, got %v", want, dst.Locations)
+		}
+		for i := range want {
+			if dst.Locations[i] != want[i] {
+				t.Errorf("index %d: expected %q, got %q", i, want[i], dst.Locations[i])
+			}
+		}
+	})
+
+	t.Run("nil dst locations", func(t *testing.T) {
+		dst := &hclContext{Name: "ctx"}
+		src := &hclContext{Name: "ctx", Locations: []string{"a"}}
+		mergeHCLContext(dst, src)
+		if len(dst.Locations) != 1 || dst.Locations[0] != "a" {
+			t.Errorf("expected [a], got %v", dst.Locations)
+		}
+	})
+
+	t.Run("nil src locations preserves dst", func(t *testing.T) {
+		dst := &hclContext{Name: "ctx", Locations: []string{"a"}}
+		src := &hclContext{Name: "ctx"}
+		mergeHCLContext(dst, src)
+		if len(dst.Locations) != 1 || dst.Locations[0] != "a" {
+			t.Errorf("expected [a], got %v", dst.Locations)
+		}
+	})
+}
+
+func TestMergeHCLContext_Conditions(t *testing.T) {
+	t.Run("first non-nil wins", func(t *testing.T) {
+		dstCond := &hclConditions{PublicIP: []string{"1.2.3.4"}}
+		dst := &hclContext{Name: "ctx", Conditions: dstCond}
+		srcCond := &hclConditions{PublicIP: []string{"5.6.7.8"}}
+		src := &hclContext{Name: "ctx", Conditions: srcCond}
+		mergeHCLContext(dst, src)
+		if dst.Conditions != dstCond {
+			t.Error("expected dst conditions to be preserved (first-non-nil wins)")
+		}
+	})
+
+	t.Run("nil dst gets src", func(t *testing.T) {
+		dst := &hclContext{Name: "ctx"}
+		srcCond := &hclConditions{PublicIP: []string{"5.6.7.8"}}
+		src := &hclContext{Name: "ctx", Conditions: srcCond}
+		mergeHCLContext(dst, src)
+		if dst.Conditions != srcCond {
+			t.Error("expected dst to get src conditions")
+		}
+	})
+
+	t.Run("both nil stays nil", func(t *testing.T) {
+		dst := &hclContext{Name: "ctx"}
+		src := &hclContext{Name: "ctx"}
+		mergeHCLContext(dst, src)
+		if dst.Conditions != nil {
+			t.Error("expected nil conditions")
+		}
+	})
+}
+
+func TestMergeHCLContext_Actions(t *testing.T) {
+	t.Run("connect and disconnect append and dedup", func(t *testing.T) {
+		dst := &hclContext{
+			Name:    "ctx",
+			Actions: &hclActions{Connect: []string{"vpn"}, Disconnect: []string{"lab"}},
+		}
+		src := &hclContext{
+			Name:    "ctx",
+			Actions: &hclActions{Connect: []string{"vpn", "ssh"}, Disconnect: []string{"lab", "nas"}},
+		}
+		mergeHCLContext(dst, src)
+		if dst.Actions == nil {
+			t.Fatal("expected actions to be non-nil")
+		}
+		wantConnect := []string{"vpn", "ssh"}
+		if len(dst.Actions.Connect) != len(wantConnect) {
+			t.Fatalf("expected connect %v, got %v", wantConnect, dst.Actions.Connect)
+		}
+		for i := range wantConnect {
+			if dst.Actions.Connect[i] != wantConnect[i] {
+				t.Errorf("connect[%d]: expected %q, got %q", i, wantConnect[i], dst.Actions.Connect[i])
+			}
+		}
+		wantDisconnect := []string{"lab", "nas"}
+		if len(dst.Actions.Disconnect) != len(wantDisconnect) {
+			t.Fatalf("expected disconnect %v, got %v", wantDisconnect, dst.Actions.Disconnect)
+		}
+		for i := range wantDisconnect {
+			if dst.Actions.Disconnect[i] != wantDisconnect[i] {
+				t.Errorf("disconnect[%d]: expected %q, got %q", i, wantDisconnect[i], dst.Actions.Disconnect[i])
+			}
+		}
+	})
+
+	t.Run("nil dst actions gets src", func(t *testing.T) {
+		dst := &hclContext{Name: "ctx"}
+		src := &hclContext{Name: "ctx", Actions: &hclActions{Connect: []string{"vpn"}}}
+		mergeHCLContext(dst, src)
+		if dst.Actions == nil || len(dst.Actions.Connect) != 1 || dst.Actions.Connect[0] != "vpn" {
+			t.Errorf("expected connect=[vpn], got %v", dst.Actions)
+		}
+	})
+
+	t.Run("nil src actions preserves dst", func(t *testing.T) {
+		dst := &hclContext{Name: "ctx", Actions: &hclActions{Connect: []string{"vpn"}}}
+		src := &hclContext{Name: "ctx"}
+		mergeHCLContext(dst, src)
+		if len(dst.Actions.Connect) != 1 || dst.Actions.Connect[0] != "vpn" {
+			t.Errorf("expected connect=[vpn], got %v", dst.Actions.Connect)
+		}
+	})
+
+	t.Run("both nil stays nil", func(t *testing.T) {
+		dst := &hclContext{Name: "ctx"}
+		src := &hclContext{Name: "ctx"}
+		mergeHCLContext(dst, src)
+		if dst.Actions != nil {
+			t.Error("expected nil actions")
+		}
+	})
+}
+
+func TestMergeHCLContext_Environment(t *testing.T) {
+	t.Run("merge keys with first-defined wins", func(t *testing.T) {
+		dst := &hclContext{
+			Name:        "ctx",
+			Environment: map[string]string{"A": "1", "B": "2"},
+		}
+		src := &hclContext{
+			Name:        "ctx",
+			Environment: map[string]string{"B": "override", "C": "3"},
+		}
+		mergeHCLContext(dst, src)
+		if dst.Environment["A"] != "1" {
+			t.Errorf("expected A=1, got %q", dst.Environment["A"])
+		}
+		if dst.Environment["B"] != "2" {
+			t.Errorf("expected B=2 (first wins), got %q", dst.Environment["B"])
+		}
+		if dst.Environment["C"] != "3" {
+			t.Errorf("expected C=3, got %q", dst.Environment["C"])
+		}
+	})
+
+	t.Run("nil dst gets src", func(t *testing.T) {
+		dst := &hclContext{Name: "ctx"}
+		src := &hclContext{Name: "ctx", Environment: map[string]string{"A": "1"}}
+		mergeHCLContext(dst, src)
+		if dst.Environment["A"] != "1" {
+			t.Errorf("expected A=1, got %q", dst.Environment["A"])
+		}
+	})
+
+	t.Run("nil src preserves dst", func(t *testing.T) {
+		dst := &hclContext{Name: "ctx", Environment: map[string]string{"A": "1"}}
+		src := &hclContext{Name: "ctx"}
+		mergeHCLContext(dst, src)
+		if dst.Environment["A"] != "1" {
+			t.Errorf("expected A=1, got %q", dst.Environment["A"])
+		}
+	})
+}
+
+func TestMergeHCLContext_Hooks(t *testing.T) {
+	t.Run("on_enter and on_leave append and dedup", func(t *testing.T) {
+		dst := &hclContext{
+			Name: "ctx",
+			Hooks: &hclHooks{
+				OnEnter: []string{"echo enter-a"},
+				OnLeave: []string{"echo leave-a"},
+				Timeout: "10s",
+			},
+		}
+		src := &hclContext{
+			Name: "ctx",
+			Hooks: &hclHooks{
+				OnEnter: []string{"echo enter-a", "echo enter-b"},
+				OnLeave: []string{"echo leave-b"},
+				Timeout: "20s",
+			},
+		}
+		mergeHCLContext(dst, src)
+		if dst.Hooks == nil {
+			t.Fatal("expected hooks to be non-nil")
+		}
+		wantEnter := []string{"echo enter-a", "echo enter-b"}
+		if len(dst.Hooks.OnEnter) != len(wantEnter) {
+			t.Fatalf("expected on_enter %v, got %v", wantEnter, dst.Hooks.OnEnter)
+		}
+		for i := range wantEnter {
+			if dst.Hooks.OnEnter[i] != wantEnter[i] {
+				t.Errorf("on_enter[%d]: expected %q, got %q", i, wantEnter[i], dst.Hooks.OnEnter[i])
+			}
+		}
+		wantLeave := []string{"echo leave-a", "echo leave-b"}
+		if len(dst.Hooks.OnLeave) != len(wantLeave) {
+			t.Fatalf("expected on_leave %v, got %v", wantLeave, dst.Hooks.OnLeave)
+		}
+		for i := range wantLeave {
+			if dst.Hooks.OnLeave[i] != wantLeave[i] {
+				t.Errorf("on_leave[%d]: expected %q, got %q", i, wantLeave[i], dst.Hooks.OnLeave[i])
+			}
+		}
+		// Timeout: first-non-empty wins
+		if dst.Hooks.Timeout != "10s" {
+			t.Errorf("expected timeout='10s' (first wins), got %q", dst.Hooks.Timeout)
+		}
+	})
+
+	t.Run("nil dst hooks gets src", func(t *testing.T) {
+		dst := &hclContext{Name: "ctx"}
+		src := &hclContext{Name: "ctx", Hooks: &hclHooks{OnEnter: []string{"echo hi"}, Timeout: "5s"}}
+		mergeHCLContext(dst, src)
+		if dst.Hooks == nil || len(dst.Hooks.OnEnter) != 1 || dst.Hooks.OnEnter[0] != "echo hi" {
+			t.Error("expected dst to get src hooks")
+		}
+		if dst.Hooks.Timeout != "5s" {
+			t.Errorf("expected timeout='5s', got %q", dst.Hooks.Timeout)
+		}
+	})
+
+	t.Run("nil src hooks preserves dst", func(t *testing.T) {
+		dst := &hclContext{Name: "ctx", Hooks: &hclHooks{OnEnter: []string{"echo hi"}}}
+		src := &hclContext{Name: "ctx"}
+		mergeHCLContext(dst, src)
+		if len(dst.Hooks.OnEnter) != 1 || dst.Hooks.OnEnter[0] != "echo hi" {
+			t.Error("expected dst hooks preserved")
+		}
+	})
+
+	t.Run("timeout first-non-empty from src when dst empty", func(t *testing.T) {
+		dst := &hclContext{Name: "ctx", Hooks: &hclHooks{OnEnter: []string{"echo a"}}}
+		src := &hclContext{Name: "ctx", Hooks: &hclHooks{Timeout: "15s"}}
+		mergeHCLContext(dst, src)
+		if dst.Hooks.Timeout != "15s" {
+			t.Errorf("expected timeout='15s', got %q", dst.Hooks.Timeout)
+		}
+	})
+}
+
+// --- mergeHCLConfig context deep-merge tests ---
+
+func TestMergeHCLConfig_ContextsDeepMerge(t *testing.T) {
+	t.Run("same name merges at first occurrence position", func(t *testing.T) {
+		dst := &hclConfig{
+			Contexts: []hclContext{
+				{Name: "client", DisplayName: "Client", Locations: []string{"a", "b"}},
+				{Name: "other", DisplayName: "Other"},
+			},
+		}
+		src := &hclConfig{
+			Contexts: []hclContext{
+				{Name: "client", Locations: []string{"b", "c"}},
+			},
+		}
+		if err := mergeHCLConfig(dst, src); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		// Should still be 2 contexts (merged, not appended)
+		if len(dst.Contexts) != 2 {
+			t.Fatalf("expected 2 contexts, got %d", len(dst.Contexts))
+		}
+		// First context should be merged "client"
+		if dst.Contexts[0].Name != "client" {
+			t.Errorf("expected first context='client', got %q", dst.Contexts[0].Name)
+		}
+		if dst.Contexts[0].DisplayName != "Client" {
+			t.Errorf("expected DisplayName='Client', got %q", dst.Contexts[0].DisplayName)
+		}
+		wantLocs := []string{"a", "b", "c"}
+		if len(dst.Contexts[0].Locations) != len(wantLocs) {
+			t.Fatalf("expected locations %v, got %v", wantLocs, dst.Contexts[0].Locations)
+		}
+		for i := range wantLocs {
+			if dst.Contexts[0].Locations[i] != wantLocs[i] {
+				t.Errorf("location[%d]: expected %q, got %q", i, wantLocs[i], dst.Contexts[0].Locations[i])
+			}
+		}
+		// Second context should be unchanged
+		if dst.Contexts[1].Name != "other" {
+			t.Errorf("expected second context='other', got %q", dst.Contexts[1].Name)
+		}
+	})
+
+	t.Run("mix of new and duplicate contexts", func(t *testing.T) {
+		dst := &hclConfig{
+			Contexts: []hclContext{
+				{Name: "alpha", Locations: []string{"loc-a"}},
+			},
+		}
+		src := &hclConfig{
+			Contexts: []hclContext{
+				{Name: "beta", Locations: []string{"loc-b"}},
+				{Name: "alpha", Locations: []string{"loc-c"}},
+			},
+		}
+		if err := mergeHCLConfig(dst, src); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		// alpha stays at index 0 (merged), beta appended after
+		if len(dst.Contexts) != 2 {
+			t.Fatalf("expected 2 contexts, got %d", len(dst.Contexts))
+		}
+		if dst.Contexts[0].Name != "alpha" {
+			t.Errorf("expected first context='alpha', got %q", dst.Contexts[0].Name)
+		}
+		wantLocs := []string{"loc-a", "loc-c"}
+		if len(dst.Contexts[0].Locations) != len(wantLocs) {
+			t.Fatalf("expected locations %v, got %v", wantLocs, dst.Contexts[0].Locations)
+		}
+		if dst.Contexts[1].Name != "beta" {
+			t.Errorf("expected second context='beta', got %q", dst.Contexts[1].Name)
+		}
+	})
+}
+
+// --- Integration tests with real HCL files ---
+
+func TestLoadConfigDir_ContextDeepMerge(t *testing.T) {
+	mainFile, configDir := setupConfigDir(t,
+		`
+context "client" {
+  display_name = "Client"
+  locations    = ["andel", "oss-office"]
+  environment = { "OVERSEER_CONTEXT_BG" = "#3a579a" }
+  actions { connect = ["jump-zero"] }
+}
+`,
+		map[string]string{
+			"client-b.hcl": `
+context "client" {
+  locations = ["other-client-loc"]
+}
+`,
+		},
+	)
+
+	cfg, err := LoadConfigDir(mainFile, configDir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(cfg.Contexts) != 1 {
+		t.Fatalf("expected 1 merged context, got %d", len(cfg.Contexts))
+	}
+
+	ctx := cfg.Contexts[0]
+	if ctx.Name != "client" {
+		t.Errorf("expected name='client', got %q", ctx.Name)
+	}
+	if ctx.DisplayName != "Client" {
+		t.Errorf("expected display_name='Client', got %q", ctx.DisplayName)
+	}
+
+	wantLocs := []string{"andel", "oss-office", "other-client-loc"}
+	if len(ctx.Locations) != len(wantLocs) {
+		t.Fatalf("expected locations %v, got %v", wantLocs, ctx.Locations)
+	}
+	for i := range wantLocs {
+		if ctx.Locations[i] != wantLocs[i] {
+			t.Errorf("location[%d]: expected %q, got %q", i, wantLocs[i], ctx.Locations[i])
+		}
+	}
+
+	if ctx.Environment["OVERSEER_CONTEXT_BG"] != "#3a579a" {
+		t.Errorf("expected OVERSEER_CONTEXT_BG='#3a579a', got %q", ctx.Environment["OVERSEER_CONTEXT_BG"])
+	}
+
+	if len(ctx.Actions.Connect) != 1 || ctx.Actions.Connect[0] != "jump-zero" {
+		t.Errorf("expected connect=[jump-zero], got %v", ctx.Actions.Connect)
+	}
+}
+
+func TestLoadConfigDir_ContextDeepMergeMultipleFragments(t *testing.T) {
+	mainFile, configDir := setupConfigDir(t,
+		`
+context "client" {
+  display_name = "Client"
+  locations    = ["andel"]
+  environment = { "OVERSEER_CONTEXT_BG" = "#3a579a" }
+  actions { connect = ["jump-zero"] }
+  hooks {
+    on_enter = ["echo enter-main"]
+    timeout  = "10s"
+  }
+}
+
+context "other" {
+  display_name = "Other"
+  locations = ["elsewhere"]
+}
+`,
+		map[string]string{
+			"client-extra-a.hcl": `
+context "client" {
+  locations = ["oss-office"]
+  environment = { "EXTRA_A" = "val-a" }
+  actions { disconnect = ["legacy-tunnel"] }
+}
+`,
+			"client-extra-b.hcl": `
+context "client" {
+  locations = ["oss-office", "remote-site"]
+  actions { connect = ["jump-zero", "jump-one"] }
+  hooks {
+    on_enter = ["echo enter-main", "echo enter-b"]
+  }
+}
+`,
+		},
+	)
+
+	cfg, err := LoadConfigDir(mainFile, configDir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Should have 2 contexts: merged "client" at pos 0, "other" at pos 1
+	if len(cfg.Contexts) != 2 {
+		t.Fatalf("expected 2 contexts, got %d", len(cfg.Contexts))
+	}
+
+	ctx := cfg.Contexts[0]
+	if ctx.Name != "client" {
+		t.Errorf("expected name='client', got %q", ctx.Name)
+	}
+	if ctx.DisplayName != "Client" {
+		t.Errorf("expected display_name='Client', got %q", ctx.DisplayName)
+	}
+
+	// Locations: andel + oss-office + remote-site (deduped)
+	wantLocs := []string{"andel", "oss-office", "remote-site"}
+	if len(ctx.Locations) != len(wantLocs) {
+		t.Fatalf("expected locations %v, got %v", wantLocs, ctx.Locations)
+	}
+	for i := range wantLocs {
+		if ctx.Locations[i] != wantLocs[i] {
+			t.Errorf("location[%d]: expected %q, got %q", i, wantLocs[i], ctx.Locations[i])
+		}
+	}
+
+	// Environment: main defines BG and EXTRA_A comes from fragment a
+	if ctx.Environment["OVERSEER_CONTEXT_BG"] != "#3a579a" {
+		t.Errorf("expected OVERSEER_CONTEXT_BG='#3a579a', got %q", ctx.Environment["OVERSEER_CONTEXT_BG"])
+	}
+	if ctx.Environment["EXTRA_A"] != "val-a" {
+		t.Errorf("expected EXTRA_A='val-a', got %q", ctx.Environment["EXTRA_A"])
+	}
+
+	// Actions: connect = [jump-zero, jump-one], disconnect = [legacy-tunnel]
+	wantConnect := []string{"jump-zero", "jump-one"}
+	if len(ctx.Actions.Connect) != len(wantConnect) {
+		t.Fatalf("expected connect %v, got %v", wantConnect, ctx.Actions.Connect)
+	}
+	for i := range wantConnect {
+		if ctx.Actions.Connect[i] != wantConnect[i] {
+			t.Errorf("connect[%d]: expected %q, got %q", i, wantConnect[i], ctx.Actions.Connect[i])
+		}
+	}
+	wantDisconnect := []string{"legacy-tunnel"}
+	if len(ctx.Actions.Disconnect) != len(wantDisconnect) {
+		t.Fatalf("expected disconnect %v, got %v", wantDisconnect, ctx.Actions.Disconnect)
+	}
+
+	// Hooks: on_enter = [echo enter-main, echo enter-b], timeout = "10s" (first wins)
+	if ctx.Hooks == nil {
+		t.Fatal("expected hooks to be non-nil")
+	}
+	wantEnter := []string{"echo enter-main", "echo enter-b"}
+	if len(ctx.Hooks.OnEnter) != len(wantEnter) {
+		t.Fatalf("expected on_enter %v, got %v", wantEnter, ctx.Hooks.OnEnter)
+	}
+	for i := range wantEnter {
+		if ctx.Hooks.OnEnter[i].Command != wantEnter[i] {
+			t.Errorf("on_enter[%d]: expected %q, got %q", i, wantEnter[i], ctx.Hooks.OnEnter[i].Command)
+		}
+	}
+	if ctx.Hooks.OnEnter[0].Timeout != 10*time.Second {
+		t.Errorf("expected on_enter timeout=10s, got %v", ctx.Hooks.OnEnter[0].Timeout)
+	}
+
+	// "other" context untouched
+	if cfg.Contexts[1].Name != "other" {
+		t.Errorf("expected second context='other', got %q", cfg.Contexts[1].Name)
+	}
+}
