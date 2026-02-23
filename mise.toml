@@ -46,6 +46,6 @@ description = "📦 Publish to go.olrik.dev/overseer"
 depends = "docs:build"
 run = ["rsync -avO --no-perms --delete ./docs/.vitepress/dist/ {{ env.DOCUMENTATION_HOST }}:{{ env.DOCUMENTATION_PATH }}"]
 
-[tasks."github.publish"]
+[tasks."github:publish"]
 description = "📦 Publish to GitHub"
 run = ["git push", "git push --tags"]
