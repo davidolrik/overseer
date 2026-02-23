@@ -117,32 +117,39 @@ Match host *.internal exec "test $(cat ~/.local/var/overseer_location 2>/dev/nul
     ProxyJump bastion.example.com
 ```
 
-## Using Match tagged
+## Using OVERSEER_TAG
 
-OpenSSH 9.8+ supports `Match tagged` which provides cleaner multi-condition config. First, tag connections based on context:
+When connecting with `--tag` or configuring `tag` in a tunnel block, overseer sets the `OVERSEER_TAG` environment variable on the SSH process. Since child processes inherit environment variables, this propagates through ProxyJump chains — each hop in the chain can see the tag.
 
-```ssh-config
-# Tag based on overseer context
-Match host *.example.com exec "test $(cat ~/.local/var/overseer_context 2>/dev/null) = trusted"
-    Tag trusted
-
-Match host *.example.com exec "test $(cat ~/.local/var/overseer_context 2>/dev/null) = untrusted"
-    Tag untrusted
-```
-
-Then apply settings based on tags:
+Use `Match exec` to match on it:
 
 ```ssh-config
-# Direct connection for trusted networks
-Match tagged trusted host *.internal.example.com
-    ProxyJump none
+# Route through bastion when tagged as production
+Match Host *.internal exec "[[ $OVERSEER_TAG = production ]]"
+    ProxyJump bastion.example.com
 
-# SOCKS proxy for untrusted networks
-Match tagged untrusted
-    ProxyCommand nc -X 5 -x localhost:1080 %h %p
+# Use specific key for staging tunnels
+Match Host * exec "[[ $OVERSEER_TAG = staging ]]"
+    IdentityFile ~/.ssh/staging_ed25519
 ```
 
-This separates the "when" (context detection) from the "what" (SSH configuration), making your config easier to reason about.
+Connect with a tag from the command line:
+
+```sh
+overseer connect my-server --tag=production
+```
+
+Or configure it in your overseer config:
+
+```hcl
+tunnel "my-server" {
+  tag = "production"
+}
+```
+
+::: tip Why not SSH's -P flag?
+SSH's `-P` flag sets a tag for `Match tagged`, but those tags don't propagate through ProxyJump chains — each hop starts fresh. `OVERSEER_TAG` as an environment variable is inherited by all child processes, so it works across the entire jump chain.
+:::
 
 ## Match Block Ordering
 

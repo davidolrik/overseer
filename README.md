@@ -94,7 +94,7 @@ sudo mv overseer /usr/local/bin/
 
 | Command                                   | Aliases | Description                                           |
 | ----------------------------------------- | ------- | ----------------------------------------------------- |
-| `overseer connect <alias> [--tag TAG]...` | `c`     | Connect to an SSH host (tags for SSH config matching) |
+| `overseer connect <alias> [--tag TAG]...` | `c`     | Connect to an SSH host (sets OVERSEER_TAG env var)    |
 | `overseer disconnect [alias]`             | `d`     | Disconnect tunnel (or all if no alias)                |
 | `overseer reconnect <alias>`              | `r`     | Reconnect a tunnel                                    |
 
@@ -283,7 +283,7 @@ Configure per-tunnel settings including SSH tags and companion scripts:
 
 ```hcl
 tunnel "my-server" {
-  tags = ["production", "monitoring"]  # SSH tags for config matching
+  tag = "production"  # Sets OVERSEER_TAG env var on the SSH process
 
   companion "setup-script" {
     command = "~/scripts/prepare-connection.sh"
@@ -291,14 +291,14 @@ tunnel "my-server" {
 }
 ```
 
-SSH tags are passed as `-P` arguments and can be used with `Match tagged` in your `~/.ssh/config`:
+Tags are set as the `OVERSEER_TAG` environment variable on the SSH process. This propagates through ProxyJump chains (child processes inherit environment variables), unlike SSH's `-P` flag which doesn't. Use `Match exec` in your `~/.ssh/config` to match on it:
 
 ```plain
-Match tagged production
+Match Host bastion exec "[[ $OVERSEER_TAG = production ]]"
   ProxyJump bastion.example.com
 ```
 
-Tags from the config file are merged with any tags passed via `--tag` on the command line.
+Tags from the config file can be overridden by `--tag` on the command line.
 
 ### Companion Scripts
 
@@ -687,7 +687,7 @@ Unlike location/context hooks which respond to state transitions, tunnel hooks a
 
 ```hcl
 tunnel "my-server" {
-  tags = ["production"]
+  tag = "production"
 
   hooks {
     before_connect {

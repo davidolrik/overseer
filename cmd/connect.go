@@ -38,7 +38,7 @@ func NewConnectCommand() *cobra.Command {
 	}
 
 	connectCmd.Flags().StringVarP(&tag, "tag", "T", "",
-		"SSH tag for config matching (passed as -P to ssh for Match tagged)")
+		"SSH tag for config matching (set as OVERSEER_TAG env var for Match exec)")
 
 	return connectCmd
 }

@@ -67,7 +67,7 @@ type Tunnel struct {
 	AutoReconnect       bool        // Whether to auto-reconnect on failure
 	State               TunnelState // Current connection state
 	NextRetryTime       time.Time   // When the next retry will occur
-	Tag                 string      // Custom SSH tag for -P argument (used with Match tagged in ssh_config)
+	Tag                 string      // Custom SSH tag set as OVERSEER_TAG env var (used with Match exec in ssh_config)
 	HealthCheckFailures int         // Consecutive health check failures (requires multiple before killing)
 	ResolvedHost        string      // Actual IP:port from SSH "Authenticated to" output
 	JumpChain           []string    // All resolved IP:port hops in order (jump hosts first, destination last)
@@ -773,11 +773,6 @@ func (d *Daemon) startTunnelStreaming(alias string, tag string, stream *Streamin
 		sshArgs = append([]string{"-F", d.sshConfigFile}, sshArgs...)
 	}
 
-	// Add custom tag for SSH config matching (Match tagged)
-	if tag != "" {
-		sshArgs = append(sshArgs, "-P", tag)
-	}
-
 	// Add ServerAliveInterval if configured (0 means disabled)
 	if core.Config.SSH.ServerAliveInterval > 0 {
 		sshArgs = append(sshArgs,
@@ -787,6 +782,11 @@ func (d *Daemon) startTunnelStreaming(alias string, tag string, stream *Streamin
 
 	cmd := exec.Command("ssh", sshArgs...)
 	cmd.Env = os.Environ()
+
+	// Set OVERSEER_TAG env var for SSH config matching (Match exec)
+	if tag != "" {
+		cmd.Env = append(cmd.Env, "OVERSEER_TAG="+tag)
+	}
 
 	// Make tunnel process independent - survives daemon death (for hot reload)
 	cmd.SysProcAttr = &syscall.SysProcAttr{
@@ -1159,11 +1159,6 @@ func (d *Daemon) monitorTunnel(alias string) {
 			sshArgs = append([]string{"-F", d.sshConfigFile}, sshArgs...)
 		}
 
-		// Add custom tag (preserved from original connection)
-		if tunnel.Tag != "" {
-			sshArgs = append(sshArgs, "-P", tunnel.Tag)
-		}
-
 		// Add ServerAliveInterval if configured (0 means disabled)
 		if core.Config.SSH.ServerAliveInterval > 0 {
 			sshArgs = append(sshArgs,
@@ -1173,6 +1168,11 @@ func (d *Daemon) monitorTunnel(alias string) {
 
 		newCmd := exec.Command("ssh", sshArgs...)
 		newCmd.Env = os.Environ()
+
+		// Set OVERSEER_TAG env var (preserved from original connection)
+		if tunnel.Tag != "" {
+			newCmd.Env = append(newCmd.Env, "OVERSEER_TAG="+tunnel.Tag)
+		}
 
 		// Make tunnel process independent - survives daemon death (for hot reload)
 		newCmd.SysProcAttr = &syscall.SysProcAttr{
@@ -1299,11 +1299,12 @@ func resolveJumpChain(alias string, tag string, sshConfigFile string) []string {
 		if sshConfigFile != "" {
 			args = append(args, "-F", sshConfigFile)
 		}
-		if tag != "" {
-			args = append(args, "-P", tag)
-		}
 		args = append(args, a)
-		out, err := exec.Command("ssh", args...).Output()
+		cmd := exec.Command("ssh", args...)
+		if tag != "" {
+			cmd.Env = append(os.Environ(), "OVERSEER_TAG="+tag)
+		}
+		out, err := cmd.Output()
 		if err != nil {
 			return hopInfo{}
 		}

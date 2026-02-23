@@ -89,7 +89,7 @@ type ContextActions struct {
 // TunnelConfig represents per-tunnel configuration
 type TunnelConfig struct {
 	Name       string             // Tunnel name (matches SSH alias)
-	Tag        string             // SSH tag for config matching (passed as -P to ssh for Match tagged)
+	Tag        string             // SSH tag for config matching (set as OVERSEER_TAG env var for Match exec)
 	Companions []CompanionConfig  // Companion scripts to run before tunnel starts
 	Hooks      *TunnelHooksConfig // Lifecycle hooks for tunnel connection
 }
