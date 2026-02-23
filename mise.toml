@@ -24,10 +24,6 @@ run = '''# mise tasks --local
 description = "🛠️  Build binary"
 run = ["go mod tidy", "go build -o overseer ."]
 
-[tasks.publish]
-description = "📦 Publish to GitHub"
-run = ["git push", "git push --tags"]
-
 [tasks."build:snapshot"]
 description = "🧪 Build snapshot"
 run = ["goreleaser build --snapshot --clean"]
@@ -49,3 +45,7 @@ run = ["npm run docs:preview"]
 description = "📦 Publish to go.olrik.dev/overseer"
 depends = "docs:build"
 run = ["rsync -avO --no-perms --delete ./docs/.vitepress/dist/ {{ env.DOCUMENTATION_HOST }}:{{ env.DOCUMENTATION_PATH }}"]
+
+[tasks."github.publish"]
+description = "📦 Publish to GitHub"
+run = ["git push", "git push --tags"]
