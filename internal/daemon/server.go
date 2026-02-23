@@ -2324,21 +2324,20 @@ func (d *Daemon) reloadConfig() error {
 	// Save the old config in case we need to roll back
 	oldConfig := core.Config
 
-	// Reload the configuration from the KDL file
+	// Reload the configuration (main file + config.d/ fragments)
 	configPath := filepath.Join(core.Config.ConfigPath, "config.hcl")
-	newConfig, err := core.LoadConfig(configPath)
+	configDPath := filepath.Join(core.Config.ConfigPath, "config.d")
+	newConfig, err := core.LoadConfigDir(configPath, configDPath)
 	if err != nil {
 		// Config parsing failed - keep the old config and log error
 		errMsg := err.Error()
-		errMsg = strings.TrimPrefix(errMsg, "failed to unmarshal KDL: parse failed: ")
-		errMsg = strings.TrimPrefix(errMsg, "failed to unmarshal KDL: scan failed: ")
+		errMsg = strings.TrimPrefix(errMsg, "failed to parse HCL config: ")
 
 		if idx := strings.Index(errMsg, ":\n"); idx != -1 {
 			errMsg = errMsg[:idx]
 		}
 
-		slog.Error("Configuration file has syntax errors, keeping previous configuration",
-			"file", configPath,
+		slog.Error("Configuration has errors, keeping previous configuration",
 			"error", errMsg)
 		return fmt.Errorf("config parse error")
 	}
@@ -2365,6 +2364,7 @@ func (d *Daemon) reloadConfig() error {
 func (d *Daemon) watchConfig() {
 	// Watch the config file manually using fsnotify
 	configPath := filepath.Join(core.Config.ConfigPath, "config.hcl")
+	configDPath := filepath.Join(core.Config.ConfigPath, "config.d")
 
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
@@ -2376,6 +2376,15 @@ func (d *Daemon) watchConfig() {
 		slog.Error("Failed to watch config file", "error", err, "path", configPath)
 		watcher.Close()
 		return
+	}
+
+	// Also watch config.d/ directory if it exists (catches file creation/modification/deletion within it)
+	if info, err := os.Stat(configDPath); err == nil && info.IsDir() {
+		if err := watcher.Add(configDPath); err != nil {
+			slog.Warn("Failed to watch config.d directory", "error", err, "path", configDPath)
+		} else {
+			slog.Info("Watching config.d directory for changes", "path", configDPath)
+		}
 	}
 
 	// Set up a debounced reload handler

@@ -315,7 +315,8 @@ func runStats(start, end time.Time, label string) {
 
 	// Load config to get location names for IPs
 	configPath := filepath.Join(homeDir, ".config", "overseer", "config.hcl")
-	config, _ := core.LoadConfig(configPath) // Ignore error - location names are optional
+	configDPath := filepath.Join(homeDir, ".config", "overseer", "config.d")
+	config, _ := core.LoadConfigDir(configPath, configDPath) // Ignore error - location names are optional
 
 	// Get online and IP sensor changes
 	onlineChanges, ipChanges, err := getSensorChanges(database, start, end)

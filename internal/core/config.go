@@ -35,9 +35,10 @@ func InitializeConfig(cmd *cobra.Command) ([]string, error) {
 
 	// Load HCL config
 	hclPath := filepath.Join(configDir, "config.hcl")
+	configDPath := filepath.Join(configDir, "config.d")
 	if _, err := os.Stat(hclPath); err == nil {
-		// HCL file exists, parse it
-		Config, err = LoadConfig(hclPath)
+		// HCL file exists, parse it (along with any config.d/ fragments)
+		Config, err = LoadConfigDir(hclPath, configDPath)
 		if err != nil {
 			// Clean up the error message
 			errMsg := err.Error()
@@ -48,8 +49,7 @@ func InitializeConfig(cmd *cobra.Command) ([]string, error) {
 				errMsg = errMsg[:idx]
 			}
 
-			fmt.Fprintf(os.Stderr, "Error: Configuration file has syntax errors\n")
-			fmt.Fprintf(os.Stderr, "  File: %s\n", hclPath)
+			fmt.Fprintf(os.Stderr, "Error: Configuration has errors\n")
 			fmt.Fprintf(os.Stderr, "  %s\n", errMsg)
 			os.Exit(1)
 		}
@@ -64,7 +64,7 @@ func InitializeConfig(cmd *cobra.Command) ([]string, error) {
 			panic(fmt.Sprintf("Failed to write default config: %v", err))
 		}
 		// Load the newly created config
-		Config, err = LoadConfig(hclPath)
+		Config, err = LoadConfigDir(hclPath, configDPath)
 		if err != nil {
 			// This should never happen with default config, but handle it gracefully
 			fmt.Fprintf(os.Stderr, "Error: Failed to parse default configuration: %v\n", err)

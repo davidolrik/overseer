@@ -4,6 +4,89 @@ Overseer uses [HCL](https://github.com/hashicorp/hcl) format for configuration. 
 
 If no config file exists, overseer creates one with default values on first run.
 
+## Split Config Files (`config.d/`)
+
+As your configuration grows, you can split it into multiple files by creating a `config.d/` directory alongside `config.hcl`:
+
+```
+~/.config/overseer/
+├── config.hcl          # Main config (loaded first)
+└── config.d/           # Optional directory
+    ├── home.hcl        # Home network locations & contexts
+    ├── office.hcl      # Office network locations & contexts
+    └── vpn-tunnels.hcl # Tunnel definitions
+```
+
+Files in `config.d/` are loaded in **alphabetical order** after the main config. Only `.hcl` files are loaded — other files and subdirectories are ignored.
+
+The `config.d/` directory is optional. If it doesn't exist, behavior is unchanged.
+
+### What Goes Where
+
+| Config element | Where it belongs |
+|---|---|
+| Global settings (`verbose`) | Main config |
+| Singleton blocks (`exports`, `ssh`, `companion`, global hooks) | Main config only — defining these in more than one file is an error |
+| Locations | Any file — accumulated across files; duplicate names are an error |
+| Tunnels | Any file — accumulated across files; duplicate names are an error |
+| Contexts | Any file — accumulated in load order (main first, then `config.d/` alphabetically). Order matters: first match wins |
+
+### Example
+
+**`config.hcl`** — global settings and exports:
+```hcl
+verbose = 0
+
+ssh {
+  reconnect_enabled = true
+  max_retries = 10
+}
+
+exports {
+  dotenv = "~/.local/var/overseer.env"
+}
+```
+
+**`config.d/home.hcl`** — home network:
+```hcl
+location "home" {
+  display_name = "Home"
+  conditions {
+    public_ip = ["203.0.113.42"]
+  }
+}
+
+context "home" {
+  display_name = "At Home"
+  locations = ["home"]
+  actions {
+    connect = ["home-lab"]
+  }
+}
+```
+
+**`config.d/office.hcl`** — office network:
+```hcl
+location "office" {
+  display_name = "Office"
+  conditions {
+    public_ip = ["198.51.100.0/24"]
+  }
+}
+
+context "office" {
+  display_name = "At Office"
+  locations = ["office"]
+  actions {
+    connect = ["corp-gateway"]
+  }
+}
+```
+
+::: tip Daemon Reload
+When the daemon is running, changes to files in `config.d/` trigger an automatic reload, just like changes to `config.hcl`. If you create the `config.d/` directory after the daemon is already running, use `overseer reload` or restart the daemon to pick it up.
+:::
+
 ## Global Settings
 
 ```hcl
@@ -302,7 +385,7 @@ When switching contexts, all custom variables from the previous context/location
 
 ## Complete Example
 
-A real-world configuration with multiple locations and contexts:
+A real-world configuration with multiple locations and contexts (this can also be [split across multiple files](#split-config-files-config-d)):
 
 ```hcl
 verbose = 0

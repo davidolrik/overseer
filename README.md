@@ -169,6 +169,32 @@ exports {
 }
 ```
 
+### Split Config Files (`config.d/`)
+
+As your configuration grows, you can split it into multiple files by creating a `config.d/` directory alongside `config.hcl`:
+
+```plain
+~/.config/overseer/
+├── config.hcl          # Main config (loaded first)
+└── config.d/           # Optional directory
+    ├── home.hcl        # Home network locations & contexts
+    ├── office.hcl      # Office network locations & contexts
+    └── vpn-tunnels.hcl # Tunnel definitions
+```
+
+Files in `config.d/` are loaded in **alphabetical order** after the main config. Only `.hcl` files are loaded — other files and subdirectories are ignored. The directory is optional; if absent, behavior is unchanged.
+
+**Merge rules:**
+
+| Config element                                                 | Rule                                                                                                     |
+| -------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| Scalars (`verbose`)                                            | Last non-zero value wins                                                                                 |
+| Singleton blocks (`exports`, `ssh`, `companion`, global hooks) | Must only appear in one file (error if duplicated)                                                       |
+| Locations / Tunnels                                            | Accumulated across files; duplicate names are an error                                                   |
+| Contexts                                                       | Accumulated in load order (main first, then `config.d/` alphabetically). Order matters: first match wins |
+
+Changes to files in `config.d/` trigger an automatic daemon reload. If you create `config.d/` after the daemon is already running, use `overseer reload` to pick it up.
+
 ### Defining Locations
 
 Locations represent physical or network locations detected by sensors:

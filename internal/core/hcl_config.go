@@ -3,6 +3,8 @@ package core
 import (
 	"fmt"
 	"os"
+	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -233,15 +235,18 @@ type hclCompanion struct {
 	StopSignal  string            `hcl:"stop_signal,optional"`
 }
 
-// LoadConfig loads the HCL configuration file and returns a Configuration struct
-func LoadConfig(filename string) (*Configuration, error) {
+// parseHCLFile decodes a single HCL file into the intermediate hclConfig struct
+func parseHCLFile(filename string) (*hclConfig, error) {
 	var hclCfg hclConfig
-
 	err := hclsimple.DecodeFile(filename, nil, &hclCfg)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse HCL config: %w", err)
 	}
+	return &hclCfg, nil
+}
 
+// convertHCLConfig converts an hclConfig struct into the final Configuration
+func convertHCLConfig(hclCfg *hclConfig) (*Configuration, error) {
 	// Convert to our clean Configuration struct
 	cfg := &Configuration{
 		Verbose:              hclCfg.Verbose,
@@ -552,6 +557,147 @@ func LoadConfig(filename string) (*Configuration, error) {
 	}
 
 	return cfg, nil
+}
+
+// LoadConfig loads the HCL configuration file and returns a Configuration struct
+func LoadConfig(filename string) (*Configuration, error) {
+	hclCfg, err := parseHCLFile(filename)
+	if err != nil {
+		return nil, err
+	}
+	return convertHCLConfig(hclCfg)
+}
+
+// LoadConfigDir loads the main config file and merges any .hcl files from configDir.
+// The configDir is optional — if it doesn't exist, only the main file is loaded.
+// Files in configDir are loaded in alphabetical order. Non-.hcl files and subdirectories
+// are ignored.
+func LoadConfigDir(mainFile string, configDir string) (*Configuration, error) {
+	merged, err := parseHCLFile(mainFile)
+	if err != nil {
+		return nil, err
+	}
+
+	// Read config.d directory if it exists
+	entries, err := os.ReadDir(configDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			// No config.d directory — just convert the main config
+			return convertHCLConfig(merged)
+		}
+		return nil, fmt.Errorf("reading config directory %s: %w", configDir, err)
+	}
+
+	// Collect .hcl filenames, sort alphabetically
+	var hclFiles []string
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		if filepath.Ext(entry.Name()) != ".hcl" {
+			continue
+		}
+		hclFiles = append(hclFiles, entry.Name())
+	}
+	sort.Strings(hclFiles)
+
+	// Parse and merge each fragment
+	for _, name := range hclFiles {
+		fragPath := filepath.Join(configDir, name)
+		fragCfg, err := parseHCLFile(fragPath)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", name, err)
+		}
+		if err := mergeHCLConfig(merged, fragCfg); err != nil {
+			return nil, fmt.Errorf("%s: %w", name, err)
+		}
+	}
+
+	return convertHCLConfig(merged)
+}
+
+// mergeHCLConfig merges src into dst at the hclConfig level.
+// Scalar fields use last-non-zero-wins. Singleton blocks error if both define them.
+// Locations and tunnels accumulate with duplicate-name errors. Contexts accumulate in order.
+func mergeHCLConfig(dst, src *hclConfig) error {
+	// Verbose: last non-zero wins
+	if src.Verbose != 0 {
+		dst.Verbose = src.Verbose
+	}
+
+	// Singleton blocks: error if defined in both dst and src
+	if dst.Exports != nil && src.Exports != nil {
+		return fmt.Errorf("exports block defined in multiple files")
+	}
+	if src.Exports != nil {
+		dst.Exports = src.Exports
+	}
+
+	if dst.SSH != nil && src.SSH != nil {
+		return fmt.Errorf("ssh block defined in multiple files")
+	}
+	if src.SSH != nil {
+		dst.SSH = src.SSH
+	}
+
+	if dst.Companion != nil && src.Companion != nil {
+		return fmt.Errorf("companion block defined in multiple files")
+	}
+	if src.Companion != nil {
+		dst.Companion = src.Companion
+	}
+
+	if dst.LocationHooks != nil && src.LocationHooks != nil {
+		return fmt.Errorf("location_hooks block defined in multiple files")
+	}
+	if src.LocationHooks != nil {
+		dst.LocationHooks = src.LocationHooks
+	}
+
+	if dst.ContextHooks != nil && src.ContextHooks != nil {
+		return fmt.Errorf("context_hooks block defined in multiple files")
+	}
+	if src.ContextHooks != nil {
+		dst.ContextHooks = src.ContextHooks
+	}
+
+	if dst.TunnelHooks != nil && src.TunnelHooks != nil {
+		return fmt.Errorf("tunnel_hooks block defined in multiple files")
+	}
+	if src.TunnelHooks != nil {
+		dst.TunnelHooks = src.TunnelHooks
+	}
+
+	// Locations: accumulate, error on duplicate name
+	existingLocations := make(map[string]bool, len(dst.Locations))
+	for _, loc := range dst.Locations {
+		existingLocations[loc.Name] = true
+	}
+	for _, loc := range src.Locations {
+		if existingLocations[loc.Name] {
+			return fmt.Errorf("duplicate location %q defined in multiple files", loc.Name)
+		}
+		existingLocations[loc.Name] = true
+		dst.Locations = append(dst.Locations, loc)
+	}
+
+	// Tunnels: accumulate, error on duplicate name
+	existingTunnels := make(map[string]bool, len(dst.Tunnels))
+	for _, tun := range dst.Tunnels {
+		existingTunnels[tun.Name] = true
+	}
+	for _, tun := range src.Tunnels {
+		if existingTunnels[tun.Name] {
+			return fmt.Errorf("duplicate tunnel %q defined in multiple files", tun.Name)
+		}
+		existingTunnels[tun.Name] = true
+		dst.Tunnels = append(dst.Tunnels, tun)
+	}
+
+	// Contexts: accumulate in order
+	dst.Contexts = append(dst.Contexts, src.Contexts...)
+
+	return nil
 }
 
 // parseHCLConditions converts HCL conditions to an awareness.Condition

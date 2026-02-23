@@ -1248,3 +1248,495 @@ context "test" {
 		t.Error("expected context Environment to be initialized (not nil)")
 	}
 }
+
+func TestMergeHCLConfig_VerboseLastNonZeroWins(t *testing.T) {
+	dst := &hclConfig{Verbose: 1}
+	src := &hclConfig{Verbose: 2}
+	if err := mergeHCLConfig(dst, src); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if dst.Verbose != 2 {
+		t.Errorf("expected Verbose=2, got %d", dst.Verbose)
+	}
+}
+
+func TestMergeHCLConfig_VerboseZeroDoesNotOverwrite(t *testing.T) {
+	dst := &hclConfig{Verbose: 3}
+	src := &hclConfig{Verbose: 0}
+	if err := mergeHCLConfig(dst, src); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if dst.Verbose != 3 {
+		t.Errorf("expected Verbose=3 (unchanged), got %d", dst.Verbose)
+	}
+}
+
+func TestMergeHCLConfig_SingletonBlockError(t *testing.T) {
+	tests := []struct {
+		name string
+		dst  *hclConfig
+		src  *hclConfig
+	}{
+		{
+			name: "exports in both",
+			dst:  &hclConfig{Exports: &hclExports{Dotenv: "/a"}},
+			src:  &hclConfig{Exports: &hclExports{Dotenv: "/b"}},
+		},
+		{
+			name: "ssh in both",
+			dst:  &hclConfig{SSH: &hclSSH{MaxRetries: 5}},
+			src:  &hclConfig{SSH: &hclSSH{MaxRetries: 10}},
+		},
+		{
+			name: "companion in both",
+			dst:  &hclConfig{Companion: &hclCompanionSettings{HistorySize: 100}},
+			src:  &hclConfig{Companion: &hclCompanionSettings{HistorySize: 200}},
+		},
+		{
+			name: "location_hooks in both",
+			dst:  &hclConfig{LocationHooks: &hclHooks{OnEnter: []string{"a"}}},
+			src:  &hclConfig{LocationHooks: &hclHooks{OnEnter: []string{"b"}}},
+		},
+		{
+			name: "context_hooks in both",
+			dst:  &hclConfig{ContextHooks: &hclHooks{OnEnter: []string{"a"}}},
+			src:  &hclConfig{ContextHooks: &hclHooks{OnEnter: []string{"b"}}},
+		},
+		{
+			name: "tunnel_hooks in both",
+			dst:  &hclConfig{TunnelHooks: &hclTunnelHooks{}},
+			src:  &hclConfig{TunnelHooks: &hclTunnelHooks{}},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := mergeHCLConfig(tt.dst, tt.src)
+			if err == nil {
+				t.Fatal("expected error for singleton block defined in both files")
+			}
+			if !strings.Contains(err.Error(), "defined in multiple files") {
+				t.Errorf("expected 'defined in multiple files' error, got: %v", err)
+			}
+		})
+	}
+}
+
+func TestMergeHCLConfig_SingletonBlockNilSrcPreservesDst(t *testing.T) {
+	dst := &hclConfig{SSH: &hclSSH{MaxRetries: 5}}
+	src := &hclConfig{}
+	if err := mergeHCLConfig(dst, src); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if dst.SSH == nil || dst.SSH.MaxRetries != 5 {
+		t.Error("expected dst SSH to be preserved")
+	}
+}
+
+func TestMergeHCLConfig_SingletonBlockNilDstCopiesSrc(t *testing.T) {
+	dst := &hclConfig{}
+	src := &hclConfig{SSH: &hclSSH{MaxRetries: 10}}
+	if err := mergeHCLConfig(dst, src); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if dst.SSH == nil || dst.SSH.MaxRetries != 10 {
+		t.Error("expected src SSH to be copied to dst")
+	}
+}
+
+func TestMergeHCLConfig_LocationsAccumulate(t *testing.T) {
+	dst := &hclConfig{
+		Locations: []hclLocation{{Name: "home"}},
+	}
+	src := &hclConfig{
+		Locations: []hclLocation{{Name: "office"}},
+	}
+	if err := mergeHCLConfig(dst, src); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(dst.Locations) != 2 {
+		t.Fatalf("expected 2 locations, got %d", len(dst.Locations))
+	}
+	if dst.Locations[0].Name != "home" || dst.Locations[1].Name != "office" {
+		t.Error("expected locations in order: home, office")
+	}
+}
+
+func TestMergeHCLConfig_LocationsDuplicateNameError(t *testing.T) {
+	dst := &hclConfig{
+		Locations: []hclLocation{{Name: "home"}},
+	}
+	src := &hclConfig{
+		Locations: []hclLocation{{Name: "home"}},
+	}
+	err := mergeHCLConfig(dst, src)
+	if err == nil {
+		t.Fatal("expected error for duplicate location name")
+	}
+	if !strings.Contains(err.Error(), "duplicate location") {
+		t.Errorf("expected 'duplicate location' error, got: %v", err)
+	}
+}
+
+func TestMergeHCLConfig_TunnelsAccumulate(t *testing.T) {
+	dst := &hclConfig{
+		Tunnels: []hclTunnel{{Name: "vpn"}},
+	}
+	src := &hclConfig{
+		Tunnels: []hclTunnel{{Name: "ssh"}},
+	}
+	if err := mergeHCLConfig(dst, src); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(dst.Tunnels) != 2 {
+		t.Fatalf("expected 2 tunnels, got %d", len(dst.Tunnels))
+	}
+}
+
+func TestMergeHCLConfig_TunnelsDuplicateNameError(t *testing.T) {
+	dst := &hclConfig{
+		Tunnels: []hclTunnel{{Name: "vpn"}},
+	}
+	src := &hclConfig{
+		Tunnels: []hclTunnel{{Name: "vpn"}},
+	}
+	err := mergeHCLConfig(dst, src)
+	if err == nil {
+		t.Fatal("expected error for duplicate tunnel name")
+	}
+	if !strings.Contains(err.Error(), "duplicate tunnel") {
+		t.Errorf("expected 'duplicate tunnel' error, got: %v", err)
+	}
+}
+
+func TestMergeHCLConfig_ContextsAccumulateInOrder(t *testing.T) {
+	dst := &hclConfig{
+		Contexts: []hclContext{{Name: "first"}, {Name: "second"}},
+	}
+	src := &hclConfig{
+		Contexts: []hclContext{{Name: "third"}},
+	}
+	if err := mergeHCLConfig(dst, src); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(dst.Contexts) != 3 {
+		t.Fatalf("expected 3 contexts, got %d", len(dst.Contexts))
+	}
+	expected := []string{"first", "second", "third"}
+	for i, name := range expected {
+		if dst.Contexts[i].Name != name {
+			t.Errorf("expected context[%d]=%q, got %q", i, name, dst.Contexts[i].Name)
+		}
+	}
+}
+
+// Helper to set up a config.d directory with files
+func setupConfigDir(t *testing.T, mainHCL string, fragments map[string]string) (mainFile string, configDir string) {
+	t.Helper()
+	tmpDir := t.TempDir()
+	mainFile = filepath.Join(tmpDir, "config.hcl")
+	if err := os.WriteFile(mainFile, []byte(mainHCL), 0644); err != nil {
+		t.Fatalf("Failed to write main config: %v", err)
+	}
+	configDir = filepath.Join(tmpDir, "config.d")
+	if len(fragments) > 0 {
+		if err := os.MkdirAll(configDir, 0755); err != nil {
+			t.Fatalf("Failed to create config.d: %v", err)
+		}
+		for name, content := range fragments {
+			path := filepath.Join(configDir, name)
+			if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+				t.Fatalf("Failed to write fragment %s: %v", name, err)
+			}
+		}
+	}
+	return mainFile, configDir
+}
+
+func TestLoadConfigDir_MainOnly(t *testing.T) {
+	mainFile, configDir := setupConfigDir(t, `
+verbose = 1
+
+location "home" {
+  display_name = "Home"
+  conditions {
+    public_ip = ["1.2.3.4"]
+  }
+}
+`, nil) // no config.d directory
+
+	cfg, err := LoadConfigDir(mainFile, configDir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Verbose != 1 {
+		t.Errorf("expected Verbose=1, got %d", cfg.Verbose)
+	}
+	if len(cfg.Locations) != 1 {
+		t.Errorf("expected 1 location, got %d", len(cfg.Locations))
+	}
+}
+
+func TestLoadConfigDir_MergesFragments(t *testing.T) {
+	mainFile, configDir := setupConfigDir(t,
+		`verbose = 1
+
+ssh {
+  max_retries = 5
+}
+
+location "home" {
+  display_name = "Home"
+  conditions { public_ip = ["1.2.3.4"] }
+}
+
+context "main-ctx" {
+  display_name = "Main"
+  actions { connect = ["vpn"] }
+}
+`,
+		map[string]string{
+			"office.hcl": `
+location "office" {
+  display_name = "Office"
+  conditions { public_ip = ["5.6.7.8"] }
+}
+
+context "office-ctx" {
+  display_name = "Office"
+  locations = ["office"]
+  actions { connect = ["office-vpn"] }
+}
+`,
+			"tunnels.hcl": `
+tunnel "vpn" {
+  tag = "corp"
+}
+`,
+		},
+	)
+
+	cfg, err := LoadConfigDir(mainFile, configDir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Locations from main + office.hcl
+	if len(cfg.Locations) != 2 {
+		t.Errorf("expected 2 locations, got %d", len(cfg.Locations))
+	}
+	if _, ok := cfg.Locations["home"]; !ok {
+		t.Error("expected 'home' location")
+	}
+	if _, ok := cfg.Locations["office"]; !ok {
+		t.Error("expected 'office' location")
+	}
+
+	// Tunnels from tunnels.hcl
+	if len(cfg.Tunnels) != 1 {
+		t.Errorf("expected 1 tunnel, got %d", len(cfg.Tunnels))
+	}
+	if _, ok := cfg.Tunnels["vpn"]; !ok {
+		t.Error("expected 'vpn' tunnel")
+	}
+
+	// Contexts: main first, then office.hcl
+	if len(cfg.Contexts) != 2 {
+		t.Fatalf("expected 2 contexts, got %d", len(cfg.Contexts))
+	}
+	if cfg.Contexts[0].Name != "main-ctx" {
+		t.Errorf("expected first context='main-ctx', got %q", cfg.Contexts[0].Name)
+	}
+	if cfg.Contexts[1].Name != "office-ctx" {
+		t.Errorf("expected second context='office-ctx', got %q", cfg.Contexts[1].Name)
+	}
+
+	// SSH defaults applied (convertHCLConfig handles this)
+	if cfg.SSH.MaxRetries != 5 {
+		t.Errorf("expected SSH.MaxRetries=5, got %d", cfg.SSH.MaxRetries)
+	}
+}
+
+func TestLoadConfigDir_AlphabeticalOrder(t *testing.T) {
+	mainFile, configDir := setupConfigDir(t,
+		`verbose = 0`,
+		map[string]string{
+			"c.hcl": `context "ctx-c" { display_name = "C" }`,
+			"a.hcl": `context "ctx-a" { display_name = "A" }`,
+			"b.hcl": `context "ctx-b" { display_name = "B" }`,
+		},
+	)
+
+	cfg, err := LoadConfigDir(mainFile, configDir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(cfg.Contexts) != 3 {
+		t.Fatalf("expected 3 contexts, got %d", len(cfg.Contexts))
+	}
+	expected := []string{"ctx-a", "ctx-b", "ctx-c"}
+	for i, name := range expected {
+		if cfg.Contexts[i].Name != name {
+			t.Errorf("expected context[%d]=%q, got %q", i, name, cfg.Contexts[i].Name)
+		}
+	}
+}
+
+func TestLoadConfigDir_SkipsNonHCLAndSubdirs(t *testing.T) {
+	tmpDir := t.TempDir()
+	mainFile := filepath.Join(tmpDir, "config.hcl")
+	os.WriteFile(mainFile, []byte(`verbose = 0`), 0644)
+
+	configDir := filepath.Join(tmpDir, "config.d")
+	os.MkdirAll(configDir, 0755)
+
+	// Non-HCL file
+	os.WriteFile(filepath.Join(configDir, "notes.txt"), []byte("not hcl"), 0644)
+	// Subdirectory with an HCL file inside
+	subdir := filepath.Join(configDir, "subdir")
+	os.MkdirAll(subdir, 0755)
+	os.WriteFile(filepath.Join(subdir, "nested.hcl"), []byte("location \"nested\" {\n  conditions {\n    public_ip = [\"1.1.1.1\"]\n  }\n}\n"), 0644)
+	// Valid HCL file
+	os.WriteFile(filepath.Join(configDir, "valid.hcl"), []byte("location \"test\" {\n  conditions {\n    public_ip = [\"2.2.2.2\"]\n  }\n}\n"), 0644)
+
+	cfg, err := LoadConfigDir(mainFile, configDir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Only the valid.hcl location should be loaded
+	if len(cfg.Locations) != 1 {
+		t.Fatalf("expected 1 location, got %d", len(cfg.Locations))
+	}
+	if _, ok := cfg.Locations["test"]; !ok {
+		t.Error("expected 'test' location from valid.hcl")
+	}
+}
+
+func TestLoadConfigDir_SyntaxErrorReportsFilename(t *testing.T) {
+	mainFile, configDir := setupConfigDir(t,
+		`verbose = 0`,
+		map[string]string{
+			"bad.hcl": `this is not valid HCL {{{`,
+		},
+	)
+
+	_, err := LoadConfigDir(mainFile, configDir)
+	if err == nil {
+		t.Fatal("expected error for bad HCL file")
+	}
+	if !strings.Contains(err.Error(), "bad.hcl") {
+		t.Errorf("expected error to mention 'bad.hcl', got: %v", err)
+	}
+}
+
+func TestLoadConfigDir_DuplicateLocationAcrossFiles(t *testing.T) {
+	mainFile, configDir := setupConfigDir(t,
+		`
+location "home" {
+  conditions {
+    public_ip = ["1.1.1.1"]
+  }
+}
+`,
+		map[string]string{
+			"dup.hcl": `
+location "home" {
+  conditions {
+    public_ip = ["2.2.2.2"]
+  }
+}
+`,
+		},
+	)
+
+	_, err := LoadConfigDir(mainFile, configDir)
+	if err == nil {
+		t.Fatal("expected error for duplicate location across files")
+	}
+	if !strings.Contains(err.Error(), "duplicate location") {
+		t.Errorf("expected 'duplicate location' error, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "dup.hcl") {
+		t.Errorf("expected error to mention 'dup.hcl', got: %v", err)
+	}
+}
+
+func TestLoadConfigDir_DuplicateTunnelAcrossFiles(t *testing.T) {
+	mainFile, configDir := setupConfigDir(t,
+		`tunnel "vpn" {}`,
+		map[string]string{
+			"tunnels.hcl": `tunnel "vpn" { tag = "dup" }`,
+		},
+	)
+
+	_, err := LoadConfigDir(mainFile, configDir)
+	if err == nil {
+		t.Fatal("expected error for duplicate tunnel across files")
+	}
+	if !strings.Contains(err.Error(), "duplicate tunnel") {
+		t.Errorf("expected 'duplicate tunnel' error, got: %v", err)
+	}
+}
+
+func TestLoadConfigDir_SingletonBlockInFragmentError(t *testing.T) {
+	mainFile, configDir := setupConfigDir(t,
+		`ssh { max_retries = 5 }`,
+		map[string]string{
+			"extra.hcl": `ssh { max_retries = 10 }`,
+		},
+	)
+
+	_, err := LoadConfigDir(mainFile, configDir)
+	if err == nil {
+		t.Fatal("expected error for ssh block in both main and fragment")
+	}
+	if !strings.Contains(err.Error(), "ssh") && !strings.Contains(err.Error(), "defined in multiple files") {
+		t.Errorf("expected singleton block error, got: %v", err)
+	}
+}
+
+func TestLoadConfigDir_ContextOrderAcrossFiles(t *testing.T) {
+	mainFile, configDir := setupConfigDir(t,
+		`
+context "main-first" { display_name = "First" }
+context "main-second" { display_name = "Second" }
+`,
+		map[string]string{
+			"a.hcl": `context "a-ctx" { display_name = "A" }`,
+			"b.hcl": `context "b-ctx" { display_name = "B" }`,
+		},
+	)
+
+	cfg, err := LoadConfigDir(mainFile, configDir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	expected := []string{"main-first", "main-second", "a-ctx", "b-ctx"}
+	if len(cfg.Contexts) != len(expected) {
+		t.Fatalf("expected %d contexts, got %d", len(expected), len(cfg.Contexts))
+	}
+	for i, name := range expected {
+		if cfg.Contexts[i].Name != name {
+			t.Errorf("expected context[%d]=%q, got %q", i, name, cfg.Contexts[i].Name)
+		}
+	}
+}
+
+func TestLoadConfigDir_EmptyConfigDirHandled(t *testing.T) {
+	tmpDir := t.TempDir()
+	mainFile := filepath.Join(tmpDir, "config.hcl")
+	os.WriteFile(mainFile, []byte(`verbose = 2`), 0644)
+
+	configDir := filepath.Join(tmpDir, "config.d")
+	os.MkdirAll(configDir, 0755)
+
+	cfg, err := LoadConfigDir(mainFile, configDir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Verbose != 2 {
+		t.Errorf("expected Verbose=2, got %d", cfg.Verbose)
+	}
+}
