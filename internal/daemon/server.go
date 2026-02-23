@@ -444,20 +444,28 @@ func (d *Daemon) handleConnection(conn net.Conn) {
 			// Get existing tags before stopping (to preserve them on reconnect)
 			d.mu.Lock()
 			var tag string
-			if tunnel, exists := d.tunnels[alias]; exists {
+			tunnel, tunnelExists := d.tunnels[alias]
+			if tunnelExists {
 				tag = tunnel.Tag
 			}
 			d.mu.Unlock()
 
-			// Stop tunnel but preserve companions
-			stopResponse := d.stopTunnel(alias, true)
-			if len(stopResponse.Messages) > 0 && stopResponse.Messages[0].Status == "ERROR" {
-				response = stopResponse
+			stream := NewStreamingResponse(conn)
+
+			if !tunnelExists {
+				// Tunnel not connected — warn and fall through to connect
+				slog.Warn(fmt.Sprintf("Reconnect requested for '%s' but tunnel is not connected", alias))
+				stream.WriteMessage(fmt.Sprintf("Tunnel '%s' is not connected. Connecting...", alias), "WARN")
 			} else {
-				// Reconnect using streaming to show progress (with preserved tag)
-				stream := NewStreamingResponse(conn)
-				response = d.startTunnelStreaming(alias, tag, stream)
+				// Stop tunnel but preserve companions
+				stopResponse := d.stopTunnel(alias, true)
+				if len(stopResponse.Messages) > 0 && stopResponse.Messages[0].Status == "ERROR" {
+					response = stopResponse
+					break
+				}
 			}
+
+			response = d.startTunnelStreaming(alias, tag, stream)
 		}
 	case "RELOAD":
 		// Hot reload: save tunnel, companion, and sensor state before stopping
