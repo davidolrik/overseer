@@ -130,8 +130,8 @@ func (d *Daemon) initStateOrchestrator() error {
 		envWriters = append(envWriters, writer)
 	}
 
-	// Collect tracked env vars from all rules and locations
-	trackedVars := collectTrackedEnvVars(rules, locations)
+	// Collect tracked env vars from all rules, locations, and global environment
+	trackedVars := collectTrackedEnvVars(rules, locations, core.Config.Environment)
 
 	// Extract location hooks
 	locationHooks := make(map[string]*state.HooksConfig)
@@ -167,10 +167,11 @@ func (d *Daemon) initStateOrchestrator() error {
 
 	// Create orchestrator
 	stateOrchestrator = state.NewOrchestrator(state.OrchestratorConfig{
-		Rules:          rules,
-		Locations:      locations,
-		EnvWriters:     envWriters,
-		TrackedEnvVars: trackedVars,
+		Rules:             rules,
+		Locations:         locations,
+		GlobalEnvironment: core.Config.Environment,
+		EnvWriters:        envWriters,
+		TrackedEnvVars:    trackedVars,
 		PreferredIP:    core.Config.PreferredIP,
 		OnContextChange: func(from, to state.StateSnapshot, rule *state.Rule) {
 			d.handleNewContextChange(from, to, rule)
@@ -419,8 +420,8 @@ func mergeStateRule(defaultRule, userRule state.Rule) state.Rule {
 	return merged
 }
 
-// collectTrackedEnvVars extracts all env var names from rules and locations
-func collectTrackedEnvVars(rules []state.Rule, locations map[string]state.Location) []string {
+// collectTrackedEnvVars extracts all env var names from rules, locations, and global environment
+func collectTrackedEnvVars(rules []state.Rule, locations map[string]state.Location, globalEnv map[string]string) []string {
 	vars := make(map[string]bool)
 
 	// Built-in OVERSEER_* variables that may be set in dotenv files
@@ -437,6 +438,10 @@ func collectTrackedEnvVars(rules []state.Rule, locations map[string]state.Locati
 	}
 	for _, v := range builtinVars {
 		vars[v] = true
+	}
+
+	for k := range globalEnv {
+		vars[k] = true
 	}
 
 	for _, rule := range rules {
@@ -534,7 +539,7 @@ func (d *Daemon) reloadStateOrchestrator() error {
 		DisplayName: "Untrusted",
 	})
 
-	stateOrchestrator.Reload(rules, locations)
+	stateOrchestrator.Reload(rules, locations, core.Config.Environment)
 	return nil
 }
 

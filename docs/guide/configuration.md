@@ -26,7 +26,7 @@ The `config.d/` directory is optional. If it doesn't exist, behavior is unchange
 | Config element | Where it belongs |
 |---|---|
 | Global settings (`verbose`) | Main config |
-| Singleton blocks (`exports`, `ssh`, `companion`, global hooks) | Main config only — defining these in more than one file is an error |
+| Singleton blocks (`exports`, `ssh`, `companion`, `environment`, global hooks) | Main config only — defining these in more than one file is an error |
 | Locations | Any file — accumulated across files; duplicate names are an error |
 | Tunnels | Any file — accumulated across files; duplicate names are an error |
 | Contexts | Any file — accumulated in load order (main first, then `config.d/` alphabetically). Order matters: first match wins |
@@ -93,6 +93,49 @@ When the daemon is running, changes to files in `config.d/` trigger an automatic
 # Verbosity level (0=quiet, 1=normal, 2=verbose, 3=debug)
 verbose = 0
 ```
+
+## Global Environment
+
+The top-level `environment` block defines default environment variables that are always exported, regardless of which location or context is active:
+
+```hcl
+environment = {
+  "OVERSEER_CONTEXT_BG" = "#3a579a"
+  "MY_DEFAULT_VAR"      = "default-value"
+}
+```
+
+These defaults can be overridden by location and context `environment` blocks. The merge priority is (lowest → highest):
+
+**Global → Location → Context**
+
+For example:
+
+```hcl
+environment = {
+  "THEME_COLOR" = "#3a579a"  # default
+}
+
+location "home" {
+  conditions {
+    public_ip = ["203.0.113.42"]
+  }
+  environment = {
+    "THEME_COLOR" = "#00ff00"  # overrides global when at home
+  }
+}
+
+context "trusted" {
+  locations = ["home"]
+  environment = {
+    "THEME_COLOR" = "#ff0000"  # overrides both global and location
+  }
+}
+```
+
+::: tip
+Global environment is useful for variables you want set everywhere — like prompt colors or default settings — without duplicating them across every location and context block.
+:::
 
 ## SSH Settings
 
@@ -326,13 +369,13 @@ If you don't define an `untrusted` context, overseer creates a default one with 
 
 ### Environment Variables in Contexts
 
-Context environment variables are merged with location environment variables (context takes precedence):
+Context environment variables are merged with global and location environment variables. The full merge priority is (lowest → highest): **Global → Location → Context**.
 
 ```hcl
 context "work" {
   locations = ["office"]
   environment = {
-    TRUST_LEVEL  = "high"      # Overrides location's TRUST_LEVEL if set
+    TRUST_LEVEL  = "high"      # Overrides location's and global TRUST_LEVEL if set
     CONTEXT_TYPE = "corporate"
   }
 }
@@ -379,7 +422,7 @@ The `dotenv` file includes these built-in variables:
 | `OVERSEER_LOCAL_IP` | Local LAN IPv4 address |
 | `OVERSEER_LOCAL_IPV4` | Local LAN IPv4 address |
 
-Plus any custom variables defined in the active location's and context's `environment` blocks.
+Plus any custom variables defined in the [global `environment`](#global-environment) block and the active location's and context's `environment` blocks.
 
 When switching contexts, all custom variables from the previous context/location are automatically unset before the new ones are exported.
 
@@ -407,12 +450,20 @@ exports {
   public_ip = "~/.local/var/overseer_ip"
 }
 
+# Global defaults — always exported, can be overridden per-location/context
+environment = {
+  "OVERSEER_CONTEXT_BG" = "#3a579a"
+}
+
 # --- Locations ---
 
 location "home" {
   display_name = "Home"
   conditions {
     public_ip = ["203.0.113.42"]
+  }
+  environment = {
+    "OVERSEER_CONTEXT_BG" = "#00aa00"  # override global default
   }
 }
 

@@ -252,7 +252,7 @@ func TestCollectTrackedEnvVars(t *testing.T) {
 		"work": {Environment: map[string]string{"RULE_VAR": "different"}}, // duplicate key
 	}
 
-	result := collectTrackedEnvVars(rules, locations)
+	result := collectTrackedEnvVars(rules, locations, nil)
 
 	found := map[string]bool{}
 	for _, v := range result {

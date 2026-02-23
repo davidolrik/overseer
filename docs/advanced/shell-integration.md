@@ -34,7 +34,7 @@ The dotenv file exports these built-in variables:
 | `OVERSEER_LOCAL_IP` | `192.168.1.42` | Local LAN IPv4 address |
 | `OVERSEER_LOCAL_IPV4` | `192.168.1.42` | Local LAN IPv4 address |
 
-Plus any custom variables defined in your location and context `environment` blocks.
+Plus any custom variables defined in the [global `environment`](/guide/configuration#global-environment) block and your location and context `environment` blocks. Global defaults are always present; location and context values override them.
 
 When contexts change, all custom variables from the previous context are unset before the new ones are exported.
 

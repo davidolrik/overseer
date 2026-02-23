@@ -25,6 +25,7 @@ type ExportConfig struct {
 type Configuration struct {
 	ConfigPath  string                   // Directory containing config files
 	Verbose     int                      // Verbosity level
+	Environment map[string]string        // Global default environment variables
 	Exports     []ExportConfig           // Export configurations
 	PreferredIP string                   // Preferred IP version for OVERSEER_PUBLIC_IP: "ipv4" (default) or "ipv6"
 	SSH         SSHConfig                // SSH connection settings (including reconnect)
@@ -132,6 +133,7 @@ type HooksConfig struct {
 
 type hclConfig struct {
 	Verbose       int                   `hcl:"verbose,optional"`
+	Environment   map[string]string     `hcl:"environment,optional"`
 	Exports       *hclExports           `hcl:"exports,block"`
 	SSH           *hclSSH               `hcl:"ssh,block"`
 	Companion     *hclCompanionSettings `hcl:"companion,block"`
@@ -248,8 +250,14 @@ func parseHCLFile(filename string) (*hclConfig, error) {
 // convertHCLConfig converts an hclConfig struct into the final Configuration
 func convertHCLConfig(hclCfg *hclConfig) (*Configuration, error) {
 	// Convert to our clean Configuration struct
+	env := hclCfg.Environment
+	if env == nil {
+		env = make(map[string]string)
+	}
+
 	cfg := &Configuration{
 		Verbose:              hclCfg.Verbose,
+		Environment:          env,
 		PreferredIP:          "ipv4", // Default to IPv4
 		CheckOnStartup:       true,   // Default
 		CheckOnNetworkChange: true,   // Default
@@ -625,6 +633,14 @@ func mergeHCLConfig(dst, src *hclConfig) error {
 		dst.Verbose = src.Verbose
 	}
 
+	// Environment: singleton — error if defined in both
+	if dst.Environment != nil && src.Environment != nil {
+		return fmt.Errorf("environment block defined in multiple files")
+	}
+	if src.Environment != nil {
+		dst.Environment = src.Environment
+	}
+
 	// Singleton blocks: error if defined in both dst and src
 	if dst.Exports != nil && src.Exports != nil {
 		return fmt.Errorf("exports block defined in multiple files")
@@ -841,6 +857,7 @@ func parseHCLTunnelHooks(hooks *hclTunnelHooks) (*TunnelHooksConfig, error) {
 func GetDefaultConfig() *Configuration {
 	return &Configuration{
 		Verbose:              0,
+		Environment:          make(map[string]string),
 		CheckOnStartup:       true,
 		CheckOnNetworkChange: true,
 		SSH: SSHConfig{

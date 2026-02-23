@@ -16,6 +16,9 @@ type OrchestratorConfig struct {
 	// Locations for location detection
 	Locations map[string]Location
 
+	// GlobalEnvironment provides default env vars that location/context can override
+	GlobalEnvironment map[string]string
+
 	// EnvWriters for exporting state
 	EnvWriters []EnvWriter
 
@@ -104,7 +107,7 @@ func NewOrchestrator(config OrchestratorConfig) *Orchestrator {
 	streamer := NewLogStreamer(config.HistorySize)
 
 	// Create rule engine
-	ruleEngine := NewRuleEngine(config.Rules, config.Locations)
+	ruleEngine := NewRuleEngine(config.Rules, config.Locations, config.GlobalEnvironment)
 
 	// Create readings channel
 	readings := make(chan SensorReading, 256)
@@ -461,9 +464,9 @@ func (o *Orchestrator) IsSuppressed() bool {
 	return o.sleepMonitor.IsSuppressed()
 }
 
-// Reload updates the rules and locations (called on config reload)
-func (o *Orchestrator) Reload(rules []Rule, locations map[string]Location) {
-	o.ruleEngine = NewRuleEngine(rules, locations)
+// Reload updates the rules, locations, and global environment (called on config reload)
+func (o *Orchestrator) Reload(rules []Rule, locations map[string]Location, globalEnv map[string]string) {
+	o.ruleEngine = NewRuleEngine(rules, locations, globalEnv)
 	o.config.Rules = rules
 	o.config.Locations = locations
 

@@ -227,15 +227,18 @@ func mapConditionKey(key string) string {
 
 // RuleEngine evaluates rules against sensor readings
 type RuleEngine struct {
-	rules     []Rule
-	locations map[string]Location
+	rules             []Rule
+	locations         map[string]Location
+	globalEnvironment map[string]string
 }
 
-// NewRuleEngine creates a new rule engine
-func NewRuleEngine(rules []Rule, locations map[string]Location) *RuleEngine {
+// NewRuleEngine creates a new rule engine.
+// globalEnv provides default environment variables that location and context can override.
+func NewRuleEngine(rules []Rule, locations map[string]Location, globalEnv map[string]string) *RuleEngine {
 	return &RuleEngine{
-		rules:     rules,
-		locations: locations,
+		rules:             rules,
+		locations:         locations,
+		globalEnvironment: globalEnv,
 	}
 }
 
@@ -363,18 +366,24 @@ func (re *RuleEngine) getLocationDisplayName(name string) string {
 	return name
 }
 
-// mergeEnvironment merges rule and location environment variables
+// mergeEnvironment merges global, location, and rule environment variables.
+// Merge priority (lowest → highest): Global → Location → Context (rule).
 func (re *RuleEngine) mergeEnvironment(rule *Rule, location *Location) map[string]string {
 	env := make(map[string]string)
 
-	// Location environment first
+	// Global environment defaults first (lowest priority)
+	for k, v := range re.globalEnvironment {
+		env[k] = v
+	}
+
+	// Location environment overrides global
 	if location != nil && location.Environment != nil {
 		for k, v := range location.Environment {
 			env[k] = v
 		}
 	}
 
-	// Rule environment overrides location
+	// Rule (context) environment overrides location and global (highest priority)
 	if rule != nil && rule.Environment != nil {
 		for k, v := range rule.Environment {
 			env[k] = v

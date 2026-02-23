@@ -1740,3 +1740,111 @@ func TestLoadConfigDir_EmptyConfigDirHandled(t *testing.T) {
 		t.Errorf("expected Verbose=2, got %d", cfg.Verbose)
 	}
 }
+
+func TestLoadConfig_GlobalEnvironment(t *testing.T) {
+	t.Run("parses global environment block", func(t *testing.T) {
+		config, err := loadTestConfig(t, `
+verbose = 0
+
+environment = {
+  "OVERSEER_CONTEXT_BG" = "#3a579a"
+  "MY_DEFAULT_VAR"      = "default-value"
+}
+`)
+		if err != nil {
+			t.Fatalf("Failed to load: %v", err)
+		}
+
+		if len(config.Environment) != 2 {
+			t.Fatalf("expected 2 global env vars, got %d", len(config.Environment))
+		}
+		if config.Environment["OVERSEER_CONTEXT_BG"] != "#3a579a" {
+			t.Errorf("expected OVERSEER_CONTEXT_BG='#3a579a', got %q", config.Environment["OVERSEER_CONTEXT_BG"])
+		}
+		if config.Environment["MY_DEFAULT_VAR"] != "default-value" {
+			t.Errorf("expected MY_DEFAULT_VAR='default-value', got %q", config.Environment["MY_DEFAULT_VAR"])
+		}
+	})
+
+	t.Run("defaults to empty map when not specified", func(t *testing.T) {
+		config, err := loadTestConfig(t, `verbose = 0`)
+		if err != nil {
+			t.Fatalf("Failed to load: %v", err)
+		}
+
+		if config.Environment == nil {
+			t.Error("expected Environment to be initialized (not nil)")
+		}
+		if len(config.Environment) != 0 {
+			t.Errorf("expected empty Environment, got %d entries", len(config.Environment))
+		}
+	})
+}
+
+func TestMergeHCLConfig_EnvironmentSingleton(t *testing.T) {
+	t.Run("error when environment defined in both files", func(t *testing.T) {
+		dst := &hclConfig{
+			Environment: map[string]string{"A": "1"},
+		}
+		src := &hclConfig{
+			Environment: map[string]string{"B": "2"},
+		}
+		err := mergeHCLConfig(dst, src)
+		if err == nil {
+			t.Fatal("expected error for environment block defined in both files")
+		}
+		if !strings.Contains(err.Error(), "environment") && !strings.Contains(err.Error(), "defined in multiple files") {
+			t.Errorf("expected 'defined in multiple files' error, got: %v", err)
+		}
+	})
+
+	t.Run("nil src preserves dst", func(t *testing.T) {
+		dst := &hclConfig{
+			Environment: map[string]string{"A": "1"},
+		}
+		src := &hclConfig{}
+		if err := mergeHCLConfig(dst, src); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if dst.Environment["A"] != "1" {
+			t.Error("expected dst environment to be preserved")
+		}
+	})
+
+	t.Run("nil dst copies src", func(t *testing.T) {
+		dst := &hclConfig{}
+		src := &hclConfig{
+			Environment: map[string]string{"B": "2"},
+		}
+		if err := mergeHCLConfig(dst, src); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if dst.Environment["B"] != "2" {
+			t.Error("expected src environment to be copied to dst")
+		}
+	})
+}
+
+func TestLoadConfigDir_GlobalEnvironmentSingleton(t *testing.T) {
+	mainFile, configDir := setupConfigDir(t,
+		`environment = { "A" = "1" }`,
+		map[string]string{
+			"extra.hcl": `environment = { "B" = "2" }`,
+		},
+	)
+
+	_, err := LoadConfigDir(mainFile, configDir)
+	if err == nil {
+		t.Fatal("expected error for environment in both main and fragment")
+	}
+	if !strings.Contains(err.Error(), "environment") {
+		t.Errorf("expected error about environment, got: %v", err)
+	}
+}
+
+func TestGetDefaultConfig_EnvironmentInitialized(t *testing.T) {
+	config := GetDefaultConfig()
+	if config.Environment == nil {
+		t.Error("expected Environment map to be initialized")
+	}
+}

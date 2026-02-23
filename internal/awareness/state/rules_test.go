@@ -367,7 +367,7 @@ func TestRuleEngineLocationMatch(t *testing.T) {
 		},
 	}
 
-	engine := NewRuleEngine(rules, locations)
+	engine := NewRuleEngine(rules, locations, nil)
 	readings := map[string]SensorReading{
 		"env:HOST": {Sensor: "env:HOST", Value: "my-laptop"},
 	}
@@ -393,7 +393,7 @@ func TestRuleEngineFallbackRule(t *testing.T) {
 		},
 	}
 
-	engine := NewRuleEngine(rules, nil)
+	engine := NewRuleEngine(rules, nil, nil)
 	result := engine.Evaluate(nil, true)
 
 	if result.Context != "default" {
@@ -411,7 +411,7 @@ func TestRuleEngineNoMatch(t *testing.T) {
 		},
 	}
 
-	engine := NewRuleEngine(rules, nil)
+	engine := NewRuleEngine(rules, nil, nil)
 	readings := map[string]SensorReading{
 		"env:HOST": {Sensor: "env:HOST", Value: "different"},
 	}
@@ -441,7 +441,7 @@ func TestRuleEngineFirstMatchWins(t *testing.T) {
 		},
 	}
 
-	engine := NewRuleEngine(rules, nil)
+	engine := NewRuleEngine(rules, nil, nil)
 	readings := map[string]SensorReading{
 		"env:HOST": {Sensor: "env:HOST", Value: "laptop"},
 	}
@@ -477,7 +477,7 @@ func TestRuleEngineEnvironmentMerge(t *testing.T) {
 		},
 	}
 
-	engine := NewRuleEngine(rules, locations)
+	engine := NewRuleEngine(rules, locations, nil)
 	readings := map[string]SensorReading{
 		"env:HOST": {Sensor: "env:HOST", Value: "laptop"},
 	}
@@ -500,7 +500,7 @@ func TestRuleEngineGetLocation(t *testing.T) {
 		"home": {Name: "home", DisplayName: "Home"},
 	}
 
-	engine := NewRuleEngine(nil, locations)
+	engine := NewRuleEngine(nil, locations, nil)
 
 	loc := engine.GetLocation("home")
 	if loc == nil {
@@ -517,7 +517,7 @@ func TestRuleEngineGetLocation(t *testing.T) {
 
 func TestRuleEngineGetRules(t *testing.T) {
 	rules := []Rule{{Name: "a"}, {Name: "b"}}
-	engine := NewRuleEngine(rules, nil)
+	engine := NewRuleEngine(rules, nil, nil)
 
 	got := engine.GetRules()
 	if len(got) != 2 {
@@ -536,7 +536,7 @@ func TestRuleEngineRuleWithStructuredCondition(t *testing.T) {
 		},
 	}
 
-	engine := NewRuleEngine(rules, nil)
+	engine := NewRuleEngine(rules, nil, nil)
 	readings := map[string]SensorReading{
 		"env:HOST": {Sensor: "env:HOST", Value: "laptop"},
 	}
@@ -663,7 +663,7 @@ func TestRuleEngineDetermineLocationOffline(t *testing.T) {
 		{Name: "default"}, // fallback
 	}
 
-	engine := NewRuleEngine(rules, locations)
+	engine := NewRuleEngine(rules, locations, nil)
 	readings := map[string]SensorReading{
 		"env:HOST": {
 			Sensor:    "env:HOST",
@@ -677,4 +677,147 @@ func TestRuleEngineDetermineLocationOffline(t *testing.T) {
 	if result.Location != "offline" {
 		t.Errorf("Expected location %q when offline, got %q", "offline", result.Location)
 	}
+}
+
+func TestRuleEngineGlobalEnvironmentMerge(t *testing.T) {
+	t.Run("global env used when no location or rule env", func(t *testing.T) {
+		globalEnv := map[string]string{
+			"GLOBAL_VAR": "global-value",
+		}
+
+		rules := []Rule{
+			{Name: "fallback"}, // fallback with no env
+		}
+
+		engine := NewRuleEngine(rules, nil, globalEnv)
+		result := engine.Evaluate(nil, true)
+
+		if result.Environment["GLOBAL_VAR"] != "global-value" {
+			t.Errorf("Expected global env var, got %q", result.Environment["GLOBAL_VAR"])
+		}
+	})
+
+	t.Run("location overrides global", func(t *testing.T) {
+		globalEnv := map[string]string{
+			"SHARED":     "from-global",
+			"GLOBAL_ONLY": "global-value",
+		}
+
+		locations := map[string]Location{
+			"home": {
+				Name: "home",
+				Conditions: map[string][]string{
+					"env:HOST": {"laptop"},
+				},
+				Environment: map[string]string{
+					"SHARED":   "from-location",
+					"LOC_ONLY": "loc-value",
+				},
+			},
+		}
+
+		rules := []Rule{
+			{
+				Name:      "trusted",
+				Locations: []string{"home"},
+			},
+		}
+
+		engine := NewRuleEngine(rules, locations, globalEnv)
+		readings := map[string]SensorReading{
+			"env:HOST": {Sensor: "env:HOST", Value: "laptop"},
+		}
+
+		result := engine.Evaluate(readings, true)
+		if result.Environment["GLOBAL_ONLY"] != "global-value" {
+			t.Errorf("Expected global-only var, got %q", result.Environment["GLOBAL_ONLY"])
+		}
+		if result.Environment["LOC_ONLY"] != "loc-value" {
+			t.Errorf("Expected location-only var, got %q", result.Environment["LOC_ONLY"])
+		}
+		if result.Environment["SHARED"] != "from-location" {
+			t.Errorf("Expected location to override global, got %q", result.Environment["SHARED"])
+		}
+	})
+
+	t.Run("context overrides location overrides global", func(t *testing.T) {
+		globalEnv := map[string]string{
+			"SHARED":      "from-global",
+			"GLOBAL_ONLY": "global-value",
+		}
+
+		locations := map[string]Location{
+			"home": {
+				Name: "home",
+				Conditions: map[string][]string{
+					"env:HOST": {"laptop"},
+				},
+				Environment: map[string]string{
+					"SHARED":   "from-location",
+					"LOC_ONLY": "loc-value",
+				},
+			},
+		}
+
+		rules := []Rule{
+			{
+				Name:      "trusted",
+				Locations: []string{"home"},
+				Environment: map[string]string{
+					"SHARED":    "from-context",
+					"CTX_ONLY":  "ctx-value",
+				},
+			},
+		}
+
+		engine := NewRuleEngine(rules, locations, globalEnv)
+		readings := map[string]SensorReading{
+			"env:HOST": {Sensor: "env:HOST", Value: "laptop"},
+		}
+
+		result := engine.Evaluate(readings, true)
+		if result.Environment["GLOBAL_ONLY"] != "global-value" {
+			t.Errorf("Expected global-only var, got %q", result.Environment["GLOBAL_ONLY"])
+		}
+		if result.Environment["LOC_ONLY"] != "loc-value" {
+			t.Errorf("Expected location-only var, got %q", result.Environment["LOC_ONLY"])
+		}
+		if result.Environment["CTX_ONLY"] != "ctx-value" {
+			t.Errorf("Expected context-only var, got %q", result.Environment["CTX_ONLY"])
+		}
+		if result.Environment["SHARED"] != "from-context" {
+			t.Errorf("Expected context to override all for shared var, got %q", result.Environment["SHARED"])
+		}
+	})
+
+	t.Run("nil global env works fine", func(t *testing.T) {
+		locations := map[string]Location{
+			"home": {
+				Name: "home",
+				Conditions: map[string][]string{
+					"env:HOST": {"laptop"},
+				},
+				Environment: map[string]string{
+					"LOC_VAR": "loc-value",
+				},
+			},
+		}
+
+		rules := []Rule{
+			{
+				Name:      "trusted",
+				Locations: []string{"home"},
+			},
+		}
+
+		engine := NewRuleEngine(rules, locations, nil)
+		readings := map[string]SensorReading{
+			"env:HOST": {Sensor: "env:HOST", Value: "laptop"},
+		}
+
+		result := engine.Evaluate(readings, true)
+		if result.Environment["LOC_VAR"] != "loc-value" {
+			t.Errorf("Expected location var, got %q", result.Environment["LOC_VAR"])
+		}
+	})
 }
