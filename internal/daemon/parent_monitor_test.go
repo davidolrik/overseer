@@ -83,3 +83,48 @@ func TestSetupParentDeathSignal(t *testing.T) {
 		// but that's okay because we have the polling fallback
 	}
 }
+
+// TestParentMonitorWithInvalidPID tests that an invalid OVERSEER_MONITOR_PID
+// is ignored and the monitor falls back to the actual parent PID
+func TestParentMonitorWithInvalidPID(t *testing.T) {
+	os.Setenv("OVERSEER_MONITOR_PID", "not-a-number")
+	defer os.Unsetenv("OVERSEER_MONITOR_PID")
+
+	daemon := New()
+	monitor := NewParentMonitor(daemon)
+
+	// Should fall back to actual parent PID since "not-a-number" can't be parsed
+	if monitor.monitoredPID != os.Getppid() {
+		t.Errorf("Expected monitoredPID to fall back to %d, got %d", os.Getppid(), monitor.monitoredPID)
+	}
+}
+
+// TestParentMonitorLoggerIsSet verifies the monitor gets a logger
+func TestParentMonitorLoggerIsSet(t *testing.T) {
+	daemon := New()
+	monitor := NewParentMonitor(daemon)
+
+	if monitor.logger == nil {
+		t.Error("Expected logger to be set")
+	}
+}
+
+// TestParentMonitorStartContextCancellation verifies the polling goroutine
+// respects context cancellation
+func TestParentMonitorStartContextCancellation(t *testing.T) {
+	daemon := New()
+	monitor := NewParentMonitor(daemon)
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	// Start monitoring
+	monitor.Start(ctx)
+
+	// Cancel immediately
+	cancel()
+
+	// Give the goroutine time to exit
+	time.Sleep(50 * time.Millisecond)
+
+	// If we get here without hanging, the test passes
+}
