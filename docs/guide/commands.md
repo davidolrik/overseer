@@ -37,11 +37,11 @@ Cold restart stops the daemon and all tunnels, then starts fresh. Tunnels reconn
 
 ## Tunnel Management
 
-| Command                       | Aliases | Description                            |
-| ----------------------------- | ------- | -------------------------------------- |
-| `overseer connect <alias> [--tag TAG]` | `c`     | Connect to an SSH host                 |
-| `overseer disconnect [alias]` | `d`     | Disconnect tunnel (or all if no alias) |
-| `overseer reconnect <alias>`  | `r`     | Reconnect a tunnel                     |
+| Command                                 | Aliases | Description                            |
+| --------------------------------------- | ------- | -------------------------------------- |
+| `overseer connect <alias> [-E KEY=VAL]` | `c`     | Connect to an SSH host                 |
+| `overseer disconnect [alias]`           | `d`     | Disconnect tunnel (or all if no alias) |
+| `overseer reconnect <alias>`            | `r`     | Reconnect a tunnel                     |
 
 ### `connect`
 
@@ -51,11 +51,11 @@ overseer connect <alias> [flags]
 
 Connects to an SSH host by its alias (as defined in `~/.ssh/config`). The daemon manages the SSH process and handles reconnection if configured.
 
-| Flag            | Description                                                            |
-| --------------- | ---------------------------------------------------------------------- |
-| `-T, --tag TAG` | Set `OVERSEER_TAG` env var on the SSH process for config matching      |
+| Flag                  | Description                                              |
+| --------------------- | -------------------------------------------------------- |
+| `-E, --env KEY=VALUE` | Set environment variable on the SSH process (repeatable) |
 
-See [Using OVERSEER_TAG](/advanced/dynamic-tunnels#using-overseer-tag) for details on how tags work with SSH config.
+See [Using Environment Variables](/advanced/dynamic-tunnels#using-environment-variables-on-ssh-processes) for details on how env vars work with SSH config.
 
 ### `disconnect`
 

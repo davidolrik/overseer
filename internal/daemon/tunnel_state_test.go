@@ -44,7 +44,7 @@ func TestSaveTunnelState(t *testing.T) {
 				TotalReconnects:   5,
 				AutoReconnect:     true,
 				State:             StateConnected,
-				Tag:               "work",
+				Environment:       map[string]string{"OVERSEER_TAG": "work"},
 				ResolvedHost:      "1.2.3.4",
 				JumpChain:         []string{"jump1", "jump2"},
 			},
@@ -84,8 +84,8 @@ func TestSaveTunnelState(t *testing.T) {
 	if info.State != "connected" {
 		t.Errorf("expected state 'connected', got %q", info.State)
 	}
-	if info.Tag != "work" {
-		t.Errorf("expected tag 'work', got %q", info.Tag)
+	if info.Environment["OVERSEER_TAG"] != "work" {
+		t.Errorf("expected environment OVERSEER_TAG='work', got %q", info.Environment["OVERSEER_TAG"])
 	}
 	if info.ResolvedHost != "1.2.3.4" {
 		t.Errorf("expected resolved host '1.2.3.4', got %q", info.ResolvedHost)
@@ -304,7 +304,7 @@ func TestTunnelState_RoundTrip(t *testing.T) {
 				TotalReconnects:   10,
 				AutoReconnect:     true,
 				State:             StateConnected,
-				Tag:               "production",
+				Environment:       map[string]string{"OVERSEER_TAG": "production"},
 				ResolvedHost:      "10.0.0.1",
 				JumpChain:         []string{"bastion1", "bastion2"},
 			},
@@ -342,8 +342,8 @@ func TestTunnelState_RoundTrip(t *testing.T) {
 	if info.State != "connected" {
 		t.Errorf("State: expected 'connected', got %q", info.State)
 	}
-	if info.Tag != "production" {
-		t.Errorf("Tag: expected 'production', got %q", info.Tag)
+	if info.Environment["OVERSEER_TAG"] != "production" {
+		t.Errorf("Environment OVERSEER_TAG: expected 'production', got %q", info.Environment["OVERSEER_TAG"])
 	}
 	if info.ResolvedHost != "10.0.0.1" {
 		t.Errorf("ResolvedHost: expected '10.0.0.1', got %q", info.ResolvedHost)

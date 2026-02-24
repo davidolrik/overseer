@@ -366,6 +366,53 @@ func (o *Orchestrator) GetCurrentState() StateSnapshot {
 	return o.manager.GetCurrentState()
 }
 
+// BuildSSHEnv builds a map of environment variables from the current state
+// for use on SSH processes. This allows SSH config Match exec directives to
+// reference OVERSEER_* variables directly without sourcing the dotenv file.
+func (o *Orchestrator) BuildSSHEnv() map[string]string {
+	snap := o.GetCurrentState()
+	env := make(map[string]string)
+
+	if snap.Context != "" {
+		env["OVERSEER_CONTEXT"] = snap.Context
+	}
+	if snap.ContextDisplayName != "" {
+		env["OVERSEER_CONTEXT_DISPLAY_NAME"] = snap.ContextDisplayName
+	}
+	if snap.Location != "" {
+		env["OVERSEER_LOCATION"] = snap.Location
+	}
+	if snap.LocationDisplayName != "" {
+		env["OVERSEER_LOCATION_DISPLAY_NAME"] = snap.LocationDisplayName
+	}
+	if snap.PublicIPv4 != nil {
+		env["OVERSEER_PUBLIC_IPV4"] = snap.PublicIPv4.String()
+	}
+	if snap.PublicIPv6 != nil {
+		env["OVERSEER_PUBLIC_IPV6"] = snap.PublicIPv6.String()
+	}
+	if snap.LocalIPv4 != nil {
+		env["OVERSEER_LOCAL_IP"] = snap.LocalIPv4.String()
+		env["OVERSEER_LOCAL_IPV4"] = snap.LocalIPv4.String()
+	}
+
+	// Preferred public IP (matches DotenvWriter logic)
+	if o.config.PreferredIP == "ipv6" && snap.PublicIPv6 != nil {
+		env["OVERSEER_PUBLIC_IP"] = snap.PublicIPv6.String()
+	} else if snap.PublicIPv4 != nil {
+		env["OVERSEER_PUBLIC_IP"] = snap.PublicIPv4.String()
+	} else if snap.PublicIPv6 != nil {
+		env["OVERSEER_PUBLIC_IP"] = snap.PublicIPv6.String()
+	}
+
+	// Custom env from state (global → location → context merge already applied)
+	for k, v := range snap.Environment {
+		env[k] = v
+	}
+
+	return env
+}
+
 // TriggerCheck forces an immediate state check
 func (o *Orchestrator) TriggerCheck(reason string) {
 	o.logger.Debug("Manual check triggered", "reason", reason)

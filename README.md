@@ -94,7 +94,7 @@ sudo mv overseer /usr/local/bin/
 
 | Command                                   | Aliases | Description                                           |
 | ----------------------------------------- | ------- | ----------------------------------------------------- |
-| `overseer connect <alias> [--tag TAG]...` | `c`     | Connect to an SSH host (sets OVERSEER_TAG env var)    |
+| `overseer connect <alias> [-E KEY=VAL]`   | `c`     | Connect to an SSH host (sets env vars on SSH process) |
 | `overseer disconnect [alias]`             | `d`     | Disconnect tunnel (or all if no alias)                |
 | `overseer reconnect <alias>`              | `r`     | Reconnect a tunnel                                    |
 
@@ -279,11 +279,13 @@ location "corporate" {
 
 ### Tunnel Configuration
 
-Configure per-tunnel settings including SSH tags and companion scripts:
+Configure per-tunnel settings including environment variables and companion scripts:
 
 ```hcl
 tunnel "my-server" {
-  tag = "production"  # Sets OVERSEER_TAG env var on the SSH process
+  environment = {
+    OVERSEER_TAG = "production"  # Set on the SSH process
+  }
 
   companion "setup-script" {
     command = "~/scripts/prepare-connection.sh"
@@ -291,14 +293,14 @@ tunnel "my-server" {
 }
 ```
 
-Tags are set as the `OVERSEER_TAG` environment variable on the SSH process. This propagates through ProxyJump chains (child processes inherit environment variables), unlike SSH's `-P` flag which doesn't. Use `Match exec` in your `~/.ssh/config` to match on it:
+Environment variables are set on the SSH process and propagate through ProxyJump chains (child processes inherit environment variables), unlike SSH's `-P` flag which doesn't. Use `Match exec` in your `~/.ssh/config` to match on them:
 
 ```plain
 Match Host bastion exec "[[ $OVERSEER_TAG = production ]]"
   ProxyJump bastion.example.com
 ```
 
-Tags from the config file can be overridden by `--tag` on the command line.
+Environment variables from the config file can be overridden by `-E` on the command line.
 
 ### Companion Scripts
 
@@ -687,7 +689,9 @@ Unlike location/context hooks which respond to state transitions, tunnel hooks a
 
 ```hcl
 tunnel "my-server" {
-  tag = "production"
+  environment = {
+    OVERSEER_TAG = "production"
+  }
 
   hooks {
     before_connect {

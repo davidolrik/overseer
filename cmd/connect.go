@@ -1,15 +1,17 @@
 package cmd
 
 import (
+	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 	"go.olrik.dev/overseer/internal/daemon"
 )
 
 func NewConnectCommand() *cobra.Command {
-	var tag string
+	var envVars []string
 
 	connectCmd := &cobra.Command{
 		Use:               "connect",
@@ -20,13 +22,23 @@ func NewConnectCommand() *cobra.Command {
 		ValidArgsFunction: sshHostCompletionFunc,
 		Run: func(cmd *cobra.Command, args []string) {
 			alias := args[0]
+
+			// Validate env var format
+			for _, e := range envVars {
+				idx := strings.Index(e, "=")
+				if idx <= 0 {
+					fmt.Fprintf(os.Stderr, "Error: invalid env var %q (expected KEY=VALUE)\n", e)
+					os.Exit(1)
+				}
+			}
+
 			daemon.EnsureDaemonIsRunning()
 			daemon.CheckVersionMismatch()
 
-			// Build command with optional tag
+			// Build command with optional env vars
 			command := "SSH_CONNECT " + alias
-			if tag != "" {
-				command += " --tag=" + tag
+			for _, e := range envVars {
+				command += " --env=" + e
 			}
 
 			// Use streaming to show companion startup progress in real-time
@@ -37,8 +49,8 @@ func NewConnectCommand() *cobra.Command {
 		},
 	}
 
-	connectCmd.Flags().StringVarP(&tag, "tag", "T", "",
-		"SSH tag for config matching (set as OVERSEER_TAG env var for Match exec)")
+	connectCmd.Flags().StringArrayVarP(&envVars, "env", "E", nil,
+		"Set environment variable on the SSH process (repeatable, format: KEY=VALUE)")
 
 	return connectCmd
 }

@@ -305,7 +305,7 @@ func (d *Daemon) handleNewContextChange(from, to state.StateSnapshot, rule *stat
 
 			if shouldConnect {
 				if d.isPublicIPKnown() {
-					resp := d.startTunnel(alias, "") // Config tag is applied inside startTunnel
+					resp := d.startTunnel(alias, nil) // Config environment is applied inside startTunnel
 					for _, msg := range resp.Messages {
 						if msg.Status == "ERROR" {
 							slog.Error("Failed to start tunnel during context change",

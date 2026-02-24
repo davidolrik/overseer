@@ -173,7 +173,7 @@ func TestHandleConnection_IPC_SSHConnectWithTag(t *testing.T) {
 		d.handleConnection(serverConn)
 	}()
 
-	clientConn.Write([]byte("SSH_CONNECT test-alias --tag=my-tag\n"))
+	clientConn.Write([]byte("SSH_CONNECT test-alias --env=MY_TAG=my-tag\n"))
 
 	// Read some output (will be streaming JSON)
 	reader := bufio.NewReader(clientConn)

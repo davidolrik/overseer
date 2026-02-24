@@ -11,7 +11,7 @@ func TestResolveJumpChain_NonexistentAlias(t *testing.T) {
 	quietLogger(t)
 
 	// Use a non-existent SSH config file so ssh -G will fail or return empty
-	chain := resolveJumpChain("nonexistent-host-that-should-not-resolve", "", "")
+	chain := resolveJumpChain("nonexistent-host-that-should-not-resolve", nil, "")
 	// ssh -G should still work (resolving via default config), so check result
 	// If the alias doesn't exist in any SSH config, hostname will be the alias itself
 	// and there will be no proxy jump, so chain should be nil
@@ -45,7 +45,7 @@ Host jump-hop
 		t.Skip("ssh not available")
 	}
 
-	chain := resolveJumpChain("jump-test", "", configPath)
+	chain := resolveJumpChain("jump-test", nil, configPath)
 	if chain == nil {
 		t.Skip("resolveJumpChain returned nil - ssh -G may not support this config")
 	}
@@ -74,22 +74,22 @@ func TestResolveJumpChain_DirectConnection(t *testing.T) {
 		t.Skip("ssh not available")
 	}
 
-	chain := resolveJumpChain("direct-test", "", configPath)
+	chain := resolveJumpChain("direct-test", nil, configPath)
 	// Direct connection (no ProxyJump) should return nil
 	if chain != nil {
 		t.Errorf("expected nil chain for direct connection, got %v", chain)
 	}
 }
 
-func TestResolveJumpChain_WithTag(t *testing.T) {
+func TestResolveJumpChain_WithEnv(t *testing.T) {
 	quietLogger(t)
 
 	if _, err := exec.LookPath("ssh"); err != nil {
 		t.Skip("ssh not available")
 	}
 
-	// Test with a tag parameter - should not panic
-	chain := resolveJumpChain("localhost", "test-tag", "")
+	// Test with environment variables - should not panic
+	chain := resolveJumpChain("localhost", map[string]string{"OVERSEER_TAG": "test-tag"}, "")
 	// Result depends on SSH config, just verify no panic
 	_ = chain
 }

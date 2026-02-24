@@ -30,14 +30,14 @@ type TunnelInfo struct {
 	TotalReconnects   int       `json:"total_reconnects"`
 	AutoReconnect     bool      `json:"auto_reconnect"`
 	State             string    `json:"state"`
-	Tag               string    `json:"tag,omitempty"`
-	ResolvedHost      string    `json:"resolved_host,omitempty"`
+	Environment       map[string]string `json:"environment,omitempty"`
+	ResolvedHost      string            `json:"resolved_host,omitempty"`
 	JumpChain         []string  `json:"jump_chain,omitempty"`
 	// Note: AskpassToken is NOT persisted for security reasons
 	// New tokens will be generated when adopting tunnels
 }
 
-const stateFileVersion = "1"
+const stateFileVersion = "2"
 
 // GetTunnelStatePath returns the path to the tunnel state file
 func GetTunnelStatePath() string {
@@ -76,7 +76,7 @@ func (d *Daemon) SaveTunnelState() error {
 			TotalReconnects:   tunnel.TotalReconnects,
 			AutoReconnect:     tunnel.AutoReconnect,
 			State:             string(tunnel.State),
-			Tag:               tunnel.Tag,
+			Environment:       tunnel.Environment,
 			ResolvedHost:      tunnel.ResolvedHost,
 			JumpChain:         tunnel.JumpChain,
 			// AskpassToken intentionally omitted for security

@@ -1087,12 +1087,12 @@ companion {
 	})
 }
 
-func TestLoadConfig_TunnelTag(t *testing.T) {
+func TestLoadConfig_TunnelEnvironment(t *testing.T) {
 	config, err := loadTestConfig(t, `
 verbose = 0
 
 tunnel "vpn" {
-  tag = "corp-vpn"
+  environment = { OVERSEER_TAG = "corp-vpn" }
 }
 `)
 	if err != nil {
@@ -1100,8 +1100,8 @@ tunnel "vpn" {
 	}
 
 	tun := config.Tunnels["vpn"]
-	if tun.Tag != "corp-vpn" {
-		t.Errorf("expected tag='corp-vpn', got %q", tun.Tag)
+	if tun.Environment["OVERSEER_TAG"] != "corp-vpn" {
+		t.Errorf("expected environment OVERSEER_TAG='corp-vpn', got %q", tun.Environment["OVERSEER_TAG"])
 	}
 }
 
@@ -1509,7 +1509,7 @@ context "office-ctx" {
 `,
 			"tunnels.hcl": `
 tunnel "vpn" {
-  tag = "corp"
+  environment = { TAG = "corp" }
 }
 `,
 		},
@@ -1666,7 +1666,7 @@ func TestLoadConfigDir_DuplicateTunnelAcrossFiles(t *testing.T) {
 	mainFile, configDir := setupConfigDir(t,
 		`tunnel "vpn" {}`,
 		map[string]string{
-			"tunnels.hcl": `tunnel "vpn" { tag = "dup" }`,
+			"tunnels.hcl": `tunnel "vpn" { environment = { TAG = "dup" } }`,
 		},
 	)
 

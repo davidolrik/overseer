@@ -150,16 +150,30 @@ and rules defined in your configuration. Context changes automatically connect o
 						reconnectInfo = fmt.Sprintf(", %sReconnects:%s %s%d%s", colorGray, colorReset, colorYellow, status.TotalReconnects, colorReset)
 					}
 
-					tagInfo := ""
-					if status.Tag != "" {
-						tagInfo = fmt.Sprintf(" \033[2m[%s]\033[0m", status.Tag)
+					envInfo := ""
+					if len(status.Environment) > 0 {
+						// Collect only user-defined keys; computed OVERSEER_* variables
+						// are kept in the API response but omitted from display.
+						envKeys := make([]string, 0, len(status.Environment))
+						for k := range status.Environment {
+							if strings.HasPrefix(k, "OVERSEER_") {
+								continue
+							}
+							envKeys = append(envKeys, k)
+						}
+						sort.Strings(envKeys)
+						var envParts []string
+						for _, k := range envKeys {
+							envParts = append(envParts, fmt.Sprintf("%s=%s", k, status.Environment[k]))
+						}
+						envInfo = fmt.Sprintf(" \033[2m[%s]\033[0m", strings.Join(envParts, ", "))
 					}
 
 					fmt.Printf(
 						"  %s%s%s %s%s%s%s %s(PID:%s %d, %s%s%s)%s%s\n",
 						color, icon, colorReset,
 						color, status.Hostname, colorReset,
-						tagInfo,
+						envInfo,
 						colorGray, colorReset, status.Pid, timeInfo,
 						reconnectInfo,
 						colorGray, colorReset,

@@ -317,7 +317,7 @@ func TestGetStatus(t *testing.T) {
 					LastConnectedTime: now,
 					State:             StateConnected,
 					AutoReconnect:     true,
-					Tag:               "work",
+					Environment:       map[string]string{"OVERSEER_TAG": "work"},
 				},
 			},
 		}
@@ -340,8 +340,43 @@ func TestGetStatus(t *testing.T) {
 		if statuses[0].State != StateConnected {
 			t.Errorf("expected state Connected, got %q", statuses[0].State)
 		}
-		if statuses[0].Tag != "work" {
-			t.Errorf("expected tag 'work', got %q", statuses[0].Tag)
+		if statuses[0].Environment["OVERSEER_TAG"] != "work" {
+			t.Errorf("expected environment OVERSEER_TAG='work', got %q", statuses[0].Environment["OVERSEER_TAG"])
+		}
+	})
+
+	t.Run("environment includes computed OVERSEER_ variables", func(t *testing.T) {
+		now := time.Now()
+		d := &Daemon{
+			tunnels: map[string]Tunnel{
+				"server1": {
+					Hostname:          "server1.example.com",
+					Pid:               1234,
+					StartDate:         now,
+					LastConnectedTime: now,
+					State:             StateConnected,
+					Environment: map[string]string{
+						"MY_VAR":            "user-value",
+						"OVERSEER_CONTEXT":  "trusted",
+						"OVERSEER_LOCATION": "home",
+					},
+				},
+			},
+		}
+
+		resp := d.getStatus()
+		statuses := resp.Data.([]DaemonStatus)
+		env := statuses[0].Environment
+
+		// API must return all keys — filtering is display-only
+		if env["MY_VAR"] != "user-value" {
+			t.Errorf("expected MY_VAR='user-value', got %q", env["MY_VAR"])
+		}
+		if env["OVERSEER_CONTEXT"] != "trusted" {
+			t.Errorf("expected OVERSEER_CONTEXT='trusted', got %q", env["OVERSEER_CONTEXT"])
+		}
+		if env["OVERSEER_LOCATION"] != "home" {
+			t.Errorf("expected OVERSEER_LOCATION='home', got %q", env["OVERSEER_LOCATION"])
 		}
 	})
 

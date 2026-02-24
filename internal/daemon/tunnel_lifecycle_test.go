@@ -79,7 +79,7 @@ func TestStartTunnel_PubKeySuccess(t *testing.T) {
 	d, srv, alias := setupTestDaemon(t)
 	defer srv.Stop()
 
-	resp := d.startTunnel(alias, "")
+	resp := d.startTunnel(alias, nil)
 
 	// Check for success
 	for _, msg := range resp.Messages {
@@ -114,7 +114,7 @@ func TestStartTunnel_AlreadyRunning(t *testing.T) {
 	d, srv, alias := setupTestDaemon(t)
 	defer srv.Stop()
 
-	resp := d.startTunnel(alias, "")
+	resp := d.startTunnel(alias, nil)
 	for _, msg := range resp.Messages {
 		if msg.Status == "ERROR" {
 			t.Fatalf("first startTunnel failed: %s", msg.Message)
@@ -122,7 +122,7 @@ func TestStartTunnel_AlreadyRunning(t *testing.T) {
 	}
 
 	// Try starting the same alias again
-	resp2 := d.startTunnel(alias, "")
+	resp2 := d.startTunnel(alias, nil)
 
 	found := false
 	for _, msg := range resp2.Messages {
@@ -173,7 +173,7 @@ func TestStartTunnel_AuthFailure(t *testing.T) {
 	d := New()
 	d.SetSSHConfigFile(srv.SSHConfigPath())
 
-	resp := d.startTunnel(alias, "")
+	resp := d.startTunnel(alias, nil)
 
 	found := false
 	for _, msg := range resp.Messages {
@@ -190,7 +190,7 @@ func TestStopTunnel_Running(t *testing.T) {
 	d, srv, alias := setupTestDaemon(t)
 	defer srv.Stop()
 
-	resp := d.startTunnel(alias, "")
+	resp := d.startTunnel(alias, nil)
 	for _, msg := range resp.Messages {
 		if msg.Status == "ERROR" {
 			t.Fatalf("startTunnel failed: %s", msg.Message)
@@ -253,7 +253,7 @@ func TestStopTunnel_ForReconnect(t *testing.T) {
 	d, srv, alias := setupTestDaemon(t)
 	defer srv.Stop()
 
-	resp := d.startTunnel(alias, "")
+	resp := d.startTunnel(alias, nil)
 	for _, msg := range resp.Messages {
 		if msg.Status == "ERROR" {
 			t.Fatalf("startTunnel failed: %s", msg.Message)
@@ -284,7 +284,7 @@ func TestMonitorTunnel_ServerStop(t *testing.T) {
 	d, srv, alias := setupTestDaemon(t)
 	// Don't defer srv.Stop() — we stop it mid-test
 
-	resp := d.startTunnel(alias, "")
+	resp := d.startTunnel(alias, nil)
 	for _, msg := range resp.Messages {
 		if msg.Status == "ERROR" {
 			t.Fatalf("startTunnel failed: %s", msg.Message)
@@ -317,7 +317,7 @@ func TestMonitorTunnel_ManualStop(t *testing.T) {
 	d, srv, alias := setupTestDaemon(t)
 	defer srv.Stop()
 
-	resp := d.startTunnel(alias, "")
+	resp := d.startTunnel(alias, nil)
 	for _, msg := range resp.Messages {
 		if msg.Status == "ERROR" {
 			t.Fatalf("startTunnel failed: %s", msg.Message)
@@ -386,7 +386,7 @@ func TestResolveJumpChain_NoProxy(t *testing.T) {
 	_, srv, alias := setupTestDaemon(t)
 	defer srv.Stop()
 
-	chain := resolveJumpChain(alias, "", srv.SSHConfigPath())
+	chain := resolveJumpChain(alias, nil, srv.SSHConfigPath())
 	if chain != nil {
 		t.Errorf("expected nil jump chain for direct connection, got %v", chain)
 	}
@@ -638,7 +638,7 @@ func TestSaveTunnelState_RoundTrip(t *testing.T) {
 		State:         StateConnected,
 		StartDate:     time.Now().Add(-1 * time.Hour),
 		AutoReconnect: true,
-		Tag:           "test-tag",
+		Environment:   map[string]string{"OVERSEER_TAG": "test-tag"},
 	}
 
 	// Save state
@@ -671,8 +671,8 @@ func TestSaveTunnelState_RoundTrip(t *testing.T) {
 	if !info.AutoReconnect {
 		t.Error("expected AutoReconnect to be true")
 	}
-	if info.Tag != "test-tag" {
-		t.Errorf("expected tag 'test-tag', got %q", info.Tag)
+	if info.Environment["OVERSEER_TAG"] != "test-tag" {
+		t.Errorf("expected environment OVERSEER_TAG='test-tag', got %q", info.Environment["OVERSEER_TAG"])
 	}
 
 	// Clean up

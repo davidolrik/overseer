@@ -88,10 +88,10 @@ type ContextActions struct {
 
 // TunnelConfig represents per-tunnel configuration
 type TunnelConfig struct {
-	Name       string             // Tunnel name (matches SSH alias)
-	Tag        string             // SSH tag for config matching (set as OVERSEER_TAG env var for Match exec)
-	Companions []CompanionConfig  // Companion scripts to run before tunnel starts
-	Hooks      *TunnelHooksConfig // Lifecycle hooks for tunnel connection
+	Name        string             // Tunnel name (matches SSH alias)
+	Environment map[string]string  // Environment variables set on the SSH process (used with Match exec in ssh_config)
+	Companions  []CompanionConfig  // Companion scripts to run before tunnel starts
+	Hooks       *TunnelHooksConfig // Lifecycle hooks for tunnel connection
 }
 
 // TunnelHooksConfig represents hooks for tunnel lifecycle events
@@ -205,10 +205,10 @@ type hclActions struct {
 }
 
 type hclTunnel struct {
-	Name       string           `hcl:"name,label"`
-	Tag        string           `hcl:"tag,optional"`
-	Companions []hclCompanion   `hcl:"companion,block"`
-	Hooks      *hclTunnelHooks  `hcl:"hooks,block"`
+	Name        string            `hcl:"name,label"`
+	Environment map[string]string `hcl:"environment,optional"`
+	Companions  []hclCompanion    `hcl:"companion,block"`
+	Hooks       *hclTunnelHooks   `hcl:"hooks,block"`
 }
 
 type hclTunnelHooks struct {
@@ -441,10 +441,14 @@ func convertHCLConfig(hclCfg *hclConfig) (*Configuration, error) {
 
 	// Convert tunnel configurations
 	for _, hclTun := range hclCfg.Tunnels {
+		tunnelEnv := hclTun.Environment
+		if tunnelEnv == nil {
+			tunnelEnv = make(map[string]string)
+		}
 		tunnel := &TunnelConfig{
-			Name:       hclTun.Name,
-			Tag:        hclTun.Tag,
-			Companions: make([]CompanionConfig, 0, len(hclTun.Companions)),
+			Name:        hclTun.Name,
+			Environment: tunnelEnv,
+			Companions:  make([]CompanionConfig, 0, len(hclTun.Companions)),
 		}
 
 		// Track companion names for uniqueness validation

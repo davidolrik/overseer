@@ -1769,7 +1769,7 @@ func TestHandleConnection_IPC_SSHReconnectWithRunningTunnel(t *testing.T) {
 		Cmd:       nil,
 		StartDate: time.Now(),
 		State:     StateConnected,
-		Tag:       "test-tag",
+		Environment: map[string]string{"OVERSEER_TAG": "test-tag"},
 	}
 
 	resp := sendIPCCommand(t, d, "SSH_RECONNECT my-tunnel")

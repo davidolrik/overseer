@@ -2,10 +2,18 @@ package state
 
 import (
 	"log/slog"
+	"net"
 	"os"
 	"testing"
 	"time"
 )
+
+// setManagerState is a test helper that directly sets the state manager's current state.
+func setManagerState(m *StateManager, s StateSnapshot) {
+	m.stateMu.Lock()
+	defer m.stateMu.Unlock()
+	m.currentState = s
+}
 
 func TestNewOrchestrator(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.Level(99)}))
@@ -295,4 +303,130 @@ func TestOrchestrator_SensorCacheRoundTrip(t *testing.T) {
 	if cache[0].Sensor != "tcp" {
 		t.Errorf("expected 'tcp', got %q", cache[0].Sensor)
 	}
+}
+
+func TestOrchestrator_BuildSSHEnv(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.Level(99)}))
+
+	t.Run("full state", func(t *testing.T) {
+		o := NewOrchestrator(OrchestratorConfig{
+			PreferredIP: "ipv4",
+			Logger:      logger,
+		})
+
+		// Inject known state via sensor cache
+		setManagerState(o.manager, StateSnapshot{
+			Context:             "office",
+			ContextDisplayName:  "Office",
+			Location:            "hq",
+			LocationDisplayName: "Headquarters",
+			PublicIPv4:          net.ParseIP("203.0.113.1"),
+			PublicIPv6:          net.ParseIP("2001:db8::1"),
+			LocalIPv4:           net.ParseIP("192.168.1.50"),
+			Environment: map[string]string{
+				"MY_CUSTOM": "hello",
+			},
+		})
+
+		env := o.BuildSSHEnv()
+
+		expected := map[string]string{
+			"OVERSEER_CONTEXT":              "office",
+			"OVERSEER_CONTEXT_DISPLAY_NAME": "Office",
+			"OVERSEER_LOCATION":             "hq",
+			"OVERSEER_LOCATION_DISPLAY_NAME": "Headquarters",
+			"OVERSEER_PUBLIC_IP":            "203.0.113.1",
+			"OVERSEER_PUBLIC_IPV4":          "203.0.113.1",
+			"OVERSEER_PUBLIC_IPV6":          "2001:db8::1",
+			"OVERSEER_LOCAL_IP":             "192.168.1.50",
+			"OVERSEER_LOCAL_IPV4":           "192.168.1.50",
+			"MY_CUSTOM":                     "hello",
+		}
+
+		for key, want := range expected {
+			got, ok := env[key]
+			if !ok {
+				t.Errorf("missing key %q", key)
+			} else if got != want {
+				t.Errorf("%s = %q, want %q", key, got, want)
+			}
+		}
+
+		// Verify no unexpected keys
+		if len(env) != len(expected) {
+			t.Errorf("env has %d keys, want %d", len(env), len(expected))
+			for k, v := range env {
+				if _, ok := expected[k]; !ok {
+					t.Errorf("unexpected key %q = %q", k, v)
+				}
+			}
+		}
+	})
+
+	t.Run("preferred IP ipv6", func(t *testing.T) {
+		o := NewOrchestrator(OrchestratorConfig{
+			PreferredIP: "ipv6",
+			Logger:      logger,
+		})
+
+		setManagerState(o.manager, StateSnapshot{
+			PublicIPv4: net.ParseIP("203.0.113.1"),
+			PublicIPv6: net.ParseIP("2001:db8::1"),
+		})
+
+		env := o.BuildSSHEnv()
+
+		if env["OVERSEER_PUBLIC_IP"] != "2001:db8::1" {
+			t.Errorf("OVERSEER_PUBLIC_IP = %q, want %q (ipv6 preferred)", env["OVERSEER_PUBLIC_IP"], "2001:db8::1")
+		}
+	})
+
+	t.Run("preferred IP fallback to ipv6 when no ipv4", func(t *testing.T) {
+		o := NewOrchestrator(OrchestratorConfig{
+			PreferredIP: "ipv4",
+			Logger:      logger,
+		})
+
+		setManagerState(o.manager, StateSnapshot{
+			PublicIPv6: net.ParseIP("2001:db8::1"),
+		})
+
+		env := o.BuildSSHEnv()
+
+		if env["OVERSEER_PUBLIC_IP"] != "2001:db8::1" {
+			t.Errorf("OVERSEER_PUBLIC_IP = %q, want %q (fallback to ipv6)", env["OVERSEER_PUBLIC_IP"], "2001:db8::1")
+		}
+	})
+
+	t.Run("empty state", func(t *testing.T) {
+		o := NewOrchestrator(OrchestratorConfig{
+			Logger: logger,
+		})
+
+		env := o.BuildSSHEnv()
+
+		if len(env) != 0 {
+			t.Errorf("expected empty env for empty state, got %d keys: %v", len(env), env)
+		}
+	})
+
+	t.Run("custom env overrides OVERSEER_ prefix", func(t *testing.T) {
+		o := NewOrchestrator(OrchestratorConfig{
+			Logger: logger,
+		})
+
+		setManagerState(o.manager, StateSnapshot{
+			Context: "office",
+			Environment: map[string]string{
+				"OVERSEER_CONTEXT": "custom-override",
+			},
+		})
+
+		env := o.BuildSSHEnv()
+
+		// Custom env applied after OVERSEER_ vars, so it wins
+		if env["OVERSEER_CONTEXT"] != "custom-override" {
+			t.Errorf("OVERSEER_CONTEXT = %q, want %q (custom env should override)", env["OVERSEER_CONTEXT"], "custom-override")
+		}
+	})
 }

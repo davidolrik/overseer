@@ -69,7 +69,7 @@ func TestAdoptTunnel_WithAllFields(t *testing.T) {
 		TotalReconnects:   10,
 		AutoReconnect:     true,
 		State:             string(StateConnected),
-		Tag:               "production",
+		Environment:       map[string]string{"OVERSEER_TAG": "production"},
 		ResolvedHost:      "10.0.0.1",
 		JumpChain: []string{"jump1.example.com:22"},
 	}
