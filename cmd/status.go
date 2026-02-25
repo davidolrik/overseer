@@ -150,24 +150,7 @@ and rules defined in your configuration. Context changes automatically connect o
 						reconnectInfo = fmt.Sprintf(", %sReconnects:%s %s%d%s", colorGray, colorReset, colorYellow, status.TotalReconnects, colorReset)
 					}
 
-					envInfo := ""
-					if len(status.Environment) > 0 {
-						// Collect only user-defined keys; computed OVERSEER_* variables
-						// are kept in the API response but omitted from display.
-						envKeys := make([]string, 0, len(status.Environment))
-						for k := range status.Environment {
-							if strings.HasPrefix(k, "OVERSEER_") {
-								continue
-							}
-							envKeys = append(envKeys, k)
-						}
-						sort.Strings(envKeys)
-						var envParts []string
-						for _, k := range envKeys {
-							envParts = append(envParts, fmt.Sprintf("%s=%s", k, status.Environment[k]))
-						}
-						envInfo = fmt.Sprintf(" \033[2m[%s]\033[0m", strings.Join(envParts, ", "))
-					}
+					envInfo := formatEnvInfo(status.Environment)
 
 					fmt.Printf(
 						"  %s%s%s %s%s%s%s %s(PID:%s %d, %s%s%s)%s%s\n",
@@ -303,6 +286,35 @@ func resolveHop(hop string) string {
 		return hop
 	}
 	return net.JoinHostPort(strings.TrimRight(names[0], "."), port)
+}
+
+// formatEnvInfo formats user-defined environment variables for display.
+// Computed OVERSEER_* variables are omitted. Returns an empty string
+// when there are no user-defined variables to show.
+func formatEnvInfo(env map[string]string) string {
+	if len(env) == 0 {
+		return ""
+	}
+
+	// Collect only user-defined keys; computed OVERSEER_* variables
+	// are kept in the API response but omitted from display.
+	envKeys := make([]string, 0, len(env))
+	for k := range env {
+		if strings.HasPrefix(k, "OVERSEER_") {
+			continue
+		}
+		envKeys = append(envKeys, k)
+	}
+	if len(envKeys) == 0 {
+		return ""
+	}
+
+	sort.Strings(envKeys)
+	envParts := make([]string, 0, len(envKeys))
+	for _, k := range envKeys {
+		envParts = append(envParts, fmt.Sprintf("%s=%s", k, env[k]))
+	}
+	return fmt.Sprintf(" \033[2m[%s]\033[0m", strings.Join(envParts, ", "))
 }
 
 // companionInfo holds parsed companion information for display
