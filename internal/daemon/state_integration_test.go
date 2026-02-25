@@ -507,6 +507,45 @@ func TestGetContextStatus_WithDatabase(t *testing.T) {
 	}
 }
 
+func TestGetContextStatus_IncludesProcessTag(t *testing.T) {
+	quietLogger(t)
+
+	tmpDir := t.TempDir()
+	oldConfig := core.Config
+	t.Cleanup(func() { core.Config = oldConfig })
+	core.Config = &core.Configuration{
+		ConfigPath: tmpDir,
+		Companion:  core.CompanionSettings{HistorySize: 50},
+		Locations:  map[string]*core.Location{},
+		Contexts:   []*core.ContextRule{},
+	}
+
+	old := stateOrchestrator
+	t.Cleanup(func() {
+		stopStateOrchestrator()
+		stateOrchestrator = old
+	})
+
+	d := New()
+	if err := d.initStateOrchestrator(); err != nil {
+		t.Fatalf("initStateOrchestrator failed: %v", err)
+	}
+
+	resp := d.getContextStatus(10)
+	status, ok := resp.Data.(ContextStatus)
+	if !ok {
+		t.Fatalf("expected Data to be ContextStatus, got %T", resp.Data)
+	}
+
+	tag, exists := status.Sensors["process_tag"]
+	if !exists {
+		t.Fatal("expected process_tag sensor to be present")
+	}
+	if tag != core.ProcessTag() {
+		t.Errorf("expected process_tag=%q, got %q", core.ProcessTag(), tag)
+	}
+}
+
 func TestInitStateOrchestrator_EmptyConfig(t *testing.T) {
 	quietLogger(t)
 

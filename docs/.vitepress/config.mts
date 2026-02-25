@@ -1,5 +1,8 @@
+import { execSync } from "node:child_process";
 import { defineConfig } from "vitepress";
 import { withMermaid } from "vitepress-plugin-mermaid";
+
+const version = execSync("git describe --tags --abbrev=0").toString().trim();
 
 // https://vitepress.dev/reference/site-config
 export default withMermaid(
@@ -55,6 +58,10 @@ export default withMermaid(
             nav: [
                 { text: "Guide", link: "/guide/what-is-overseer" },
                 { text: "Advanced", link: "/advanced/shell-integration" },
+                {
+                    text: version,
+                    link: `https://github.com/davidolrik/overseer/releases/tag/${version}`,
+                },
             ],
 
             sidebar: [

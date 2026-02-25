@@ -1,6 +1,7 @@
 package core
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -14,6 +15,14 @@ const (
 	PidFileName = "daemon.pid"
 	SocketName  = "daemon.sock"
 )
+
+// ProcessTag returns an 8-char hex tag derived from Config.ConfigPath.
+// Used to uniquely identify SSH processes belonging to this daemon instance,
+// preventing cross-user interference when multiple daemons run on the same host.
+func ProcessTag() string {
+	hash := sha256.Sum256([]byte(Config.ConfigPath))
+	return fmt.Sprintf("%x", hash[:4])
+}
 
 // GetSocketPath returns the path to the daemon socket
 func GetSocketPath() string {

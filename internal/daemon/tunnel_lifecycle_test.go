@@ -583,7 +583,7 @@ func TestAdoptTunnel_AlreadyTracked(t *testing.T) {
 		PID:      os.Getpid(),
 		Alias:    "existing-tunnel",
 		Hostname: "example.com",
-		Cmdline:  []string{"ssh", "existing-tunnel", "-N", "-o", "IgnoreUnknown=overseer-daemon", "-o", "overseer-daemon=true", "-o", "ExitOnForwardFailure=yes", "-v"},
+		Cmdline:  []string{"ssh", "existing-tunnel", "-N", "-o", "IgnoreUnknown=overseer-daemon", "-o", "overseer-daemon=" + core.ProcessTag(), "-o", "ExitOnForwardFailure=yes", "-v"},
 		State:    "connected",
 	}
 

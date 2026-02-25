@@ -63,7 +63,7 @@ func (d *Daemon) SaveTunnelState() error {
 		// Build command line for validation
 		// Note: We can't get the full cmdline from exec.Cmd after Start(),
 		// so we reconstruct it based on our config
-		cmdline := []string{"ssh", alias, "-N", "-o", "IgnoreUnknown=overseer-daemon", "-o", "overseer-daemon=true", "-o", "ExitOnForwardFailure=yes", "-v"}
+		cmdline := []string{"ssh", alias, "-N", "-o", "IgnoreUnknown=overseer-daemon", "-o", "overseer-daemon=" + core.ProcessTag(), "-o", "ExitOnForwardFailure=yes", "-v"}
 
 		info := TunnelInfo{
 			PID:               tunnel.Pid,

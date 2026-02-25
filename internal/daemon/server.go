@@ -782,7 +782,7 @@ func (d *Daemon) startTunnelStreaming(alias string, cliEnv map[string]string, st
 
 	// Create SSH command with verbose mode to detect connection status
 	// Build SSH options from config
-	sshArgs := []string{alias, "-N", "-o", "IgnoreUnknown=overseer-daemon", "-o", "overseer-daemon=true", "-o", "ExitOnForwardFailure=yes", "-v"}
+	sshArgs := []string{alias, "-N", "-o", "IgnoreUnknown=overseer-daemon", "-o", "overseer-daemon=" + core.ProcessTag(), "-o", "ExitOnForwardFailure=yes", "-v"}
 
 	if d.sshConfigFile != "" {
 		sshArgs = append([]string{"-F", d.sshConfigFile}, sshArgs...)
@@ -1168,7 +1168,7 @@ func (d *Daemon) monitorTunnel(alias string) {
 
 		// Create new SSH command
 		// Build SSH options from config
-		sshArgs := []string{alias, "-N", "-o", "IgnoreUnknown=overseer-daemon", "-o", "overseer-daemon=true", "-o", "ExitOnForwardFailure=yes", "-v"}
+		sshArgs := []string{alias, "-N", "-o", "IgnoreUnknown=overseer-daemon", "-o", "overseer-daemon=" + core.ProcessTag(), "-o", "ExitOnForwardFailure=yes", "-v"}
 
 		if d.sshConfigFile != "" {
 			sshArgs = append([]string{"-F", d.sshConfigFile}, sshArgs...)
@@ -2165,6 +2165,7 @@ func (d *Daemon) getContextStatus(eventLimit int) Response {
 
 	// Build sensor map from state
 	sensors := make(map[string]string)
+	sensors["process_tag"] = core.ProcessTag()
 	sensors["online"] = fmt.Sprintf("%v", currentState.Online)
 	sensors["context"] = currentState.Context
 	sensors["location"] = currentState.Location
@@ -2584,7 +2585,7 @@ func findOverseerSSHProcesses() ([]int, error) {
 	// Use pgrep to find SSH processes with our marker
 	// -f: match against full command line
 	// The marker "overseer-daemon" is added via SSH's -o option
-	cmd := exec.Command("pgrep", "-f", "overseer-daemon")
+	cmd := exec.Command("pgrep", "-f", "overseer-daemon="+core.ProcessTag())
 	output, err := cmd.Output()
 	if err != nil {
 		// pgrep returns exit code 1 when no processes found - that's OK
@@ -2610,8 +2611,8 @@ func findOverseerSSHProcesses() ([]int, error) {
 			slog.Warn("Failed to parse PID from pgrep output", "line", line, "error", err)
 			continue
 		}
-		// Skip our own PID — pgrep -f "overseer-daemon" matches the daemon itself
-		// since its cmdline contains "--overseer-daemon"
+		// Skip our own PID — pgrep matches the daemon itself
+		// since its cmdline contains "--overseer-daemon=<tag>"
 		if pid == myPID {
 			continue
 		}

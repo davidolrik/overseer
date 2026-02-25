@@ -180,7 +180,7 @@ func CheckVersionMismatch() {
 // StartDaemon starts the daemon process in the background and returns the
 // exec.Cmd so callers can monitor the subprocess for early crashes.
 func StartDaemon() (*exec.Cmd, error) {
-	cmd := exec.Command(os.Args[0], "daemon", "--overseer-daemon")
+	cmd := exec.Command(os.Args[0], "daemon", "--overseer-daemon="+core.ProcessTag())
 
 	// Pass the parent PID (shell/SSH session) to the daemon
 	// The daemon will monitor this PID instead of its own parent (which will be PID 1)

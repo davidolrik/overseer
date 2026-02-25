@@ -478,14 +478,20 @@ func displayContextInfo(data interface{}) {
 		fmt.Printf("%sContext Age:%s %s\n", colorGray, colorReset, status.Uptime)
 	}
 
-	// Display all sensors (sorted by name)
+	// Display all sensors (process_tag first, then sorted by name)
 	if len(status.Sensors) > 0 {
 		fmt.Printf("\n%sSensors:%s\n", colorBold, colorReset)
 		sensorKeys := make([]string, 0, len(status.Sensors))
 		for key := range status.Sensors {
+			if key == "process_tag" {
+				continue
+			}
 			sensorKeys = append(sensorKeys, key)
 		}
 		sort.Strings(sensorKeys)
+		if _, ok := status.Sensors["process_tag"]; ok {
+			sensorKeys = append([]string{"process_tag"}, sensorKeys...)
+		}
 		for _, key := range sensorKeys {
 			value := status.Sensors[key]
 			// Format the display value
