@@ -1018,6 +1018,13 @@ func (d *Daemon) monitorTunnel(alias string) {
 			return // Tunnel was manually stopped
 		}
 		cmd := tunnel.Cmd
+		if cmd == nil {
+			// Previous Start() failed, leaving Cmd nil - clean up and exit
+			slog.Warn("Tunnel has nil Cmd, cleaning up", "alias", alias)
+			delete(d.tunnels, alias)
+			d.mu.Unlock()
+			return
+		}
 		d.mu.Unlock()
 
 		waitErr := cmd.Wait()
@@ -1155,6 +1162,15 @@ func (d *Daemon) monitorTunnel(alias string) {
 			return
 		}
 
+		// Check if tunnel was replaced during backoff (e.g., by a context change
+		// that disconnected and reconnected the tunnel while we were sleeping)
+		if tunnel.Cmd != cmd {
+			slog.Info("Tunnel was replaced during reconnect backoff, aborting",
+				"alias", alias)
+			d.mu.Unlock()
+			return
+		}
+
 		// Check again if we're still online (might have gone offline during backoff)
 		// If offline, just skip this reconnect attempt but don't change state
 		if !d.checkOnlineStatus() {
@@ -1266,12 +1282,16 @@ func (d *Daemon) monitorTunnel(alias string) {
 				}
 			}
 
-			// Kill the failed process and continue the loop to retry
+			// Kill the failed reconnection process directly
+			newCmd.Process.Kill()
+
+			// Check if tunnel was replaced during verification (e.g., by a context change)
 			d.mu.Lock()
-			if tunnel, exists := d.tunnels[alias]; exists {
-				if tunnel.Cmd != nil && tunnel.Cmd.Process != nil {
-					tunnel.Cmd.Process.Kill()
-				}
+			if t, exists := d.tunnels[alias]; !exists || t.Cmd != newCmd {
+				slog.Info("Tunnel was replaced during reconnect verification, aborting",
+					"alias", alias)
+				d.mu.Unlock()
+				return
 			}
 			d.mu.Unlock()
 			continue
@@ -1280,23 +1300,34 @@ func (d *Daemon) monitorTunnel(alias string) {
 		// Success! Reset retry count, update state, reset connection time, and increment total reconnects
 		slog.Info(fmt.Sprintf("Tunnel '%s' reconnected successfully.", alias))
 
-		// Log to database
 		d.mu.Lock()
-		currentTunnel := d.tunnels[alias]
+		// Check if tunnel was replaced during verification (e.g., by a context change)
+		if t, exists := d.tunnels[alias]; !exists || t.Cmd != newCmd {
+			// Our tunnel was replaced - kill our process to avoid orphaning it
+			slog.Info("Tunnel was replaced during reconnect verification, killing orphaned process",
+				"alias", alias,
+				"pid", newCmd.Process.Pid)
+			newCmd.Process.Kill()
+			d.mu.Unlock()
+			return
+		}
+
+		// Log to database
 		if d.database != nil {
+			currentTunnel := d.tunnels[alias]
 			details := fmt.Sprintf("PID: %d, Total reconnects: %d", newCmd.Process.Pid, currentTunnel.TotalReconnects+1)
 			if err := d.database.LogTunnelEvent(alias, "reconnect", details); err != nil {
 				slog.Error("Failed to log tunnel reconnect event", "error", err)
 			}
 		}
 
-		if tunnel, exists := d.tunnels[alias]; exists {
-			tunnel.RetryCount = 0
-			tunnel.State = StateConnected
-			tunnel.NextRetryTime = time.Time{}    // Clear next retry time
-			tunnel.LastConnectedTime = time.Now() // Reset age to 0
-			tunnel.TotalReconnects++              // Increment stability counter
-			d.tunnels[alias] = tunnel
+		if t, exists := d.tunnels[alias]; exists {
+			t.RetryCount = 0
+			t.State = StateConnected
+			t.NextRetryTime = time.Time{}    // Clear next retry time
+			t.LastConnectedTime = time.Now() // Reset age to 0
+			t.TotalReconnects++              // Increment stability counter
+			d.tunnels[alias] = t
 		}
 		d.mu.Unlock()
 
@@ -2848,6 +2879,16 @@ func (d *Daemon) monitorAdoptedTunnel(alias string, pid int) {
 				// Check if tunnel still exists (might have been manually stopped during backoff)
 				tunnel, exists = d.tunnels[alias]
 				if !exists {
+					d.mu.Unlock()
+					return
+				}
+
+				// Check if tunnel was replaced during backoff (e.g., by a context change)
+				if tunnel.Pid != pid {
+					slog.Info("Adopted tunnel was replaced during reconnect backoff, aborting",
+						"alias", alias,
+						"original_pid", pid,
+						"current_pid", tunnel.Pid)
 					d.mu.Unlock()
 					return
 				}
