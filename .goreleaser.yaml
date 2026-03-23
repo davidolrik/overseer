@@ -6,6 +6,10 @@ force_token: github
 before:
   hooks:
     - go mod tidy
+    - mkdir -p completions
+    - go run . completion bash > completions/overseer.bash
+    - go run . completion zsh > completions/overseer.zsh
+    - go run . completion fish > completions/overseer.fish
 
 builds:
   # Linux builds - CGO disabled for static linking
@@ -61,6 +65,8 @@ builds:
 
 archives:
   - formats: [tar.gz]
+    files:
+      - completions/*
     # this name template makes the OS and Arch compatible with the results of `uname`.
     name_template: >-
       {{ .ProjectName }}_
@@ -70,7 +76,7 @@ archives:
       {{- else }}{{ .Arch }}{{ end }}
       {{- if .Arm }}v{{ .Arm }}{{ end }}
 
-brews:
+homebrew_casks:
   - repository:
       owner: davidolrik
       name: homebrew-tap
@@ -78,10 +84,12 @@ brews:
     homepage: https://overseer.olrik.dev/
     description: SSH Tunnel Manager
     license: MIT
-    install: |
-      bin.install "overseer"
-
-      generate_completions_from_executable(bin/"overseer", "completion")
+    binaries:
+      - overseer
+    completions:
+      bash: completions/overseer.bash
+      zsh: completions/overseer.zsh
+      fish: completions/overseer.fish
     service: |
       run [opt_bin/"overseer", "daemon"]
       keep_alive true
