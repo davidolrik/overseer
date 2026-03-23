@@ -6,6 +6,12 @@
 brew install davidolrik/tap/overseer
 ```
 
+To start overseer as a background service:
+
+```sh
+brew services start overseer
+```
+
 To update later:
 
 ```sh
