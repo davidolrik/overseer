@@ -19,6 +19,8 @@ builds:
     goarch:
       - amd64
       - arm64
+    ldflags:
+      - -s -w -X go.olrik.dev/overseer/internal/core.Version={{.Version}}
 
   # macOS builds - CGO enabled for keychain access
   - id: darwin-amd64
@@ -30,6 +32,8 @@ builds:
       - darwin
     goarch:
       - amd64
+    ldflags:
+      - -s -w -X go.olrik.dev/overseer/internal/core.Version={{.Version}}
     flags:
       - -mod=readonly
     hooks:
@@ -46,6 +50,8 @@ builds:
       - darwin
     goarch:
       - arm64
+    ldflags:
+      - -s -w -X go.olrik.dev/overseer/internal/core.Version={{.Version}}
     flags:
       - -mod=readonly
     hooks:

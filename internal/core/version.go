@@ -9,6 +9,11 @@ import (
 var Version string
 
 func init() {
+	// If version was set via ldflags (e.g. GoReleaser), keep it.
+	if Version != "" {
+		return
+	}
+
 	info, ok := debug.ReadBuildInfo()
 	if !ok {
 		Version = "devel"
