@@ -90,11 +90,13 @@ homebrew_casks:
       bash: completions/overseer.bash
       zsh: completions/overseer.zsh
       fish: completions/overseer.fish
-    service: |
-      run [opt_bin/"overseer", "daemon"]
-      keep_alive true
-      log_path var/"log/overseer.log"
-      error_log_path var/"log/overseer.log"
+    custom_block: |
+      service do
+        run [opt_bin/"overseer", "daemon"]
+        keep_alive true
+        log_path var/"log/overseer.log"
+        error_log_path var/"log/overseer.log"
+      end
 
 changelog:
   sort: asc
