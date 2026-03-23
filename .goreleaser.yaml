@@ -7,9 +7,9 @@ before:
   hooks:
     - go mod tidy
     - mkdir -p completions
-    - go run . completion bash > completions/overseer.bash
-    - go run . completion zsh > completions/overseer.zsh
-    - go run . completion fish > completions/overseer.fish
+    - sh -c 'go run . completion bash > completions/overseer.bash'
+    - sh -c 'go run . completion zsh > completions/overseer.zsh'
+    - sh -c 'go run . completion fish > completions/overseer.fish'
 
 builds:
   # Linux builds - CGO disabled for static linking
@@ -66,7 +66,8 @@ builds:
 archives:
   - formats: [tar.gz]
     files:
-      - completions/*
+      - src: "./completions/*"
+        dst: completions
     # this name template makes the OS and Arch compatible with the results of `uname`.
     name_template: >-
       {{ .ProjectName }}_
@@ -83,7 +84,6 @@ homebrew_casks:
       token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
     homepage: https://overseer.olrik.dev/
     description: SSH Tunnel Manager
-    license: MIT
     binaries:
       - overseer
     completions:
