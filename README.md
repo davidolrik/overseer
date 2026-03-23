@@ -31,12 +31,6 @@ Whatever your workflow needs.
 brew install davidolrik/tap/overseer
 ```
 
-To start overseer as a background service:
-
-```sh
-brew services start overseer
-```
-
 ### Install using mise
 
 ```sh
