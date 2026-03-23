@@ -36,8 +36,13 @@ func GetPIDFilePath() string {
 
 // InitializeConfig loads the configuration from the HCL file
 func InitializeConfig(cmd *cobra.Command) ([]string, error) {
-	// Get config path from user input
-	configDir, err := cmd.Parent().Flags().GetString("config-path")
+	// Get config path from user input.
+	// When running as the root command itself (no parent), read from own flags.
+	flagSource := cmd.Parent()
+	if flagSource == nil {
+		flagSource = cmd
+	}
+	configDir, err := flagSource.Flags().GetString("config-path")
 	if err != nil {
 		panic("Unable to determine config path")
 	}

@@ -74,175 +74,7 @@ and rules defined in your configuration. Context changes automatically connect o
 					displayContextInfo(contextResponse.Data)
 				}
 
-				fmt.Println("Active Tunnels:")
-				if len(statuses) == 0 {
-					fmt.Println("  (none)")
-				}
-				for _, status := range statuses {
-					// ANSI color codes
-					const (
-						colorGreen    = "\033[32m"
-						colorYellow   = "\033[33m"
-						colorRed      = "\033[31m"
-						colorBlue     = "\033[34m"
-						colorGray     = "\033[90m"
-						colorBoldBlue = "\033[1;34m"
-						colorReset    = "\033[0m"
-					)
-
-					// Build state indicator with colored icon and alias
-					var icon, color, extraInfo, timeInfo string
-					switch status.State {
-					case "connecting":
-						icon = "⟳"
-						color = colorYellow
-						startTime, _ := time.Parse(time.RFC3339, status.StartDate)
-						elapsed := time.Since(startTime)
-						timeInfo = fmt.Sprintf("%sConnecting:%s %s", colorGray, colorReset, elapsed.Round(time.Second).String())
-					case "connected":
-						icon = "✓"
-						color = colorGreen
-						// Use LastConnectedTime for age (resets to 0 on reconnection)
-						lastConnected, _ := time.Parse(time.RFC3339, status.LastConnectedTime)
-						age := time.Since(lastConnected)
-						timeInfo = fmt.Sprintf("%sAge:%s %s", colorGray, colorReset, age.Round(time.Second).String())
-					case "disconnected":
-						icon = "✗"
-						color = colorRed
-						// Show how long it's been disconnected
-						if status.DisconnectedTime != "" {
-							disconnectedAt, _ := time.Parse(time.RFC3339, status.DisconnectedTime)
-							disconnectedFor := time.Since(disconnectedAt)
-							timeInfo = fmt.Sprintf("%sDisconnected:%s %s ago", colorGray, colorReset, disconnectedFor.Round(time.Second).String())
-						} else {
-							timeInfo = fmt.Sprintf("%sDisconnected%s", colorGray, colorReset)
-						}
-					case "reconnecting":
-						icon = "⟳"
-						color = colorYellow
-						// Show how long it's been disconnected
-						if status.DisconnectedTime != "" {
-							disconnectedAt, _ := time.Parse(time.RFC3339, status.DisconnectedTime)
-							disconnectedFor := time.Since(disconnectedAt)
-							timeInfo = fmt.Sprintf("%sDisconnected:%s %s ago", colorGray, colorReset, disconnectedFor.Round(time.Second).String())
-						} else {
-							timeInfo = fmt.Sprintf("%sReconnecting%s", colorGray, colorReset)
-						}
-						if status.NextRetry != "" {
-							nextRetry, err := time.Parse(time.RFC3339, status.NextRetry)
-							if err == nil {
-								timeUntil := time.Until(nextRetry)
-								if timeUntil > 0 {
-									extraInfo = fmt.Sprintf(" %s(next attempt in %s)%s", colorGray, timeUntil.Round(time.Second), colorReset)
-								} else {
-									extraInfo = fmt.Sprintf(" %s(attempting now)%s", colorGray, colorReset)
-								}
-							}
-						}
-						if status.RetryCount > 0 {
-							extraInfo += fmt.Sprintf(" %s[attempt %d]%s", colorYellow, status.RetryCount, colorReset)
-						}
-					}
-
-					// Build reconnect count info
-					reconnectInfo := ""
-					if status.TotalReconnects > 0 {
-						reconnectInfo = fmt.Sprintf(", %sReconnects:%s %s%d%s", colorGray, colorReset, colorYellow, status.TotalReconnects, colorReset)
-					}
-
-					envInfo := formatEnvInfo(status.Environment)
-
-					fmt.Printf(
-						"  %s%s%s %s%s%s%s %s(PID:%s %d, %s%s%s)%s%s\n",
-						color, icon, colorReset,
-						color, status.Hostname, colorReset,
-						envInfo,
-						colorGray, colorReset, status.Pid, timeInfo,
-						reconnectInfo,
-						colorGray, colorReset,
-						extraInfo,
-					)
-
-					// Build hops list for tree display
-					var hops []string
-					if len(status.JumpChain) > 0 {
-						hops = status.JumpChain
-					} else if status.ResolvedHost != "" {
-						hops = []string{status.ResolvedHost}
-					}
-
-					companions := companionMap[status.Hostname]
-					hasCompanions := len(companions) > 0
-
-					// Print hops as cascading tree
-					for i, hop := range hops {
-						// Format hop with colors
-						var hopStr string
-						host, port, err := net.SplitHostPort(hop)
-						if err == nil {
-							hopStr = fmt.Sprintf("%s%s%s:%s%s%s%s", colorBoldBlue, host, colorGray, colorReset, colorBlue, port, colorReset)
-						} else {
-							hopStr = fmt.Sprintf("%s%s%s", colorBoldBlue, hop, colorReset)
-						}
-
-						// Build prefix for nesting depth
-						var prefix string
-						if i > 0 {
-							if hasCompanions {
-								prefix = "│   "
-							} else {
-								prefix = "    "
-							}
-							for j := 1; j < i; j++ {
-								prefix += "    "
-							}
-						}
-
-						connector := "└──"
-						if i == 0 && hasCompanions {
-							connector = "├──"
-						}
-
-						fmt.Printf("  %s%s %s→%s %s\n", prefix, connector, colorGray, colorReset, hopStr)
-					}
-
-					// Show companions for this tunnel in tree format
-					if hasCompanions {
-						for i, comp := range companions {
-							// Tree connector: └── for last item, ├── for others
-							connector := "├──"
-							if i == len(companions)-1 {
-								connector = "└──"
-							}
-
-							// Choose color based on state
-							var compColor, compIcon string
-							switch comp.State {
-							case "running", "ready":
-								compColor = colorGreen
-								compIcon = "✓"
-							case "waiting", "starting":
-								compColor = colorYellow
-								compIcon = "⟳"
-							case "stopped", "exited":
-								compColor = colorGray
-								compIcon = "○"
-							case "failed":
-								compColor = colorRed
-								compIcon = "✗"
-							default:
-								compColor = colorReset
-								compIcon = "?"
-							}
-
-							fmt.Printf("  %s %s%s%s %s %s[%s]%s\n",
-								connector,
-								compColor, compIcon, colorReset,
-								comp.Name,
-								compColor, comp.State, colorReset)
-						}
-					}
-				}
+				displayTunnels(statuses, companionMap)
 
 				// Show recent events after tunnels in verbose mode
 				if eventLimit > 0 && err == nil && contextResponse.Data != nil {
@@ -372,6 +204,179 @@ func getCompanionMap(response daemon.Response) map[string][]companionInfo {
 	}
 
 	return result
+}
+
+// displayTunnels renders the active tunnels section with companion tree display
+func displayTunnels(statuses []daemon.DaemonStatus, companionMap map[string][]companionInfo) {
+	fmt.Println("Active Tunnels:")
+	if len(statuses) == 0 {
+		fmt.Println("  (none)")
+	}
+	for _, status := range statuses {
+		// ANSI color codes
+		const (
+			colorGreen    = "\033[32m"
+			colorYellow   = "\033[33m"
+			colorRed      = "\033[31m"
+			colorBlue     = "\033[34m"
+			colorGray     = "\033[90m"
+			colorBoldBlue = "\033[1;34m"
+			colorReset    = "\033[0m"
+		)
+
+		// Build state indicator with colored icon and alias
+		var icon, color, extraInfo, timeInfo string
+		switch status.State {
+		case "connecting":
+			icon = "⟳"
+			color = colorYellow
+			startTime, _ := time.Parse(time.RFC3339, status.StartDate)
+			elapsed := time.Since(startTime)
+			timeInfo = fmt.Sprintf("%sConnecting:%s %s", colorGray, colorReset, elapsed.Round(time.Second).String())
+		case "connected":
+			icon = "✓"
+			color = colorGreen
+			// Use LastConnectedTime for age (resets to 0 on reconnection)
+			lastConnected, _ := time.Parse(time.RFC3339, status.LastConnectedTime)
+			age := time.Since(lastConnected)
+			timeInfo = fmt.Sprintf("%sAge:%s %s", colorGray, colorReset, age.Round(time.Second).String())
+		case "disconnected":
+			icon = "✗"
+			color = colorRed
+			// Show how long it's been disconnected
+			if status.DisconnectedTime != "" {
+				disconnectedAt, _ := time.Parse(time.RFC3339, status.DisconnectedTime)
+				disconnectedFor := time.Since(disconnectedAt)
+				timeInfo = fmt.Sprintf("%sDisconnected:%s %s ago", colorGray, colorReset, disconnectedFor.Round(time.Second).String())
+			} else {
+				timeInfo = fmt.Sprintf("%sDisconnected%s", colorGray, colorReset)
+			}
+		case "reconnecting":
+			icon = "⟳"
+			color = colorYellow
+			// Show how long it's been disconnected
+			if status.DisconnectedTime != "" {
+				disconnectedAt, _ := time.Parse(time.RFC3339, status.DisconnectedTime)
+				disconnectedFor := time.Since(disconnectedAt)
+				timeInfo = fmt.Sprintf("%sDisconnected:%s %s ago", colorGray, colorReset, disconnectedFor.Round(time.Second).String())
+			} else {
+				timeInfo = fmt.Sprintf("%sReconnecting%s", colorGray, colorReset)
+			}
+			if status.NextRetry != "" {
+				nextRetry, err := time.Parse(time.RFC3339, status.NextRetry)
+				if err == nil {
+					timeUntil := time.Until(nextRetry)
+					if timeUntil > 0 {
+						extraInfo = fmt.Sprintf(" %s(next attempt in %s)%s", colorGray, timeUntil.Round(time.Second), colorReset)
+					} else {
+						extraInfo = fmt.Sprintf(" %s(attempting now)%s", colorGray, colorReset)
+					}
+				}
+			}
+			if status.RetryCount > 0 {
+				extraInfo += fmt.Sprintf(" %s[attempt %d]%s", colorYellow, status.RetryCount, colorReset)
+			}
+		}
+
+		// Build reconnect count info
+		reconnectInfo := ""
+		if status.TotalReconnects > 0 {
+			reconnectInfo = fmt.Sprintf(", %sReconnects:%s %s%d%s", colorGray, colorReset, colorYellow, status.TotalReconnects, colorReset)
+		}
+
+		envInfo := formatEnvInfo(status.Environment)
+
+		fmt.Printf(
+			"  %s%s%s %s%s%s%s %s(PID:%s %d, %s%s%s)%s%s\n",
+			color, icon, colorReset,
+			color, status.Hostname, colorReset,
+			envInfo,
+			colorGray, colorReset, status.Pid, timeInfo,
+			reconnectInfo,
+			colorGray, colorReset,
+			extraInfo,
+		)
+
+		// Build hops list for tree display
+		var hops []string
+		if len(status.JumpChain) > 0 {
+			hops = status.JumpChain
+		} else if status.ResolvedHost != "" {
+			hops = []string{status.ResolvedHost}
+		}
+
+		companions := companionMap[status.Hostname]
+		hasCompanions := len(companions) > 0
+
+		// Print hops as cascading tree
+		for i, hop := range hops {
+			// Format hop with colors
+			var hopStr string
+			host, port, err := net.SplitHostPort(hop)
+			if err == nil {
+				hopStr = fmt.Sprintf("%s%s%s:%s%s%s%s", colorBoldBlue, host, colorGray, colorReset, colorBlue, port, colorReset)
+			} else {
+				hopStr = fmt.Sprintf("%s%s%s", colorBoldBlue, hop, colorReset)
+			}
+
+			// Build prefix for nesting depth
+			var prefix string
+			if i > 0 {
+				if hasCompanions {
+					prefix = "│   "
+				} else {
+					prefix = "    "
+				}
+				for j := 1; j < i; j++ {
+					prefix += "    "
+				}
+			}
+
+			connector := "└──"
+			if i == 0 && hasCompanions {
+				connector = "├──"
+			}
+
+			fmt.Printf("  %s%s %s→%s %s\n", prefix, connector, colorGray, colorReset, hopStr)
+		}
+
+		// Show companions for this tunnel in tree format
+		if hasCompanions {
+			for i, comp := range companions {
+				// Tree connector: └── for last item, ├── for others
+				connector := "├──"
+				if i == len(companions)-1 {
+					connector = "└──"
+				}
+
+				// Choose color based on state
+				var compColor, compIcon string
+				switch comp.State {
+				case "running", "ready":
+					compColor = colorGreen
+					compIcon = "✓"
+				case "waiting", "starting":
+					compColor = colorYellow
+					compIcon = "⟳"
+				case "stopped", "exited":
+					compColor = colorGray
+					compIcon = "○"
+				case "failed":
+					compColor = colorRed
+					compIcon = "✗"
+				default:
+					compColor = colorReset
+					compIcon = "?"
+				}
+
+				fmt.Printf("  %s %s%s%s %s %s[%s]%s\n",
+					connector,
+					compColor, compIcon, colorReset,
+					comp.Name,
+					compColor, comp.State, colorReset)
+			}
+		}
+	}
 }
 
 // displayContextBanner shows a compact context banner at the top of status output
