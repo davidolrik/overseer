@@ -1,6 +1,24 @@
 # Installation
 
-## mise (Recommended) {#mise}
+## Homebrew (Recommended) {#homebrew}
+
+```sh
+brew install davidolrik/tap/overseer
+```
+
+To start overseer as a background service:
+
+```sh
+brew services start overseer
+```
+
+To update later:
+
+```sh
+brew upgrade overseer
+```
+
+## mise {#mise}
 
 [mise](https://mise.jdx.dev/) is a polyglot runtime manager. It handles versioning and updates automatically.
 

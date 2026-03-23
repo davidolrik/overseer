@@ -64,6 +64,24 @@ archives:
       {{- else }}{{ .Arch }}{{ end }}
       {{- if .Arm }}v{{ .Arm }}{{ end }}
 
+brews:
+  - repository:
+      owner: davidolrik
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    homepage: https://overseer.olrik.dev/
+    description: SSH Tunnel Manager
+    license: MIT
+    install: |
+      bin.install "overseer"
+
+      generate_completions_from_executable(bin/"overseer", "completion")
+    service: |
+      run [opt_bin/"overseer", "daemon"]
+      keep_alive true
+      log_path var/"log/overseer.log"
+      error_log_path var/"log/overseer.log"
+
 changelog:
   sort: asc
   filters:
