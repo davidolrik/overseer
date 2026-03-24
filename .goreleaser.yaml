@@ -82,6 +82,7 @@ brews:
       owner: davidolrik
       name: homebrew-tap
       token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    directory: Formula
     homepage: https://overseer.olrik.dev/
     description: SSH Tunnel Manager
     license: MIT
