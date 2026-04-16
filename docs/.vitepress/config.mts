@@ -59,6 +59,10 @@ export default withMermaid(
                 { text: "Guide", link: "/guide/what-is-overseer" },
                 { text: "Advanced", link: "/advanced/shell-integration" },
                 {
+                    text: "Troubleshooting",
+                    link: "/troubleshooting/macos-tcc-prompts",
+                },
+                {
                     text: version,
                     link: `https://github.com/davidolrik/overseer/releases/tag/${version}`,
                 },
@@ -110,6 +114,15 @@ export default withMermaid(
                         {
                             text: "Companion Scripts",
                             link: "/advanced/companion-scripts",
+                        },
+                    ],
+                },
+                {
+                    text: "Troubleshooting",
+                    items: [
+                        {
+                            text: "macOS TCC Prompts",
+                            link: "/troubleshooting/macos-tcc-prompts",
                         },
                     ],
                 },
