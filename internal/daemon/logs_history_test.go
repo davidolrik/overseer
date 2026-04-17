@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"go.olrik.dev/overseer/internal/awareness/state"
 	"go.olrik.dev/overseer/internal/core"
 )
 
@@ -33,7 +34,7 @@ func TestHandleLogsWithHistory_ReplayHistory(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		d.handleLogsWithHistory(serverConn, true, 10)
+		d.handleLogsWithHistory(serverConn, true, 10, state.LogInfo)
 	}()
 
 	reader := bufio.NewReader(clientConn)

@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"go.olrik.dev/overseer/internal/awareness/state"
 	"go.olrik.dev/overseer/internal/core"
 )
 
@@ -178,7 +179,7 @@ func TestHandleLogsWithHistory(t *testing.T) {
 		done := make(chan struct{})
 		go func() {
 			defer close(done)
-			d.handleLogsWithHistory(serverConn, false, 0)
+			d.handleLogsWithHistory(serverConn, false, 0, state.LogInfo)
 		}()
 
 		reader := bufio.NewReader(clientConn)
@@ -210,7 +211,7 @@ func TestHandleLogsWithHistory(t *testing.T) {
 		done := make(chan struct{})
 		go func() {
 			defer close(done)
-			d2.handleLogsWithHistory(serverConn, true, 10)
+			d2.handleLogsWithHistory(serverConn, true, 10, state.LogInfo)
 		}()
 
 		reader := bufio.NewReader(clientConn)

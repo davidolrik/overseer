@@ -22,6 +22,7 @@ import (
 	"github.com/fsnotify/fsnotify"
 	psnet "github.com/shirou/gopsutil/v3/net"
 	"go.olrik.dev/overseer/internal/awareness"
+	"go.olrik.dev/overseer/internal/awareness/state"
 	"go.olrik.dev/overseer/internal/core"
 	"go.olrik.dev/overseer/internal/db"
 	"go.olrik.dev/overseer/internal/keyring"
@@ -556,19 +557,25 @@ func (d *Daemon) handleConnection(conn net.Conn) {
 		response = d.resetRetries()
 	case "LOGS":
 		// Handle log streaming - don't send JSON response, just stream logs
-		// Parse optional lines count and no_history flag
+		// Parse optional lines count, no_history flag, and log level.
+		// Level is passed as a string (e.g. "debug", "info") and controls
+		// which entries count toward the -L history limit.
 		historyLines := 20 // default
 		showHistory := true
-		if len(args) >= 1 {
-			if n, err := strconv.Atoi(args[0]); err == nil {
-				historyLines = n
-			}
-			// Check for no_history flag (in 1st or 2nd position)
-			if args[0] == "no_history" || (len(args) >= 2 && args[1] == "no_history") {
+		minLevel := state.LogInfo
+		for _, arg := range args {
+			switch arg {
+			case "no_history":
 				showHistory = false
+			case "debug":
+				minLevel = state.LogDebug
+			default:
+				if n, err := strconv.Atoi(arg); err == nil {
+					historyLines = n
+				}
 			}
 		}
-		d.handleLogsWithHistory(conn, showHistory, historyLines)
+		d.handleLogsWithHistory(conn, showHistory, historyLines, minLevel)
 		return // Don't send JSON response
 	case "ATTACH":
 		// Stream raw slog output for debugging

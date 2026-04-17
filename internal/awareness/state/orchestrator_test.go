@@ -224,7 +224,7 @@ func TestOrchestrator_SubscribeLogsWithHistory(t *testing.T) {
 	o.EmitSystemEvent("event1", "details1")
 	o.EmitSystemEvent("event2", "details2")
 
-	id, ch := o.SubscribeLogsWithHistory(true, 10)
+	id, ch := o.SubscribeLogsWithHistory(true, 10, LogDebug)
 	if ch == nil {
 		t.Fatal("expected non-nil log channel")
 	}

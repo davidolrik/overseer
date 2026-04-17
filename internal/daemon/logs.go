@@ -146,16 +146,18 @@ func (d *Daemon) setupLogging() {
 
 // handleLogs streams daemon logs to the client until they disconnect
 func (d *Daemon) handleLogs(conn net.Conn) {
-	d.handleLogsWithHistory(conn, true, 20)
+	d.handleLogsWithHistory(conn, true, 20, state.LogInfo)
 }
 
-// handleLogsWithHistory streams daemon logs to the client with configurable history
-func (d *Daemon) handleLogsWithHistory(conn net.Conn, showHistory bool, historyLines int) {
+// handleLogsWithHistory streams daemon logs to the client with configurable history.
+// minLevel controls which entries count toward the history line limit, so that
+// -L 20 means "20 visible lines" rather than "20 entries including debug noise".
+func (d *Daemon) handleLogsWithHistory(conn net.Conn, showHistory bool, historyLines int, minLevel state.LogLevel) {
 	defer conn.Close()
 
 	// Use handleLogsWithState which includes both slog and state events
 	if stateOrchestrator != nil {
-		d.handleLogsWithStateAndHistory(conn, showHistory, historyLines)
+		d.handleLogsWithStateAndHistory(conn, showHistory, historyLines, minLevel)
 		return
 	}
 
@@ -262,18 +264,19 @@ func (d *Daemon) handleAttachWithHistory(conn net.Conn, showHistory bool, histor
 
 // handleLogsWithState streams both slog and structured state logs
 func (d *Daemon) handleLogsWithState(conn net.Conn) {
-	d.handleLogsWithStateAndHistory(conn, true, 20)
+	d.handleLogsWithStateAndHistory(conn, true, 20, state.LogInfo)
 }
 
-// handleLogsWithStateAndHistory streams both slog and structured state logs with configurable history
-func (d *Daemon) handleLogsWithStateAndHistory(conn net.Conn, showHistory bool, historyLines int) {
+// handleLogsWithStateAndHistory streams both slog and structured state logs with configurable history.
+// minLevel controls which entries count toward the history line limit.
+func (d *Daemon) handleLogsWithStateAndHistory(conn net.Conn, showHistory bool, historyLines int, minLevel state.LogLevel) {
 	// Subscribe to state log channel (which includes all events)
 	var stateID uint64
 	var stateChan <-chan state.LogEntry
 	if showHistory {
-		stateID, stateChan = stateOrchestrator.SubscribeLogsWithHistory(true, historyLines)
+		stateID, stateChan = stateOrchestrator.SubscribeLogsWithHistory(true, historyLines, minLevel)
 	} else {
-		stateID, stateChan = stateOrchestrator.SubscribeLogsWithHistory(false, 0)
+		stateID, stateChan = stateOrchestrator.SubscribeLogsWithHistory(false, 0, minLevel)
 	}
 	defer stateOrchestrator.UnsubscribeLogs(stateID)
 

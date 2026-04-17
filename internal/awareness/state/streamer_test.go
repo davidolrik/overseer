@@ -161,7 +161,7 @@ func TestLogStreamerSubscribeWithHistoryLimited(t *testing.T) {
 	}
 
 	// Subscribe with only last 3 entries
-	id, ch := ls.SubscribeWithHistory(true, 3)
+	id, ch := ls.SubscribeWithHistory(true, 3, LogDebug)
 	defer ls.Unsubscribe(id)
 
 	// Should get exactly 3 entries

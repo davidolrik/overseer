@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"go.olrik.dev/overseer/internal/awareness/state"
 	"go.olrik.dev/overseer/internal/core"
 )
 
@@ -95,7 +96,7 @@ func TestHandleLogsWithStateAndHistory_NoHistory(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		d.handleLogsWithStateAndHistory(server, false, 0)
+		d.handleLogsWithStateAndHistory(server, false, 0, state.LogInfo)
 	}()
 
 	reader := bufio.NewReader(client)
@@ -147,7 +148,7 @@ func TestHandleLogsWithHistory_WithOrchestratorDelegates(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		d.handleLogsWithHistory(server, true, 5)
+		d.handleLogsWithHistory(server, true, 5, state.LogInfo)
 	}()
 
 	reader := bufio.NewReader(client)
@@ -182,7 +183,7 @@ func TestHandleLogsWithHistory_NoHistoryFallback(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		d.handleLogsWithHistory(server, false, 0)
+		d.handleLogsWithHistory(server, false, 0, state.LogInfo)
 	}()
 
 	reader := bufio.NewReader(client)

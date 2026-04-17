@@ -74,10 +74,15 @@ Automatically reconnects if the daemon is reloaded.`,
 					os.Exit(1)
 				}
 
-				// Build LOGS command with optional lines count and no_history flag
+				// Build LOGS command with optional lines count, no_history flag,
+				// and log level. The level controls which entries count toward
+				// the -L history limit on the server side.
 				logsCmd := fmt.Sprintf("LOGS %d", lines)
 				if isReconnect {
 					logsCmd += " no_history"
+				}
+				if verbose {
+					logsCmd += " debug"
 				}
 				logsCmd += "\n"
 

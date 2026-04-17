@@ -58,13 +58,17 @@ func (ls *LogStreamer) Subscribe(replay bool) (uint64, <-chan LogEntry) {
 	if !replay {
 		lines = 0
 	}
-	return ls.SubscribeWithHistory(replay, lines)
+	return ls.SubscribeWithHistory(replay, lines, LogDebug)
 }
 
 // SubscribeWithHistory adds a new client to receive log entries.
 // If replay is true, the last 'lines' entries from history are sent first.
+// minLevel filters the replay so that only entries at or above the given
+// level are counted toward 'lines'. This ensures that -L 20 means "20
+// visible lines" regardless of how many debug entries are in the buffer.
+// Live entries after the replay are not filtered — the client handles that.
 // Returns the client ID (for unsubscribing) and the receive channel.
-func (ls *LogStreamer) SubscribeWithHistory(replay bool, lines int) (uint64, <-chan LogEntry) {
+func (ls *LogStreamer) SubscribeWithHistory(replay bool, lines int, minLevel LogLevel) (uint64, <-chan LogEntry) {
 	ch := make(chan LogEntry, ls.bufferSize)
 
 	ls.mu.Lock()
@@ -75,12 +79,23 @@ func (ls *LogStreamer) SubscribeWithHistory(replay bool, lines int) (uint64, <-c
 	// Send replay before unlocking to ensure ordering
 	if replay && lines > 0 {
 		items := ls.ringBuffer.Items()
-		// Limit to last N items
-		start := len(items) - lines
-		if start < 0 {
-			start = 0
+		// Walk backward to find the start index that yields at most
+		// 'lines' entries at or above minLevel.
+		count := 0
+		start := len(items) // default: no entries
+		for i := len(items) - 1; i >= 0; i-- {
+			if items[i].Level >= minLevel {
+				count++
+				start = i // always track the earliest qualifying entry
+				if count >= lines {
+					break
+				}
+			}
 		}
 		for _, entry := range items[start:] {
+			if entry.Level < minLevel {
+				continue
+			}
 			select {
 			case ch <- entry:
 			default:

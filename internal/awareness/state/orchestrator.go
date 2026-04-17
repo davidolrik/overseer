@@ -434,10 +434,11 @@ func (o *Orchestrator) SubscribeLogs(replay bool) (uint64, <-chan LogEntry) {
 	return o.streamer.Subscribe(replay)
 }
 
-// SubscribeLogsWithHistory returns a channel that receives log entries
-// If replay is true, the last 'lines' entries from history are sent first
-func (o *Orchestrator) SubscribeLogsWithHistory(replay bool, lines int) (uint64, <-chan LogEntry) {
-	return o.streamer.SubscribeWithHistory(replay, lines)
+// SubscribeLogsWithHistory returns a channel that receives log entries.
+// If replay is true, the last 'lines' entries at or above minLevel are
+// sent first, so the requested count reflects visible lines.
+func (o *Orchestrator) SubscribeLogsWithHistory(replay bool, lines int, minLevel LogLevel) (uint64, <-chan LogEntry) {
+	return o.streamer.SubscribeWithHistory(replay, lines, minLevel)
 }
 
 // UnsubscribeLogs removes a log subscription
