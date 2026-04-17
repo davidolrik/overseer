@@ -4,7 +4,11 @@ node = "latest"
 prek = "latest"
 
 [hooks]
-postinstall = ["git config --unset-all core.hooksPath || true", "rm -f .git/hooks/pre-commit*", "prek install"]
+postinstall = [
+  "git config --unset-all core.hooksPath || true",
+  "rm -f .git/hooks/pre-commit*",
+  "prek install"
+]
 
 [tasks.help]
 description = "📚 Help"
@@ -28,6 +32,10 @@ run = ["go mod tidy", "go build -o overseer ."]
 description = "🧪 Build snapshot"
 run = ["goreleaser build --snapshot --clean"]
 
+[tasks."test"]
+description = "🧪 Run tests"
+run = ["go test ./..."]
+
 [tasks."docs:server"]
 description = "🚀 Run documentation server"
 run = ["npm run docs:dev"]
@@ -41,11 +49,13 @@ description = "👀 Preview doc site"
 depends = "docs:build"
 run = ["npm run docs:preview"]
 
-[tasks."docs:publish"]
+[tasks."publish:docs"]
 description = "📦 Publish to go.olrik.dev/overseer"
 depends = "docs:build"
-run = ["rsync -avO --no-perms --delete ./docs/.vitepress/dist/ {{ env.DOCUMENTATION_HOST }}:{{ env.DOCUMENTATION_PATH }}"]
+run = [
+  "rsync -avO --no-perms --delete ./docs/.vitepress/dist/ {{ env.DOCUMENTATION_HOST }}:{{ env.DOCUMENTATION_PATH }}"
+]
 
-[tasks."github:publish"]
+[tasks."publish:github"]
 description = "📦 Publish to GitHub"
 run = ["git push", "git push --tags"]
