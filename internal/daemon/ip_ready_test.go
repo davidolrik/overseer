@@ -57,4 +57,3 @@ func TestStartTunnelWhenIPReady_IPAlreadyKnown(t *testing.T) {
 	// but the code path is exercised
 	d.startTunnelWhenIPReady("test-tunnel", "")
 }
-
