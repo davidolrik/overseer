@@ -1046,6 +1046,32 @@ overseer completion fish > ~/.config/fish/completions/overseer.fish
 
 ## Troubleshooting
 
+### Port already in use
+
+When overseer connects a tunnel, SSH attempts to bind every local port
+configured via `LocalForward` or `DynamicForward` in your SSH config. If
+another process already holds one of those ports, overseer reports the
+conflict along with a process tree showing the blocker:
+
+```log
+ERR SSH process terminated unexpectedly
+ERR Tunnel 'prod-db' failed to connect: port 5432 is already in use
+ERR Port 5432 on 127.0.0.1 is held by the following process tree:
+ERR └─────     1 root  launchd
+ERR  └────  1087 user  /Applications/TablePlus.app/Contents/MacOS/TablePlus
+ERR   └─── 89196 user  ssh -W [db.internal.example.com]:22 jump-host
+ERR    └── 89229 user  ssh -L 5432:localhost:5432 prod-db
+```
+
+To resolve, either quit the blocking application, kill the specific SSH
+process (`kill <PID>`), or reconfigure the other application to use a
+different local port. If overseer cannot identify the holder (another user
+owns it), use `sudo lsof -i :<port>` to find it manually.
+
+Overseer sets `-o ExitOnForwardFailure=yes` deliberately — without it, SSH
+would silently skip broken forwards and connect anyway, leaving you with a
+tunnel that looks connected but has no working port forwards.
+
 ### macOS: TCC prompts attributed to the wrong app
 
 **TCC** (*Transparency, Consent, and Control*) is the macOS subsystem that

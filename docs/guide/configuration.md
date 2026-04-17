@@ -8,7 +8,7 @@ If no config file exists, overseer creates one with default values on first run.
 
 As your configuration grows, you can split it into multiple files by creating a `config.d/` directory alongside `config.hcl`:
 
-```
+```sh
 ~/.config/overseer/
 ├── config.hcl          # Main config (loaded first)
 └── config.d/           # Optional directory
@@ -23,17 +23,18 @@ The `config.d/` directory is optional. If it doesn't exist, behavior is unchange
 
 ### What Goes Where
 
-| Config element | Where it belongs |
-|---|---|
-| Global settings (`verbose`) | Main config |
-| Singleton blocks (`exports`, `ssh`, `companion`, `environment`, global hooks) | Main config only — defining these in more than one file is an error |
-| Locations | Any file — accumulated across files; duplicate names are an error |
-| Tunnels | Any file — accumulated across files; duplicate names are an error |
-| Contexts | Any file — same-name contexts are deep-merged (locations, actions, hooks append + deduplicate; environment merges keys; scalars use first-non-empty). Distinct names accumulate in load order. Order matters: first match wins |
+| Config element                                                                | Where it belongs                                                                                                                                                                                                               |
+| ----------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Global settings (`verbose`)                                                   | Main config                                                                                                                                                                                                                    |
+| Singleton blocks (`exports`, `ssh`, `companion`, `environment`, global hooks) | Main config only — defining these in more than one file is an error                                                                                                                                                            |
+| Locations                                                                     | Any file — accumulated across files; duplicate names are an error                                                                                                                                                              |
+| Tunnels                                                                       | Any file — accumulated across files; duplicate names are an error                                                                                                                                                              |
+| Contexts                                                                      | Any file — same-name contexts are deep-merged (locations, actions, hooks append + deduplicate; environment merges keys; scalars use first-non-empty). Distinct names accumulate in load order. Order matters: first match wins |
 
 ### Example
 
 **`config.hcl`** — global settings and exports:
+
 ```hcl
 verbose = 0
 
@@ -48,6 +49,7 @@ exports {
 ```
 
 **`config.d/home.hcl`** — home network:
+
 ```hcl
 location "home" {
   display_name = "Home"
@@ -66,6 +68,7 @@ context "home" {
 ```
 
 **`config.d/office.hcl`** — office network:
+
 ```hcl
 location "office" {
   display_name = "Office"
@@ -107,7 +110,9 @@ environment = {
 
 These defaults can be overridden by location and context `environment` blocks. The merge priority is (lowest → highest):
 
+::: tip Merge order
 **Global → Location → Context**
+:::
 
 For example:
 
@@ -162,22 +167,22 @@ All values shown are the defaults. You only need to include settings you want to
 
 Overseer detects your network environment through sensors:
 
-| Sensor | Type | Description |
-|--------|------|-------------|
-| `public_ipv4` | string | Public IPv4 address (detected via DNS consensus) |
-| `public_ipv6` | string | Public IPv6 /64 prefix (privacy extensions ignored) |
-| `local_ipv4` | string | Local LAN IPv4 address |
-| `online` | boolean | Network connectivity (TCP probe to well-known hosts) |
+| Sensor        | Type    | Description                                          |
+| ------------- | ------- | ---------------------------------------------------- |
+| `public_ipv4` | string  | Public IPv4 address (detected via DNS consensus)     |
+| `public_ipv6` | string  | Public IPv6 /64 prefix (privacy extensions ignored)  |
+| `local_ipv4`  | string  | Local LAN IPv4 address                               |
+| `online`      | boolean | Network connectivity (TCP probe to well-known hosts) |
 
 Use these sensor names in `conditions` blocks to match your network.
 
 ### Condition Types
 
-| Condition | Syntax | Description |
-|-----------|--------|-------------|
+| Condition   | Syntax                      | Description                           |
+| ----------- | --------------------------- | ------------------------------------- |
 | `public_ip` | `public_ip = ["<ip>", ...]` | Match public IP address or CIDR range |
-| `online` | `online = true/false` | Check online status |
-| `env` | `env = { "VAR" = "value" }` | Match environment variable |
+| `online`    | `online = true/false`       | Check online status                   |
+| `env`       | `env = { "VAR" = "value" }` | Match environment variable            |
 
 ::: info
 `public_ip` conditions match against the `public_ipv4` sensor. Multiple values in a list are OR'd together.
@@ -275,9 +280,9 @@ These variables appear in the [dotenv export](/advanced/shell-integration) along
 
 Two locations have special behavior:
 
-| Location | Behavior |
-|----------|----------|
-| `offline` | Matches when `online = false`. Auto-generated if not defined. |
+| Location  | Behavior                                                                |
+| --------- | ----------------------------------------------------------------------- |
+| `offline` | Matches when `online = false`. Auto-generated if not defined.           |
 | `unknown` | Fallback when no other location matches. Auto-generated if not defined. |
 
 You can customize these to add display names or environment variables:
@@ -399,28 +404,28 @@ All export paths support `~` for home directory expansion.
 
 ### Export Types
 
-| Type | Content | Example |
-|------|---------|---------|
-| `dotenv` | Shell-sourceable file with all variables | `export OVERSEER_CONTEXT="home"` |
-| `context` | Plain text context name | `home` |
-| `location` | Plain text location name | `hq` |
-| `public_ip` | Plain text IP address | `203.0.113.42` |
+| Type        | Content                                  | Example                          |
+| ----------- | ---------------------------------------- | -------------------------------- |
+| `dotenv`    | Shell-sourceable file with all variables | `export OVERSEER_CONTEXT="home"` |
+| `context`   | Plain text context name                  | `home`                           |
+| `location`  | Plain text location name                 | `hq`                             |
+| `public_ip` | Plain text IP address                    | `203.0.113.42`                   |
 
 ### Dotenv Variables
 
 The `dotenv` file includes these built-in variables:
 
-| Variable | Description |
-|----------|-------------|
-| `OVERSEER_CONTEXT` | Current context name |
-| `OVERSEER_CONTEXT_DISPLAY_NAME` | Context display name |
-| `OVERSEER_LOCATION` | Current location name |
-| `OVERSEER_LOCATION_DISPLAY_NAME` | Location display name |
-| `OVERSEER_PUBLIC_IP` | Preferred public IP (based on `preferred_ip`) |
-| `OVERSEER_PUBLIC_IPV4` | Public IPv4 address |
-| `OVERSEER_PUBLIC_IPV6` | Public IPv6 /64 prefix |
-| `OVERSEER_LOCAL_IP` | Local LAN IPv4 address |
-| `OVERSEER_LOCAL_IPV4` | Local LAN IPv4 address |
+| Variable                         | Description                                   |
+| -------------------------------- | --------------------------------------------- |
+| `OVERSEER_CONTEXT`               | Current context name                          |
+| `OVERSEER_CONTEXT_DISPLAY_NAME`  | Context display name                          |
+| `OVERSEER_LOCATION`              | Current location name                         |
+| `OVERSEER_LOCATION_DISPLAY_NAME` | Location display name                         |
+| `OVERSEER_PUBLIC_IP`             | Preferred public IP (based on `preferred_ip`) |
+| `OVERSEER_PUBLIC_IPV4`           | Public IPv4 address                           |
+| `OVERSEER_PUBLIC_IPV6`           | Public IPv6 /64 prefix                        |
+| `OVERSEER_LOCAL_IP`              | Local LAN IPv4 address                        |
+| `OVERSEER_LOCAL_IPV4`            | Local LAN IPv4 address                        |
 
 Plus any custom variables defined in the [global `environment`](#global-environment) block and the active location's and context's `environment` blocks.
 

@@ -121,6 +121,10 @@ export default withMermaid(
                     text: "Troubleshooting",
                     items: [
                         {
+                            text: "Port Already in Use",
+                            link: "/troubleshooting/port-conflicts",
+                        },
+                        {
                             text: "macOS TCC Prompts",
                             link: "/troubleshooting/macos-tcc-prompts",
                         },
