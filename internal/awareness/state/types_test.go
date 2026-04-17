@@ -71,6 +71,7 @@ func TestLogCategoryString(t *testing.T) {
 		{CategoryEffect, "effect"},
 		{CategorySystem, "system"},
 		{CategoryHook, "hook"},
+		{CategoryTunnel, "tunnel"},
 		{LogCategory(99), "unknown"},
 	}
 
@@ -94,6 +95,7 @@ func TestLogCategoryIcon(t *testing.T) {
 		{CategoryEffect, ">"},
 		{CategorySystem, "#"},
 		{CategoryHook, "!"},
+		{CategoryTunnel, "⇌"},
 		{LogCategory(99), "?"},
 	}
 

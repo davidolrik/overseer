@@ -196,7 +196,7 @@ func (r *LogRenderer) Render(entry LogEntry) {
 	case entry.Effect != nil:
 		r.renderEffect(ts, level, icon, entry.Effect)
 	case entry.System != nil:
-		r.renderSystem(ts, level, icon, entry.Message, entry.System)
+		r.renderSystem(ts, level, icon, entry.Message, entry.System, entry.Category)
 	case entry.Hook != nil:
 		r.renderHook(ts, level, icon, entry.Hook)
 	default:
@@ -325,8 +325,15 @@ func (r *LogRenderer) renderEffect(ts, level, icon string, e *EffectLogData) {
 	fmt.Fprintln(r.out)
 }
 
-func (r *LogRenderer) renderSystem(ts, level, icon, message string, s *SystemLogData) {
-	fmt.Fprintf(r.out, "%s %s %s %s", ts, level, icon, s.Event)
+func (r *LogRenderer) renderSystem(ts, level, icon, message string, s *SystemLogData, category LogCategory) {
+	event := s.Event
+	if !r.noColor {
+		switch category {
+		case CategoryTunnel:
+			event = "\033[38;2;196;155;104m" + event + "\033[0m" // Light brown (24-bit)
+		}
+	}
+	fmt.Fprintf(r.out, "%s %s %s %s", ts, level, icon, event)
 
 	if s.Details != "" {
 		fmt.Fprintf(r.out, ": %s", s.Details)

@@ -134,6 +134,7 @@ const (
 	CategoryEffect                    // Side effects (env writes, callbacks)
 	CategorySystem                    // System events (daemon start/stop)
 	CategoryHook                      // Hook script execution
+	CategoryTunnel                    // Tunnel events (connect, disconnect, port conflicts)
 )
 
 func (c LogCategory) String() string {
@@ -148,6 +149,8 @@ func (c LogCategory) String() string {
 		return "system"
 	case CategoryHook:
 		return "hook"
+	case CategoryTunnel:
+		return "tunnel"
 	default:
 		return "unknown"
 	}
@@ -165,6 +168,8 @@ func (c LogCategory) Icon() string {
 		return "#" // system
 	case CategoryHook:
 		return "!" // hook execution
+	case CategoryTunnel:
+		return "⇌" // tunnel
 	default:
 		return "?"
 	}

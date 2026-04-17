@@ -215,7 +215,8 @@ func matchesFilter(line, filter string) bool {
 			strings.Contains(lineLower, "orchestrator") ||
 			strings.Contains(lineLower, "daemon")
 	case "tunnel":
-		return strings.Contains(lineLower, "tunnel") ||
+		return strings.Contains(line, " ⇌ ") ||
+			strings.Contains(lineLower, "tunnel") ||
 			strings.Contains(lineLower, "ssh")
 	default:
 		// General substring match

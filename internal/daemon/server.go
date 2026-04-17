@@ -867,7 +867,7 @@ func (d *Daemon) startTunnelStreaming(alias string, cliEnv map[string]string, st
 	// Wait for either success or failure - no timeout
 	err = <-connectionResult
 	if err != nil {
-		sendMessage(fmt.Sprintf("Tunnel '%s' failed to connect: %v", alias, err), "ERROR")
+		d.reportConnectFailure(alias, mergedEnv, err, sendMessage)
 
 		// Log to database
 		if d.database != nil {
@@ -1272,7 +1272,8 @@ func (d *Daemon) monitorTunnel(alias string) {
 
 		err = <-connectionResult
 		if err != nil {
-			slog.Warn(fmt.Sprintf("Reconnection failed for '%s': %v", alias, err))
+			// Port-conflict diagnostics (slog only — no client stream on reconnect).
+			d.reportConnectFailure(alias, reconnectEnv, err, nil)
 
 			// Log to database
 			if d.database != nil {
