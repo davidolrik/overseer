@@ -9,6 +9,8 @@ import (
 )
 
 func NewReconnectCommand() *cobra.Command {
+	var force bool
+
 	reconnectCmd := &cobra.Command{
 		Use:               "reconnect <alias>",
 		Aliases:           []string{"r"},
@@ -21,13 +23,25 @@ func NewReconnectCommand() *cobra.Command {
 			daemon.EnsureDaemonIsRunning()
 			daemon.CheckVersionMismatch()
 
+			if !cmd.Flags().Changed("force") {
+				force = !isStdinTerminal()
+			}
+
+			command := "SSH_RECONNECT " + alias
+			if force {
+				command += " --force"
+			}
+
 			// Use SSH_RECONNECT to preserve companion attach connections
-			if err := daemon.SendCommandStreaming("SSH_RECONNECT " + alias); err != nil {
+			if err := daemon.SendCommandStreaming(command); err != nil {
 				slog.Error("Failed to reconnect", "error", err)
 				os.Exit(1)
 			}
 		},
 	}
+
+	reconnectCmd.Flags().BoolVarP(&force, "force", "F", false,
+		"Evict a conflicting SSH ControlMaster before connecting (default: auto — on when stdin is not a terminal)")
 
 	return reconnectCmd
 }

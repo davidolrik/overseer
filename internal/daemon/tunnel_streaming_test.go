@@ -39,7 +39,7 @@ func TestStartTunnelStreaming_AlreadyRunningHealthy(t *testing.T) {
 
 	// Should return error because tunnel is "already running"
 	// (health check uses signal check + TCP - signal will pass for our sleep process)
-	resp := d.startTunnelStreaming("running-tunnel", nil, nil)
+	resp := d.startTunnelStreaming("running-tunnel", nil, nil, false)
 
 	// Even if TCP check fails (making health check fail), the stale cleanup path is exercised
 	_ = resp
@@ -69,7 +69,7 @@ func TestStartTunnelStreaming_StaleTunnelCleanup(t *testing.T) {
 
 	// startTunnelStreaming should clean up the stale entry and try to connect
 	// It will fail to connect (no valid SSH target), but the cleanup path is exercised
-	resp := d.startTunnelStreaming("stale-tunnel", nil, nil)
+	resp := d.startTunnelStreaming("stale-tunnel", nil, nil, false)
 
 	// The stale token should be cleaned up
 	if _, exists := d.askpassTokens["stale-token-123"]; exists {
@@ -108,7 +108,7 @@ func TestStartTunnelStreaming_StaleTunnelWithDatabase(t *testing.T) {
 	}
 
 	// Should clean up stale entry and log to database
-	resp := d.startTunnelStreaming("stale-db", nil, nil)
+	resp := d.startTunnelStreaming("stale-db", nil, nil, false)
 	_ = resp
 }
 
@@ -127,7 +127,7 @@ func TestStartTunnelStreaming_NoTunnelConfig(t *testing.T) {
 
 	// No tunnel in config, but SSH alias exists on the system
 	// startTunnelStreaming should skip companion section and go straight to SSH
-	resp := d.startTunnelStreaming("no-config-alias", nil, nil)
+	resp := d.startTunnelStreaming("no-config-alias", nil, nil, false)
 
 	// Will fail because SSH can't connect, but the no-companions code path is exercised
 	_ = resp
@@ -152,7 +152,7 @@ func TestStartTunnelStreaming_WithEnvironment(t *testing.T) {
 	d := New()
 
 	// Test with CLI env that overrides config env
-	resp := d.startTunnelStreaming("env-tunnel", map[string]string{"OVERSEER_TAG": "cli-tag"}, nil)
+	resp := d.startTunnelStreaming("env-tunnel", map[string]string{"OVERSEER_TAG": "cli-tag"}, nil, false)
 	_ = resp
 }
 
@@ -174,7 +174,7 @@ func TestStartTunnelStreaming_WithSSHConfig(t *testing.T) {
 	d := New()
 	d.sshConfigFile = sshConfigPath
 
-	resp := d.startTunnelStreaming("config-test", nil, nil)
+	resp := d.startTunnelStreaming("config-test", nil, nil, false)
 	_ = resp
 }
 
@@ -194,7 +194,7 @@ func TestStartTunnelStreaming_WithServerAliveInterval(t *testing.T) {
 
 	d := New()
 
-	resp := d.startTunnelStreaming("alive-test", nil, nil)
+	resp := d.startTunnelStreaming("alive-test", nil, nil, false)
 	_ = resp
 }
 

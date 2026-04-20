@@ -2,6 +2,7 @@ package portdiag
 
 import (
 	"errors"
+	"fmt"
 	"net"
 	"os"
 	"os/user"
@@ -427,6 +428,63 @@ func TestFormatTree_ColorsOtherUserYellow(t *testing.T) {
 }
 
 // userStartColAfterPID returns the visual column (rune count) of the first
+// TestFormatConflictTree_HighlightsMatchingPID verifies that the given
+// highlightPID renders in bold red while other PIDs stay plain. Column widths
+// must remain consistent across highlighted and non-highlighted rows — the
+// color escapes are added around padded digits, not inside them.
+func TestFormatConflictTree_HighlightsMatchingPID(t *testing.T) {
+	chain := []ProcessInfo{
+		{PID: 86945, PPID: 1234, User: "djo", Name: "ssh", Cmdline: "ssh zero"},
+		{PID: 1234, PPID: 1, User: "djo", Name: "zsh", Cmdline: "zsh"},
+		{PID: 1, PPID: 0, User: "root", Name: "launchd"},
+	}
+
+	lines := FormatConflictTree("test header", chain, 86945)
+	if len(lines) < 2 {
+		t.Fatalf("expected at least header + rows, got %v", lines)
+	}
+
+	joined := strings.Join(lines, "\n")
+	highlighted := colorHighlight + fmt.Sprintf("%*d", 5, 86945) + colorReset
+	if !strings.Contains(joined, highlighted) {
+		t.Errorf("expected PID 86945 wrapped in bold red %q, got:\n%s",
+			highlighted, joined)
+	}
+
+	// PIDs that don't match must NOT be wrapped in the highlight color.
+	if strings.Contains(joined, colorHighlight+fmt.Sprintf("%*d", 5, 1234)+colorReset) {
+		t.Errorf("PID 1234 should not be highlighted, got:\n%s", joined)
+	}
+
+	// Stripping ANSI, column width stays consistent across rows so PIDs align.
+	plain := make([]string, len(lines))
+	for i, l := range lines {
+		plain[i] = stripANSI(l)
+	}
+	width := userStartColAfterPID(plain[1])
+	for _, row := range plain[2:] {
+		if userStartColAfterPID(row) != width {
+			t.Errorf("user column shifted — highlight changed visible width:\n%s", strings.Join(plain, "\n"))
+		}
+	}
+}
+
+// TestFormatConflictTree_ZeroHighlightLeavesAllPlain verifies the opt-out
+// path used by port-conflict callers that don't need a highlight.
+func TestFormatConflictTree_ZeroHighlightLeavesAllPlain(t *testing.T) {
+	chain := []ProcessInfo{
+		{PID: 42, PPID: 1, User: "djo", Name: "x", Cmdline: "x"},
+		{PID: 1, PPID: 0, User: "root", Name: "launchd"},
+	}
+
+	lines := FormatConflictTree("hdr", chain, 0)
+	joined := strings.Join(lines, "\n")
+
+	if strings.Contains(joined, colorHighlight) {
+		t.Errorf("expected no highlight escape when highlightPID=0, got:\n%s", joined)
+	}
+}
+
 // alphabetic character that follows at least one ASCII digit. That's the
 // start of the user column in a FormatTree row, regardless of how wide the
 // tree prefix or right-aligned PID happen to be.

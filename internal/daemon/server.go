@@ -416,20 +416,24 @@ func (d *Daemon) handleConnection(conn net.Conn) {
 		if len(args) > 0 {
 			alias := args[0]
 			cliEnv := make(map[string]string)
+			force := false
 
-			// Parse optional env arguments (format: --env=KEY=VALUE)
+			// Parse optional flags: --env=KEY=VALUE, --force
 			for _, arg := range args[1:] {
-				if strings.HasPrefix(arg, "--env=") {
+				switch {
+				case strings.HasPrefix(arg, "--env="):
 					kv := strings.TrimPrefix(arg, "--env=")
 					if idx := strings.Index(kv, "="); idx > 0 {
 						cliEnv[kv[:idx]] = kv[idx+1:]
 					}
+				case arg == "--force":
+					force = true
 				}
 			}
 
 			// Use streaming to send progress messages as they occur
 			stream := NewStreamingResponse(conn)
-			response = d.startTunnelStreaming(alias, cliEnv, stream)
+			response = d.startTunnelStreaming(alias, cliEnv, stream, force)
 		}
 	case "SSH_DISCONNECT":
 		if len(args) > 0 {
@@ -443,6 +447,12 @@ func (d *Daemon) handleConnection(conn net.Conn) {
 	case "SSH_RECONNECT":
 		if len(args) > 0 {
 			alias := args[0]
+			force := false
+			for _, arg := range args[1:] {
+				if arg == "--force" {
+					force = true
+				}
+			}
 
 			// Get existing environment before stopping (to preserve on reconnect)
 			d.mu.Lock()
@@ -468,7 +478,7 @@ func (d *Daemon) handleConnection(conn net.Conn) {
 				}
 			}
 
-			response = d.startTunnelStreaming(alias, env, stream)
+			response = d.startTunnelStreaming(alias, env, stream, force)
 		}
 	case "RELOAD":
 		// Hot reload: save tunnel, companion, and sensor state before stopping
@@ -683,7 +693,11 @@ func (d *Daemon) handleConnection(conn net.Conn) {
 // startTunnelStreaming starts a tunnel with optional streaming of progress messages.
 // If stream is non-nil, progress messages are written as they occur.
 // Tag is passed to SSH as a -P argument for use with Match tagged in ssh_config.
-func (d *Daemon) startTunnelStreaming(alias string, cliEnv map[string]string, stream *StreamingResponse) Response {
+// force controls how a conflicting foreign mux master (left behind by a
+// non-overseer ssh/scp/rsync with ControlPersist) is handled: force=true
+// evicts it and proceeds; force=false reports it with a process tree and
+// fails, preserving any active user session.
+func (d *Daemon) startTunnelStreaming(alias string, cliEnv map[string]string, stream *StreamingResponse, force bool) Response {
 	// Note: We cannot use defer d.mu.Unlock() here because we need to unlock
 	// early (before waiting for connection verification) and the function continues
 	// to execute afterward. Using defer would cause a double-unlock panic.
@@ -721,6 +735,20 @@ func (d *Daemon) startTunnelStreaming(alias string, cliEnv map[string]string, st
 				slog.Error("Failed to log stale cleanup", "error", err)
 			}
 		}
+	}
+
+	// Mux conflict pre-check: a non-overseer ssh with ControlPersist may have
+	// left a live mux master bound to this alias. If we connected with
+	// ControlMaster=auto in that state we'd join as a slave and `-N` would
+	// exit immediately, so we handle the conflict up-front instead.
+	if pid, alive, err := checkMuxMaster(alias, d.sshConfigFile); err == nil && alive {
+		if !force {
+			d.mu.Unlock()
+			reportMuxConflict(alias, pid, sendMessage)
+			return response
+		}
+		sendMessage(fmt.Sprintf("Evicting existing SSH ControlMaster for '%s' (pid %d)...", alias, pid), "INFO")
+		evictMuxMaster(alias, d.sshConfigFile)
 	}
 
 	// Start or restart companion scripts before establishing SSH tunnel
@@ -787,20 +815,7 @@ func (d *Daemon) startTunnelStreaming(alias string, cliEnv map[string]string, st
 	// Resolve ProxyJump chain from SSH config for multi-hop display
 	jumpChain := resolveJumpChain(alias, mergedEnv, d.sshConfigFile)
 
-	// Create SSH command with verbose mode to detect connection status
-	// Build SSH options from config
-	sshArgs := []string{alias, "-N", "-o", "IgnoreUnknown=overseer-daemon", "-o", "overseer-daemon=" + core.ProcessTag(), "-o", "ExitOnForwardFailure=yes", "-v"}
-
-	if d.sshConfigFile != "" {
-		sshArgs = append([]string{"-F", d.sshConfigFile}, sshArgs...)
-	}
-
-	// Add ServerAliveInterval if configured (0 means disabled)
-	if core.Config.SSH.ServerAliveInterval > 0 {
-		sshArgs = append(sshArgs,
-			"-o", fmt.Sprintf("ServerAliveInterval=%d", core.Config.SSH.ServerAliveInterval),
-			"-o", fmt.Sprintf("ServerAliveCountMax=%d", core.Config.SSH.ServerAliveCountMax))
-	}
+	sshArgs := buildTunnelSSHArgs(alias, d.sshConfigFile, core.Config.SSH.ServerAliveInterval, core.Config.SSH.ServerAliveCountMax)
 
 	cmd := exec.Command("ssh", sshArgs...)
 	cmd.Env = os.Environ()
@@ -946,8 +961,11 @@ func (d *Daemon) startTunnelStreaming(alias string, cliEnv map[string]string, st
 }
 
 // startTunnel starts a tunnel without streaming (used for reconnection).
+// Always evicts a conflicting mux master (force=true) because the callers are
+// all non-interactive: daemon-driven auto-reconnects, context/IP changes, and
+// adopted-tunnel recovery.
 func (d *Daemon) startTunnel(alias string, env map[string]string) Response {
-	return d.startTunnelStreaming(alias, env, nil)
+	return d.startTunnelStreaming(alias, env, nil, true)
 }
 
 // isPublicIPKnown returns true if the public IPv4 has been determined
@@ -1347,6 +1365,37 @@ func (d *Daemon) monitorTunnel(alias string) {
 
 		// Continue monitoring this tunnel (loop back to Wait())
 	}
+}
+
+// buildTunnelSSHArgs builds the argument vector for a tunnel's `ssh` invocation.
+//
+// ControlPersist=no is forced so that even when the user's ssh config has
+// `ControlMaster auto` + `ControlPersist <n>`, our ssh process does not
+// detach-fork into the background (which would leave us tracking the wrong
+// PID). The mux master socket is still set up before the fork decision, so
+// interactive sessions, scp, and rsync still multiplex over our live tunnel —
+// overseer just owns the mux for the tunnel's lifetime.
+func buildTunnelSSHArgs(alias, sshConfigFile string, aliveInterval, aliveCountMax int) []string {
+	args := []string{
+		alias, "-N",
+		"-o", "IgnoreUnknown=overseer-daemon",
+		"-o", "overseer-daemon=" + core.ProcessTag(),
+		"-o", "ExitOnForwardFailure=yes",
+		"-o", "ControlPersist=no",
+		"-v",
+	}
+
+	if sshConfigFile != "" {
+		args = append([]string{"-F", sshConfigFile}, args...)
+	}
+
+	if aliveInterval > 0 {
+		args = append(args,
+			"-o", fmt.Sprintf("ServerAliveInterval=%d", aliveInterval),
+			"-o", fmt.Sprintf("ServerAliveCountMax=%d", aliveCountMax))
+	}
+
+	return args
 }
 
 // resolveJumpChain uses `ssh -G` to resolve the ProxyJump chain for an alias.

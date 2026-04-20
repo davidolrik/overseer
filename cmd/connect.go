@@ -12,6 +12,7 @@ import (
 
 func NewConnectCommand() *cobra.Command {
 	var envVars []string
+	var force bool
 
 	connectCmd := &cobra.Command{
 		Use:               "connect",
@@ -35,8 +36,18 @@ func NewConnectCommand() *cobra.Command {
 			daemon.EnsureDaemonIsRunning()
 			daemon.CheckVersionMismatch()
 
-			// Build command with optional env vars
+			// When --force isn't explicitly set, default based on stdin TTY:
+			// scripts/cron/CI get force (no one around to resolve a mux
+			// conflict), interactive shells don't (the user's own ssh
+			// session should not be killed out from under them).
+			if !cmd.Flags().Changed("force") {
+				force = !isStdinTerminal()
+			}
+
 			command := "SSH_CONNECT " + alias
+			if force {
+				command += " --force"
+			}
 			for _, e := range envVars {
 				command += " --env=" + e
 			}
@@ -51,6 +62,8 @@ func NewConnectCommand() *cobra.Command {
 
 	connectCmd.Flags().StringArrayVarP(&envVars, "env", "E", nil,
 		"Set environment variable on the SSH process (repeatable, format: KEY=VALUE)")
+	connectCmd.Flags().BoolVarP(&force, "force", "F", false,
+		"Evict a conflicting SSH ControlMaster before connecting (default: auto — on when stdin is not a terminal)")
 
 	return connectCmd
 }

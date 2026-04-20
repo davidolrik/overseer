@@ -29,6 +29,7 @@ const (
 	colorTreeChars   = "\033[90m"   // dim gray — tree connectors (└, ─) and colons
 	colorCurrentUser = "\033[32m"   // green — the user running overseer
 	colorOtherUser   = "\033[33m"   // yellow — any other user
+	colorHighlight   = "\033[1;31m" // bold red — the PID the user needs to act on
 )
 
 // ErrHolderNotFound is returned by FindPortHolder when no process visible to
@@ -145,15 +146,9 @@ func WalkAncestors(pid int32) ([]ProcessInfo, error) {
 	return chain, fmt.Errorf("ancestor walk exceeded %d hops", maxAncestorHops)
 }
 
-// FormatTree renders Holder as human-readable lines: a header followed by
-// one line per ancestor laid out as a process tree. The root (PID 1) is the
-// first entry; the holder is the last. Each line has a fixed-width tree
-// connector on the left, then a right-aligned PID, a left-aligned user, and
-// the command line (or process name if cmdline is unavailable).
-//
-// The first token of each cmdline (the executable) renders in cyan, SSH host
-// arguments render in bold blue, and tree connectors render in dim gray, so
-// the things a user typically scans for stand out.
+// FormatTree renders a port-conflict Holder as human-readable lines: a header
+// followed by one line per ancestor laid out as a process tree. Thin wrapper
+// around FormatConflictTree.
 func FormatTree(h *Holder) []string {
 	if h == nil {
 		return nil
@@ -163,14 +158,39 @@ func FormatTree(h *Holder) []string {
 			fmt.Sprintf("Port %d on %s is held (no process tree available).", h.Port, h.Addr),
 		}
 	}
-	lines := []string{
-		fmt.Sprintf("Port %d on %s is held by the following process tree:", h.Port, h.Addr),
+	header := fmt.Sprintf("Port %d on %s is held by the following process tree:", h.Port, h.Addr)
+	var highlight int32
+	if len(h.Chain) > 0 {
+		highlight = h.Chain[0].PID
 	}
+	return FormatConflictTree(header, h.Chain, highlight)
+}
+
+// FormatConflictTree renders an ancestor chain as a process tree under the
+// given header. The root (PID 1) is the first entry; the conflict holder is
+// the last. Each line has a fixed-width tree connector, right-aligned PID,
+// left-aligned user, and command line (or process name if cmdline is empty).
+//
+// highlightPID draws that specific PID in bold red so the user can spot the
+// process they need to act on. Pass 0 to disable highlighting.
+//
+// The first token of each cmdline (the executable) renders in cyan, SSH host
+// arguments render in bold blue, and tree connectors render in dim gray, so
+// the things a user typically scans for stand out.
+func FormatConflictTree(header string, chain []ProcessInfo, highlightPID int32) []string {
+	if len(chain) == 0 {
+		if header == "" {
+			return nil
+		}
+		return []string{header}
+	}
+
+	lines := []string{header}
 
 	// Compute column widths for PID and user across the entire chain so each
 	// row has consistent spacing.
 	var maxPidW, maxUserW int
-	for _, info := range h.Chain {
+	for _, info := range chain {
 		if w := len(strconv.Itoa(int(info.PID))); w > maxPidW {
 			maxPidW = w
 		}
@@ -182,7 +202,7 @@ func FormatTree(h *Holder) []string {
 	// Tree column: every line is padded to the same visual width so PIDs
 	// stack in a single column. Width = maxDepth + 4 keeps at least 2 dashes
 	// after the └ at the deepest level.
-	maxDepth := len(h.Chain) - 1
+	maxDepth := len(chain) - 1
 	treeColWidth := maxDepth + 4
 
 	currentUser := ""
@@ -190,24 +210,37 @@ func FormatTree(h *Holder) []string {
 		currentUser = u.Username
 	}
 
-	// Walk Chain in reverse so the root prints first; depth grows toward the
+	// Walk chain in reverse so the root prints first; depth grows toward the
 	// holder.
-	for i := len(h.Chain) - 1; i >= 0; i-- {
-		info := h.Chain[i]
-		depth := len(h.Chain) - 1 - i
+	for i := len(chain) - 1; i >= 0; i-- {
+		info := chain[i]
+		depth := len(chain) - 1 - i
 
 		prefix := buildTreePrefix(depth, treeColWidth)
 		cmd := formatCommand(info)
 		coloredUser := colorizeUser(info.User, currentUser, maxUserW)
+		pidField := formatPID(info.PID, maxPidW, highlightPID)
 
-		line := fmt.Sprintf("%s%*d %s %s",
+		line := fmt.Sprintf("%s%s %s %s",
 			prefix,
-			maxPidW, info.PID,
+			pidField,
 			coloredUser,
 			cmd)
 		lines = append(lines, line)
 	}
 	return lines
+}
+
+// formatPID right-aligns a PID to width, wrapping it in bold red if it equals
+// highlightPID. Padding is applied before the color escapes so the visible
+// column width stays consistent across rows regardless of which PIDs are
+// highlighted.
+func formatPID(pid int32, width int, highlightPID int32) string {
+	padded := fmt.Sprintf("%*d", width, pid)
+	if highlightPID != 0 && pid == highlightPID {
+		return colorHighlight + padded + colorReset
+	}
+	return padded
 }
 
 // colorizeUser pads user to width then wraps it in green if it matches the

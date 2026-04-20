@@ -149,7 +149,7 @@ ProxyJump and ControlMaster work together — the jump host connection is multip
 Host *
     ControlMaster auto
     ControlPath ~/.ssh/sockets/%C
-    ControlPersist 600
+    ControlPersist 300
 
 Host dc-gate
     HostName gate.dc1.example.com
