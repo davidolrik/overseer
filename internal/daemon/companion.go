@@ -496,46 +496,40 @@ func (cm *CompanionManager) runCompanion(alias string, config core.CompanionConf
 	// Create log broadcaster for output streaming
 	broadcaster := NewLogBroadcaster(core.Config.Companion.HistorySize)
 
-	// Run companion via environment variable injection (like askpass)
-	// The wrapper command is invoked with "daemon" arg for easy identification as "overseer daemon" in the process list
-	// env vars trigger injection in main.go
-	cmd := exec.Command(execPath, "daemon")
-
-	// Set working directory (wrapper will inherit it and run child in it)
+	// Resolve working directory (wrapper will inherit it and run child in it)
+	workdir := ""
 	if config.Workdir != "" {
-		workdir := expandPath(config.Workdir)
+		workdir = expandPath(config.Workdir)
 		if _, err := os.Stat(workdir); os.IsNotExist(err) {
 			listener.Close()
 			os.Remove(socketPath)
 			cancel()
 			return nil, "", fmt.Errorf("workdir does not exist: %s", workdir)
 		}
-		cmd.Dir = workdir
 	}
 
-	// Set environment variables for companion-run command injection and user config
-	cmd.Env = os.Environ()
-	cmd.Env = append(cmd.Env,
+	// Build environment: current env + companion-run injection vars + user config
+	env := append([]string{}, os.Environ()...)
+	env = append(env,
 		fmt.Sprintf("OVERSEER_COMPANION_RUN_ALIAS=%s", alias),
 		fmt.Sprintf("OVERSEER_TUNNEL_TOKEN=%s", token),
 		fmt.Sprintf("OVERSEER_COMPANION_NAME=%s", config.Name),
 	)
 	for k, v := range config.Environment {
-		cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", k, v))
+		env = append(env, fmt.Sprintf("%s=%s", k, v))
 	}
 
-	// Create wrapper process in its own session so it survives daemon restart (for hot reload)
-	cmd.SysProcAttr = &syscall.SysProcAttr{
-		Setsid: true,
-	}
-
-	// Start the process
 	slog.Info("Starting companion",
 		"tunnel", alias,
 		"companion", config.Name,
 		"command", config.Command)
 
-	if err := cmd.Start(); err != nil {
+	// Wrapper is invoked as "overseer daemon" (env vars trigger companion-run
+	// injection in main.go) and spawned via spawnCompanionWrapper — on Darwin
+	// this disclaims responsibility so `op`/TCC dialogs resolve to the wrapper's
+	// own code signature rather than inheriting the daemon's responsible process.
+	cmd, err := spawnCompanionWrapper(execPath, []string{execPath, "daemon"}, env, workdir)
+	if err != nil {
 		listener.Close()
 		os.Remove(socketPath)
 		cancel()
@@ -942,33 +936,26 @@ func (cm *CompanionManager) restartCompanionInPlace(proc *CompanionProcess) erro
 		cm.registerToken(token, alias)
 	}
 
-	// Create new command
-	cmd := exec.Command(execPath, "daemon")
-
-	// Set working directory
+	// Resolve working directory
+	workdir := ""
 	if config.Workdir != "" {
-		workdir := expandPath(config.Workdir)
-		cmd.Dir = workdir
+		workdir = expandPath(config.Workdir)
 	}
 
-	// Set environment variables
-	cmd.Env = os.Environ()
-	cmd.Env = append(cmd.Env,
+	// Build environment
+	env := append([]string{}, os.Environ()...)
+	env = append(env,
 		fmt.Sprintf("OVERSEER_COMPANION_RUN_ALIAS=%s", alias),
 		fmt.Sprintf("OVERSEER_TUNNEL_TOKEN=%s", token),
 		fmt.Sprintf("OVERSEER_COMPANION_NAME=%s", config.Name),
 	)
 	for k, v := range config.Environment {
-		cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", k, v))
+		env = append(env, fmt.Sprintf("%s=%s", k, v))
 	}
 
-	// Create process in its own session
-	cmd.SysProcAttr = &syscall.SysProcAttr{
-		Setsid: true,
-	}
-
-	// Start the process
-	if err := cmd.Start(); err != nil {
+	// Spawn with responsibility disclaimed on Darwin (see runCompanion comment).
+	cmd, err := spawnCompanionWrapper(execPath, []string{execPath, "daemon"}, env, workdir)
+	if err != nil {
 		listener.Close()
 		os.Remove(socketPath)
 		return fmt.Errorf("failed to start companion: %w", err)
