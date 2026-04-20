@@ -60,7 +60,7 @@ export default withMermaid(
                 { text: "Advanced", link: "/advanced/shell-integration" },
                 {
                     text: "Troubleshooting",
-                    link: "/troubleshooting/macos-tcc-prompts",
+                    link: "/troubleshooting/port-conflicts",
                 },
                 {
                     text: version,
@@ -123,10 +123,6 @@ export default withMermaid(
                         {
                             text: "Port Already in Use",
                             link: "/troubleshooting/port-conflicts",
-                        },
-                        {
-                            text: "macOS TCC Prompts",
-                            link: "/troubleshooting/macos-tcc-prompts",
                         },
                     ],
                 },
