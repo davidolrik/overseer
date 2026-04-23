@@ -38,6 +38,8 @@ builds:
       - amd64
     ldflags:
       - -s -w -X go.olrik.dev/overseer/internal/core.Version={{.Version}}
+      # Embed Info.plist so TCC has a stable CFBundleIdentifier to key grants on.
+      - -extldflags "-sectcreate __TEXT __info_plist Info.plist"
     flags:
       - -mod=readonly
     hooks:
@@ -56,6 +58,8 @@ builds:
       - arm64
     ldflags:
       - -s -w -X go.olrik.dev/overseer/internal/core.Version={{.Version}}
+      # Embed Info.plist so TCC has a stable CFBundleIdentifier to key grants on.
+      - -extldflags "-sectcreate __TEXT __info_plist Info.plist"
     flags:
       - -mod=readonly
     hooks:

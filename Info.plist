@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	    Embedded into the Mach-O __TEXT,__info_plist section at link time so
+	    macOS TCC grants (App Data, App Management, etc.) persist across
+	    invocations and across overseer upgrades. Without a stable
+	    CFBundleIdentifier, TCC cannot durably record the "Allow" decision
+	    for an unbundled CLI tool and re-prompts every launch.
+	-->
+	<key>CFBundleIdentifier</key>
+	<string>dev.olrik.overseer</string>
+	<key>CFBundleName</key>
+	<string>overseer</string>
+	<key>CFBundleExecutable</key>
+	<string>overseer</string>
+	<key>CFBundleVersion</key>
+	<string>1</string>
+	<key>CFBundleShortVersionString</key>
+	<string>1.0</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+</dict>
+</plist>
