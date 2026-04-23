@@ -806,6 +806,65 @@ func TestStateManager_RestoreSensorCacheEmpty(t *testing.T) {
 	}
 }
 
+// TestStateManager_SetRuleEvaluator_SwapsEvaluator verifies that the manager
+// picks up a replacement RuleEvaluator installed after Start(). This simulates
+// what Orchestrator.Reload needs to do when the config changes.
+func TestStateManager_SetRuleEvaluator_SwapsEvaluator(t *testing.T) {
+	initial := &mockRuleEvaluator{result: RuleResult{
+		Context:  "initial-ctx",
+		Location: "initial-loc",
+	}}
+
+	m := NewStateManager(ManagerConfig{
+		RuleEvaluator: initial,
+		Logger:        slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError})),
+	})
+	m.Start()
+	defer m.Stop()
+
+	// Prime the manager with a reading so the initial evaluator runs.
+	m.Readings() <- SensorReading{
+		Sensor:    "public_ipv4",
+		Timestamp: time.Now(),
+		IP:        net.ParseIP("1.2.3.4"),
+	}
+
+	select {
+	case tr := <-m.Transitions():
+		if tr.To.Location != "initial-loc" {
+			t.Fatalf("expected location=initial-loc before swap, got %q", tr.To.Location)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for initial transition")
+	}
+
+	// Swap in a new evaluator mimicking a config reload with a new location.
+	replacement := &mockRuleEvaluator{result: RuleResult{
+		Context:  "reloaded-ctx",
+		Location: "reloaded-loc",
+	}}
+	m.SetRuleEvaluator(replacement)
+
+	// Submit a reading that changes a sensor field so processReading re-evaluates.
+	m.Readings() <- SensorReading{
+		Sensor:    "public_ipv4",
+		Timestamp: time.Now(),
+		IP:        net.ParseIP("5.6.7.8"),
+	}
+
+	select {
+	case tr := <-m.Transitions():
+		if tr.To.Location != "reloaded-loc" {
+			t.Errorf("expected location=reloaded-loc after swap, got %q", tr.To.Location)
+		}
+		if tr.To.Context != "reloaded-ctx" {
+			t.Errorf("expected context=reloaded-ctx after swap, got %q", tr.To.Context)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for post-swap transition")
+	}
+}
+
 func TestStateManager_TransitionsChannelFull(t *testing.T) {
 	m := NewStateManager(ManagerConfig{
 		TransitionsBufferSize: 1,

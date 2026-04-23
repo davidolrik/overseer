@@ -45,6 +45,11 @@ type StateManager struct {
 	// Input channel - all sensor readings come here
 	readings chan SensorReading
 
+	// Control channel - carries out-of-band updates (e.g. evaluator swaps
+	// from Orchestrator.Reload) so they are applied inside the run goroutine
+	// alongside readings, preserving the single-writer invariant.
+	evaluatorUpdates chan RuleEvaluator
+
 	// Sensor cache - only accessed by manager goroutine
 	sensorCache map[string]SensorReading
 
@@ -86,15 +91,16 @@ func NewStateManager(config ManagerConfig) *StateManager {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	return &StateManager{
-		policy:        config.Policy,
-		ruleEvaluator: config.RuleEvaluator,
-		logger:        config.Logger,
-		readings:      make(chan SensorReading, config.ReadingsBufferSize),
-		sensorCache:   make(map[string]SensorReading),
-		transitions:   make(chan StateTransition, config.TransitionsBufferSize),
-		subscribers:   make([]func(StateSnapshot), 0),
-		ctx:           ctx,
-		cancel:        cancel,
+		policy:           config.Policy,
+		ruleEvaluator:    config.RuleEvaluator,
+		logger:           config.Logger,
+		readings:         make(chan SensorReading, config.ReadingsBufferSize),
+		evaluatorUpdates: make(chan RuleEvaluator, 1),
+		sensorCache:      make(map[string]SensorReading),
+		transitions:      make(chan StateTransition, config.TransitionsBufferSize),
+		subscribers:      make([]func(StateSnapshot), 0),
+		ctx:              ctx,
+		cancel:           cancel,
 	}
 }
 
@@ -165,13 +171,38 @@ func (m *StateManager) run() {
 	defer m.wg.Done()
 
 	for {
+		// Drain pending evaluator swaps first so a reload cannot race with
+		// an already-queued reading. Go's select is intentionally random
+		// when multiple cases are ready; this priority pass keeps readings
+		// from being evaluated against the stale evaluator.
+		select {
+		case eval := <-m.evaluatorUpdates:
+			m.ruleEvaluator = eval
+			continue
+		default:
+		}
+
 		select {
 		case <-m.ctx.Done():
 			return
 
 		case reading := <-m.readings:
 			m.processReading(reading)
+
+		case eval := <-m.evaluatorUpdates:
+			m.ruleEvaluator = eval
 		}
+	}
+}
+
+// SetRuleEvaluator installs a replacement RuleEvaluator. The swap is
+// serialized through the manager's run goroutine so that no sensor reading
+// is ever evaluated against a half-updated configuration. Safe to call from
+// any goroutine (e.g. the config reload path in Orchestrator.Reload).
+func (m *StateManager) SetRuleEvaluator(eval RuleEvaluator) {
+	select {
+	case <-m.ctx.Done():
+	case m.evaluatorUpdates <- eval:
 	}
 }
 

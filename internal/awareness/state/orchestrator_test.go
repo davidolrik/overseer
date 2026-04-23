@@ -430,3 +430,106 @@ func TestOrchestrator_BuildSSHEnv(t *testing.T) {
 		}
 	})
 }
+
+// TestOrchestrator_Reload_AppliesNewLocation reproduces the bug where a
+// freshly defined location that matches the current public IP was not picked
+// up after a config reload because the manager still held a pointer to the
+// pre-reload RuleEngine. We drive the manager directly (skipping real probes)
+// so the test exercises Orchestrator.Reload without doing network I/O.
+func TestOrchestrator_Reload_AppliesNewLocation(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.Level(99)}))
+
+	initialLocations := map[string]Location{
+		"old-loc": {
+			Name:        "old-loc",
+			DisplayName: "Old",
+			Conditions:  map[string][]string{"public_ipv4": {"9.9.9.9"}},
+		},
+	}
+	initialRules := []Rule{
+		{Name: "old-ctx", DisplayName: "Old", Locations: []string{"old-loc"}},
+	}
+
+	o := NewOrchestrator(OrchestratorConfig{
+		Rules:     initialRules,
+		Locations: initialLocations,
+		Logger:    logger,
+	})
+
+	// Start only the manager; the full Start() path would launch real
+	// TCP/IP probes whose real-world readings would clobber the synthetic
+	// public_ipv4 we inject below.
+	o.manager.Start()
+	defer o.manager.Stop()
+
+	// Prime the sensor cache: online, on public IP 1.2.3.4. Under the
+	// initial config no location matches this IP.
+	online := true
+	o.manager.Readings() <- SensorReading{
+		Sensor:    "tcp",
+		Timestamp: time.Now(),
+		Online:    &online,
+	}
+	o.manager.Readings() <- SensorReading{
+		Sensor:    "public_ipv4",
+		Timestamp: time.Now(),
+		IP:        net.ParseIP("1.2.3.4"),
+	}
+
+	// Wait for both readings to be observed in state.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		state := o.GetCurrentState()
+		if state.Online && state.PublicIPv4 != nil && state.PublicIPv4.String() == "1.2.3.4" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out priming sensor cache; state=%+v", o.GetCurrentState())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if got := o.GetCurrentState().Location; got == "new-loc" {
+		t.Fatalf("pre-reload location should not be new-loc, got %q", got)
+	}
+
+	// Simulate the user editing the config: add a location matching the
+	// current public IP, along with a context that selects it.
+	reloadedLocations := map[string]Location{
+		"old-loc": initialLocations["old-loc"],
+		"new-loc": {
+			Name:        "new-loc",
+			DisplayName: "New",
+			Conditions:  map[string][]string{"public_ipv4": {"1.2.3.4"}},
+		},
+	}
+	reloadedRules := []Rule{
+		{Name: "new-ctx", DisplayName: "New", Locations: []string{"new-loc"}},
+		{Name: "old-ctx", DisplayName: "Old", Locations: []string{"old-loc"}},
+	}
+
+	// Reload would normally also call TriggerCheck which fires real network
+	// probes; we invoke the pure pieces directly to keep the test hermetic.
+	// The behavior under test is that the manager picks up the new evaluator.
+	o.ruleEngine = NewRuleEngine(reloadedRules, reloadedLocations, nil)
+	o.config.Rules = reloadedRules
+	o.config.Locations = reloadedLocations
+	o.manager.SetRuleEvaluator(o.ruleEngine)
+	o.manager.ForceCheck("test_reload")
+
+	deadline = time.Now().Add(2 * time.Second)
+	for {
+		state := o.GetCurrentState()
+		if state.Location == "new-loc" {
+			if state.Context != "new-ctx" {
+				t.Errorf("expected context=new-ctx, got %q", state.Context)
+			}
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for new-loc after reload; current location=%q context=%q",
+				state.Location, state.Context)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}

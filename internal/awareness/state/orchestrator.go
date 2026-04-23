@@ -518,6 +518,11 @@ func (o *Orchestrator) Reload(rules []Rule, locations map[string]Location, globa
 	o.config.Rules = rules
 	o.config.Locations = locations
 
+	// Hand the freshly built evaluator to the manager so subsequent readings
+	// (including the one produced by TriggerCheck below) are evaluated
+	// against the new rules/locations rather than the stale ones.
+	o.manager.SetRuleEvaluator(o.ruleEngine)
+
 	// Recreate env probes for new config
 	o.envProbes = nil
 	envVarNames := CollectEnvSensors(rules, locations)
