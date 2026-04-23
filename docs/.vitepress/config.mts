@@ -124,6 +124,10 @@ export default withMermaid(
                             text: "Port Already in Use",
                             link: "/troubleshooting/port-conflicts",
                         },
+                        {
+                            text: "macOS permission prompts",
+                            link: "/troubleshooting/macos-tcc-prompts",
+                        },
                     ],
                 },
             ],
