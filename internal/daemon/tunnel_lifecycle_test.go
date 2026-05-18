@@ -602,19 +602,18 @@ func TestAdoptTunnel_AlreadyTracked(t *testing.T) {
 	_ = result
 }
 
-func TestCleanOrphanTunnels_TrackedNotKilled(t *testing.T) {
+func TestFindOverseerSSHProcesses_ReturnsSlice(t *testing.T) {
 	quietLogger(t)
 
-	// NOTE: We do NOT call cleanOrphanTunnels() here because it runs
-	// pgrep -f overseer-daemon and kills any untracked SSH processes.
-	// If a real overseer instance is running on this machine, the test
-	// daemon (with empty tunnel map) would kill its SSH tunnels.
-	// Instead, we only test findOverseerSSHProcesses() which is read-only.
+	// NOTE: We do NOT call adoptOrphanedSSHProcesses() here because it would
+	// pull any real overseer-tagged ssh processes on the dev machine into the
+	// test daemon's tunnel map. We just verify the underlying pgrep wrapper
+	// returns a clean slice — the adoption behavior is covered by the
+	// orphan_adoption_test.go integration tests that spawn their own stubs.
 	pids, err := findOverseerSSHProcesses()
 	if err != nil {
 		t.Fatalf("findOverseerSSHProcesses failed: %v", err)
 	}
-	// Just verify it returns a valid slice (may be empty or not)
 	_ = pids
 }
 

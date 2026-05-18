@@ -297,14 +297,12 @@ func (d *Daemon) Run() {
 			"adopted_companions", adoptedCompanions)
 	}
 
-	// Clean up orphan SSH processes from previous daemon instances
-	// This handles cases where:
-	// - Previous daemon was killed without graceful shutdown
-	// - State file was lost/corrupted so tunnels couldn't be adopted
-	// Must happen AFTER adoption (so we keep adopted tunnels) but BEFORE
-	// state orchestrator (so orphans don't block new connections)
-	if orphansKilled := d.cleanOrphanTunnels(); orphansKilled > 0 {
-		slog.Info("Cleaned up orphan tunnels from previous daemon", "count", orphansKilled)
+	// Adopt any ssh children still carrying our process_tag that didn't make
+	// it into the state file (e.g. previous daemon killed without graceful
+	// shutdown, or state file lost). Adopting preserves the live tunnels
+	// rather than disrupting them.
+	if adoptedOrphans := d.adoptOrphanedSSHProcesses(); len(adoptedOrphans) > 0 {
+		slog.Info("Adopted orphan tunnels from previous daemon", "aliases", adoptedOrphans)
 	}
 
 	// Initialize state orchestrator (new centralized state management)
@@ -698,11 +696,6 @@ func (d *Daemon) handleConnection(conn net.Conn) {
 // evicts it and proceeds; force=false reports it with a process tree and
 // fails, preserving any active user session.
 func (d *Daemon) startTunnelStreaming(alias string, cliEnv map[string]string, stream *StreamingResponse, force bool) Response {
-	// Note: We cannot use defer d.mu.Unlock() here because we need to unlock
-	// early (before waiting for connection verification) and the function continues
-	// to execute afterward. Using defer would cause a double-unlock panic.
-	d.mu.Lock()
-
 	response := Response{}
 
 	// Helper to send a message - streams if available, otherwise adds to response
@@ -713,6 +706,22 @@ func (d *Daemon) startTunnelStreaming(alias string, cliEnv map[string]string, st
 			response.AddMessage(message, status)
 		}
 	}
+
+	// Pull in any stranded overseer ssh children before we evaluate the
+	// alias. If the master that's about to cause a "mux conflict" turns out
+	// to be one of our own, this turns the conflict into an adoption.
+	// Runs unlocked because adoptTunnel takes d.mu itself.
+	for _, adopted := range d.adoptOrphanedSSHProcesses() {
+		sendMessage(
+			fmt.Sprintf("Adopted existing tunnel '%s' from a previous daemon", adopted),
+			"INFO",
+		)
+	}
+
+	// Note: We cannot use defer d.mu.Unlock() here because we need to unlock
+	// early (before waiting for connection verification) and the function continues
+	// to execute afterward. Using defer would cause a double-unlock panic.
+	d.mu.Lock()
 
 	if existingTunnel, exists := d.tunnels[alias]; exists {
 		// Check if the existing tunnel process is actually still alive
@@ -1732,12 +1741,24 @@ type DaemonStatus struct {
 }
 
 func (d *Daemon) getStatus() Response {
+	// Adopt any stranded overseer-tagged ssh processes before we report state
+	// so the status tree shows them. Must run unlocked because adoptTunnel
+	// takes d.mu itself.
+	adoptedOrphans := d.adoptOrphanedSSHProcesses()
+
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
 	// Build statuses json
 	statuses := []DaemonStatus{}
 	response := Response{}
+
+	for _, alias := range adoptedOrphans {
+		response.AddMessage(
+			fmt.Sprintf("Adopted existing tunnel '%s' from a previous daemon", alias),
+			"INFO",
+		)
+	}
 
 	// No tunnels
 	if len(d.tunnels) == 0 {
@@ -2590,81 +2611,6 @@ func (d *Daemon) watchConfig() {
 	}()
 
 	slog.Info("Watching configuration file for changes")
-}
-
-// cleanOrphanTunnels finds and kills SSH processes from previous daemon instances
-// that weren't properly cleaned up. This can happen if:
-// - The daemon was killed with SIGKILL (no graceful shutdown)
-// - The tunnel state file was lost or corrupted
-// - A race condition during shutdown left processes running
-// Returns the number of orphan processes killed
-func (d *Daemon) cleanOrphanTunnels() int {
-	// Find SSH processes that were started by overseer
-	// They'll have the tag "overseer daemon" in their command line
-	pids, err := findOverseerSSHProcesses()
-	if err != nil {
-		slog.Warn("Failed to search for orphan SSH processes", "error", err)
-		return 0
-	}
-
-	if len(pids) == 0 {
-		slog.Debug("No orphan SSH processes found")
-		return 0
-	}
-
-	slog.Info("Found SSH processes with overseer tag, checking for orphans", "count", len(pids))
-
-	// For each found process, check if it's in our tunnel map
-	// If not, it's an orphan and should be killed
-	d.mu.Lock()
-	defer d.mu.Unlock()
-
-	killedCount := 0
-	for _, pid := range pids {
-		// Check if this PID belongs to any tunnel we're tracking
-		isTracked := false
-		for _, tunnel := range d.tunnels {
-			tunnelPid := tunnel.Pid
-			if tunnel.Cmd != nil && tunnel.Cmd.Process != nil {
-				tunnelPid = tunnel.Cmd.Process.Pid
-			}
-			if tunnelPid == pid {
-				isTracked = true
-				break
-			}
-		}
-
-		if !isTracked {
-			// This is an orphan process - kill it
-			slog.Warn("Found orphan SSH process, killing", "pid", pid)
-			process, err := os.FindProcess(pid)
-			if err != nil {
-				slog.Error("Failed to find orphan process", "pid", pid, "error", err)
-				continue
-			}
-
-			// Try graceful termination first, then force kill
-			if err := gracefulTerminate(process, 2*time.Second, fmt.Sprintf("orphan-pid-%d", pid)); err != nil {
-				slog.Error("Failed to kill orphan process", "pid", pid, "error", err)
-			} else {
-				killedCount++
-				slog.Info("Killed orphan SSH process", "pid", pid)
-
-				// Log to database
-				if d.database != nil {
-					if err := d.database.LogTunnelEvent("_orphan", "orphan_killed", fmt.Sprintf("Killed orphan SSH process with PID %d", pid)); err != nil {
-						slog.Error("Failed to log orphan kill event", "error", err)
-					}
-				}
-			}
-		}
-	}
-
-	if killedCount > 0 {
-		slog.Info("Orphan tunnel cleanup complete", "killed", killedCount)
-	}
-
-	return killedCount
 }
 
 // findOverseerSSHProcesses finds SSH processes started by overseer daemon

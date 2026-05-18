@@ -10,6 +10,16 @@ import (
 )
 
 func TestMain(m *testing.M) {
+	// Re-execution branch: TestAdoptOrphanedSSHProcesses_AdoptsRealOrphan
+	// spawns this test binary with a custom argv[0] ("ssh") and the marker
+	// env var so the child appears in the process table as a real overseer-
+	// tagged ssh process. The child must NOT run the test suite — it just
+	// sleeps until the parent test kills it.
+	if os.Getenv("OVERSEER_TEST_ORPHAN_STUB") == "1" {
+		time.Sleep(5 * time.Minute)
+		os.Exit(0)
+	}
+
 	// Initialize core.Config with defaults so daemon.New() doesn't panic
 	core.Config = core.GetDefaultConfig()
 	os.Exit(m.Run())
