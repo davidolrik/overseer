@@ -118,10 +118,17 @@ func (d *Daemon) enrichOrphanInfo(info *TunnelInfo) {
 		return
 	}
 
-	env := mergedEnvForTunnel(info.Alias)
-	if len(env) > 0 {
-		info.Environment = env
+	// Fill in Environment only when the caller didn't pass one — a state
+	// file from a successful original connect already carries the merged
+	// environment, and overwriting could drop CLI-supplied -E vars that we
+	// can't reconstruct here.
+	if len(info.Environment) == 0 {
+		if env := mergedEnvForTunnel(info.Alias); len(env) > 0 {
+			info.Environment = env
+		}
 	}
+
+	env := info.Environment
 
 	info.JumpChain = resolveJumpChain(info.Alias, env, d.sshConfigFile)
 	if len(info.JumpChain) > 0 {

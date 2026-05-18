@@ -4,6 +4,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"go.olrik.dev/overseer/internal/core"
 )
 
 // containsOption checks that args has a matching "-o key=value" pair in order.
@@ -101,5 +103,63 @@ func TestBuildTunnelSSHArgs_OmitsServerAliveWhenZero(t *testing.T) {
 		if strings.HasPrefix(a, "ServerAliveInterval=") {
 			t.Errorf("expected no ServerAliveInterval when interval is 0, got %v", args)
 		}
+	}
+}
+
+// TestBuildReconnectCmd_ForcesControlPersistNo guards the regression that
+// caused PID 68592: the reconnect path used to build its own ssh argv inline,
+// missing the ControlPersist=no override that buildTunnelSSHArgs adds. When
+// ssh_config enabled ControlPersist, the reconnected ssh forked the mux
+// master into the background, the daemon-tracked parent exited, the stderr
+// pipe EOF'd before "pledge: network" was seen, and verifyConnection logged
+// "SSH process terminated unexpectedly" — even though a live mux master
+// child was now reparented to launchd.
+func TestBuildReconnectCmd_ForcesControlPersistNo(t *testing.T) {
+	quietLogger(t)
+	oldConfig := core.Config
+	t.Cleanup(func() { core.Config = oldConfig })
+	core.Config = core.GetDefaultConfig()
+
+	d := New()
+
+	cmd := d.buildReconnectCmd("zero", nil)
+
+	if !containsOption(cmd.Args, "ControlPersist", "no") {
+		t.Fatalf("expected reconnect args to contain -o ControlPersist=no, got %v", cmd.Args)
+	}
+}
+
+func TestBuildReconnectCmd_IncludesAliasAndCoreFlags(t *testing.T) {
+	quietLogger(t)
+	oldConfig := core.Config
+	t.Cleanup(func() { core.Config = oldConfig })
+	core.Config = core.GetDefaultConfig()
+
+	d := New()
+
+	cmd := d.buildReconnectCmd("myhost", nil)
+
+	if !slices.Contains(cmd.Args, "myhost") {
+		t.Errorf("expected alias 'myhost' in args, got %v", cmd.Args)
+	}
+	for _, flag := range []string{"-N", "-v"} {
+		if !slices.Contains(cmd.Args, flag) {
+			t.Errorf("expected %s in args, got %v", flag, cmd.Args)
+		}
+	}
+}
+
+func TestBuildReconnectCmd_AppliesTunnelEnvironment(t *testing.T) {
+	quietLogger(t)
+	oldConfig := core.Config
+	t.Cleanup(func() { core.Config = oldConfig })
+	core.Config = core.GetDefaultConfig()
+
+	d := New()
+
+	cmd := d.buildReconnectCmd("myhost", map[string]string{"MY_VAR": "value-42"})
+
+	if !slices.Contains(cmd.Env, "MY_VAR=value-42") {
+		t.Errorf("expected MY_VAR=value-42 in env, got env=%v", cmd.Env)
 	}
 }

@@ -393,6 +393,132 @@ Host orphan-hop-test
 	}
 }
 
+// TestAdoptTunnel_EnrichesWhenJumpChainAndResolvedHostMissing covers the
+// state-file recovery case: a tunnel adopted via an older overseer (or
+// orphan-adopted before enrichOrphanInfo existed) gets round-tripped through
+// SaveTunnelState / adoptExistingTunnels with empty ResolvedHost and
+// JumpChain. The next adoption must enrich from live config so status
+// renders the tunnel the same as a freshly-connected one.
+func TestAdoptTunnel_EnrichesWhenJumpChainAndResolvedHostMissing(t *testing.T) {
+	quietLogger(t)
+	if _, err := exec.LookPath("ssh"); err != nil {
+		t.Skip("ssh not available")
+	}
+
+	alias := fmt.Sprintf("adopt-enrich-test-%d", time.Now().UnixNano())
+
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "ssh_config")
+	cfg := fmt.Sprintf(`Host %s
+    HostName 10.0.0.1
+    Port 22
+    ProxyJump adopt-enrich-hop
+
+Host adopt-enrich-hop
+    HostName 10.0.0.2
+    Port 2222
+`, alias)
+	if err := os.WriteFile(configPath, []byte(cfg), 0600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	oldConfig := core.Config
+	t.Cleanup(func() { core.Config = oldConfig })
+	core.Config = core.GetDefaultConfig()
+	core.Config.ConfigPath = tmpDir
+
+	pid := spawnOrphanStub(t, alias)
+	time.Sleep(100 * time.Millisecond)
+
+	d := New()
+	d.ctx, d.cancelFunc = context.WithCancel(context.Background())
+	t.Cleanup(d.cancelFunc)
+	d.sshConfigFile = configPath
+
+	info := TunnelInfo{
+		PID:      pid,
+		Alias:    alias,
+		Hostname: alias,
+		Cmdline: []string{
+			"ssh", alias, "-N",
+			"-o", "IgnoreUnknown=overseer-daemon",
+			"-o", "overseer-daemon=" + core.ProcessTag(),
+			"-o", "ExitOnForwardFailure=yes",
+			"-v",
+		},
+		StartDate: time.Now().Add(-1 * time.Hour),
+		State:     string(StateConnected),
+		// ResolvedHost and JumpChain deliberately empty — this simulates a
+		// state file from a pre-enrichment overseer.
+	}
+
+	if !d.adoptTunnel(info) {
+		t.Fatal("expected adoptTunnel to succeed")
+	}
+
+	d.mu.Lock()
+	tun := d.tunnels[alias]
+	d.mu.Unlock()
+
+	if len(tun.JumpChain) < 2 {
+		t.Errorf("expected JumpChain populated post-enrichment, got %v", tun.JumpChain)
+	}
+}
+
+// TestAdoptTunnel_PreservesNonEmptyResolvedHost confirms enrichment only
+// fills *missing* fields. If the state file already carries ResolvedHost
+// from a successful original connect, adoption must trust it — running ssh
+// -G again could resolve to a different value than what was actually
+// authenticated against (config drift since the original connect).
+func TestAdoptTunnel_PreservesNonEmptyResolvedHost(t *testing.T) {
+	quietLogger(t)
+
+	alias := fmt.Sprintf("adopt-preserve-test-%d", time.Now().UnixNano())
+
+	tmpDir := t.TempDir()
+	oldConfig := core.Config
+	t.Cleanup(func() { core.Config = oldConfig })
+	core.Config = core.GetDefaultConfig()
+	core.Config.ConfigPath = tmpDir
+
+	pid := spawnOrphanStub(t, alias)
+	time.Sleep(100 * time.Millisecond)
+
+	d := New()
+	d.ctx, d.cancelFunc = context.WithCancel(context.Background())
+	t.Cleanup(d.cancelFunc)
+
+	preservedResolved := "192.168.99.99:22"
+
+	info := TunnelInfo{
+		PID:      pid,
+		Alias:    alias,
+		Hostname: alias,
+		Cmdline: []string{
+			"ssh", alias, "-N",
+			"-o", "IgnoreUnknown=overseer-daemon",
+			"-o", "overseer-daemon=" + core.ProcessTag(),
+			"-o", "ExitOnForwardFailure=yes",
+			"-v",
+		},
+		StartDate:    time.Now().Add(-1 * time.Hour),
+		State:        string(StateConnected),
+		ResolvedHost: preservedResolved,
+	}
+
+	if !d.adoptTunnel(info) {
+		t.Fatal("expected adoptTunnel to succeed")
+	}
+
+	d.mu.Lock()
+	tun := d.tunnels[alias]
+	d.mu.Unlock()
+
+	if tun.ResolvedHost != preservedResolved {
+		t.Errorf("expected ResolvedHost preserved as %q, got %q", preservedResolved, tun.ResolvedHost)
+	}
+}
+
 func TestEnrichOrphanInfo_PopulatesEnvironmentFromTunnelConfig(t *testing.T) {
 	quietLogger(t)
 

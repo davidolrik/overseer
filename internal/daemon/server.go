@@ -1216,28 +1216,11 @@ func (d *Daemon) monitorTunnel(alias string) {
 		// Check if a password is stored for this alias
 		hasPassword := keyring.HasPassword(alias)
 
-		// Create new SSH command
-		// Build SSH options from config
-		sshArgs := []string{alias, "-N", "-o", "IgnoreUnknown=overseer-daemon", "-o", "overseer-daemon=" + core.ProcessTag(), "-o", "ExitOnForwardFailure=yes", "-v"}
+		newCmd := d.buildReconnectCmd(alias, tunnel.Environment)
 
-		if d.sshConfigFile != "" {
-			sshArgs = append([]string{"-F", d.sshConfigFile}, sshArgs...)
-		}
-
-		// Add ServerAliveInterval if configured (0 means disabled)
-		if core.Config.SSH.ServerAliveInterval > 0 {
-			sshArgs = append(sshArgs,
-				"-o", fmt.Sprintf("ServerAliveInterval=%d", core.Config.SSH.ServerAliveInterval),
-				"-o", fmt.Sprintf("ServerAliveCountMax=%d", core.Config.SSH.ServerAliveCountMax))
-		}
-
-		newCmd := exec.Command("ssh", sshArgs...)
-		newCmd.Env = os.Environ()
-
-		// Build reconnect env: fresh state vars as base, then overlay stored
-		// tunnel env (which contains tunnel config + CLI overrides from the
-		// original connection). This ensures reconnected processes see the
-		// current context/location, not stale values.
+		// reconnectEnv mirrors what buildReconnectCmd merged into the
+		// command env, so we can pass it to reportConnectFailure on
+		// verification failure for accurate diagnostics.
 		reconnectEnv := make(map[string]string)
 		if orch := GetStateOrchestrator(); orch != nil {
 			for k, v := range orch.BuildSSHEnv() {
@@ -1246,14 +1229,6 @@ func (d *Daemon) monitorTunnel(alias string) {
 		}
 		for k, v := range tunnel.Environment {
 			reconnectEnv[k] = v
-		}
-		for k, v := range reconnectEnv {
-			newCmd.Env = append(newCmd.Env, k+"="+v)
-		}
-
-		// Make tunnel process independent - survives daemon death (for hot reload)
-		newCmd.SysProcAttr = &syscall.SysProcAttr{
-			Setsid: true, // Create new session, detach from parent
 		}
 
 		// Capture stderr to monitor connection status
@@ -1374,6 +1349,43 @@ func (d *Daemon) monitorTunnel(alias string) {
 
 		// Continue monitoring this tunnel (loop back to Wait())
 	}
+}
+
+// buildReconnectCmd builds an unstarted *exec.Cmd for a tunnel reconnection.
+// Routes through buildTunnelSSHArgs so the reconnect path inherits the same
+// ssh options as the initial connect — most notably ControlPersist=no, whose
+// absence in an earlier inline duplicate caused live reconnects to fork the
+// mux master into the background and orphan PIDs to the daemon.
+//
+// tunnelEnv is the stored Environment from the live Tunnel struct; it gets
+// merged on top of the current state orchestrator's SSH env so reconnected
+// processes see fresh context/location variables. The caller is responsible
+// for askpass token wiring and stderr pipe setup — those have side effects
+// on the daemon that don't belong in a Cmd builder.
+func (d *Daemon) buildReconnectCmd(alias string, tunnelEnv map[string]string) *exec.Cmd {
+	sshArgs := buildTunnelSSHArgs(alias, d.sshConfigFile,
+		core.Config.SSH.ServerAliveInterval, core.Config.SSH.ServerAliveCountMax)
+
+	cmd := exec.Command("ssh", sshArgs...)
+	cmd.Env = os.Environ()
+
+	reconnectEnv := make(map[string]string)
+	if orch := GetStateOrchestrator(); orch != nil {
+		for k, v := range orch.BuildSSHEnv() {
+			reconnectEnv[k] = v
+		}
+	}
+	for k, v := range tunnelEnv {
+		reconnectEnv[k] = v
+	}
+	for k, v := range reconnectEnv {
+		cmd.Env = append(cmd.Env, k+"="+v)
+	}
+
+	// Make tunnel process independent — survives daemon death for hot reload.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+
+	return cmd
 }
 
 // buildTunnelSSHArgs builds the argument vector for a tunnel's `ssh` invocation.
@@ -2709,6 +2721,17 @@ func (d *Daemon) adoptTunnel(info TunnelInfo) bool {
 			"alias", info.Alias,
 			"pid", info.PID)
 		return false
+	}
+
+	// Enrich-on-missing: a state file written by an older overseer (or by
+	// an orphan-adoption that ran before enrichOrphanInfo existed) can
+	// carry empty JumpChain + empty ResolvedHost. Re-derive from live
+	// config now so status renders the adopted tunnel the same as a
+	// freshly-connected one. Tunnels whose state file already has these
+	// fields skip enrichment entirely, preserving whatever the original
+	// connect-time logic recorded.
+	if len(info.JumpChain) == 0 && info.ResolvedHost == "" {
+		d.enrichOrphanInfo(&info)
 	}
 
 	d.mu.Lock()
