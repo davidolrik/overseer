@@ -1,12 +1,12 @@
 [tools]
-go = "1.26.2"
+go = "1.26.6"
 node = "latest"
 prek = "latest"
 
 [hooks]
 postinstall = [
   "git config --unset-all core.hooksPath || true",
-  "rm -f .git/hooks/pre-commit*",
+  "rm -f \"$(git rev-parse --git-path hooks)/pre-commit*\"",
   "prek install"
 ]
 
