@@ -152,6 +152,10 @@ func TestHandleConnection_IPC_CompanionAttachWithArgs(t *testing.T) {
 	<-done
 }
 
+// Aliases used for spawning real ssh end with a trailing dot: that makes the
+// name fully qualified so the resolver skips DNS search domains, and the
+// lookup fails immediately instead of matching a wildcard record and hanging
+// in a TCP connect until the OS timeout.
 func TestHandleConnection_IPC_SSHConnectWithTag(t *testing.T) {
 	quietLogger(t)
 
@@ -173,7 +177,7 @@ func TestHandleConnection_IPC_SSHConnectWithTag(t *testing.T) {
 		d.handleConnection(serverConn)
 	}()
 
-	clientConn.Write([]byte("SSH_CONNECT test-alias --env=MY_TAG=my-tag\n"))
+	clientConn.Write([]byte("SSH_CONNECT test-alias. --env=MY_TAG=my-tag\n"))
 
 	// Read some output (will be streaming JSON)
 	reader := bufio.NewReader(clientConn)
@@ -230,7 +234,7 @@ func TestHandleConnection_IPC_SSHReconnectNotRunning(t *testing.T) {
 		d.handleConnection(serverConn)
 	}()
 
-	clientConn.Write([]byte("SSH_RECONNECT nonexistent\n"))
+	clientConn.Write([]byte("SSH_RECONNECT nonexistent.\n"))
 
 	reader := bufio.NewReader(clientConn)
 	line, err := reader.ReadString('\n')

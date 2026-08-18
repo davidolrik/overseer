@@ -81,6 +81,10 @@ func TestLogContextChange_NothingChanged(t *testing.T) {
 	}
 }
 
+// Aliases used for spawning real ssh end with a trailing dot: that makes the
+// name fully qualified so the resolver skips DNS search domains, and the
+// lookup fails immediately instead of matching a wildcard record and hanging
+// in a TCP connect until the OS timeout.
 func TestHandleNewContextChange_ConnectAction(t *testing.T) {
 	quietLogger(t)
 
@@ -91,8 +95,8 @@ func TestHandleNewContextChange_ConnectAction(t *testing.T) {
 		ConfigPath: tmpDir,
 		Companion:  core.CompanionSettings{HistorySize: 50},
 		Tunnels: map[string]*core.TunnelConfig{
-			"connect-tunnel": {
-				Name: "connect-tunnel",
+			"connect-tunnel.": {
+				Name: "connect-tunnel.",
 			},
 		},
 	}
@@ -104,7 +108,7 @@ func TestHandleNewContextChange_ConnectAction(t *testing.T) {
 	rule := &state.Rule{
 		Name: "trusted",
 		Actions: state.RuleActions{
-			Connect: []string{"connect-tunnel"},
+			Connect: []string{"connect-tunnel."},
 		},
 	}
 
@@ -113,7 +117,7 @@ func TestHandleNewContextChange_ConnectAction(t *testing.T) {
 	// The tunnel should have been started (or attempted)
 	// Since we don't have real SSH, it may fail, but the connect action was invoked
 	d.mu.Lock()
-	_, exists := d.tunnels["connect-tunnel"]
+	_, exists := d.tunnels["connect-tunnel."]
 	d.mu.Unlock()
 	// The tunnel entry may or may not exist depending on startTunnel success
 	// What matters is that it didn't panic

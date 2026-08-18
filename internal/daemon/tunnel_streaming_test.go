@@ -11,6 +11,10 @@ import (
 	"go.olrik.dev/overseer/internal/db"
 )
 
+// Aliases used for spawning real ssh end with a trailing dot: that makes the
+// name fully qualified so the resolver skips DNS search domains, and the
+// lookup fails immediately instead of matching a wildcard record and hanging
+// in a TCP connect until the OS timeout.
 func TestStartTunnelStreaming_AlreadyRunningHealthy(t *testing.T) {
 	quietLogger(t)
 
@@ -30,7 +34,7 @@ func TestStartTunnelStreaming_AlreadyRunningHealthy(t *testing.T) {
 	}
 	t.Cleanup(func() { cmd.Process.Kill() })
 
-	d.tunnels["running-tunnel"] = Tunnel{
+	d.tunnels["running-tunnel."] = Tunnel{
 		Hostname: "test.example.com",
 		Pid:      cmd.Process.Pid,
 		Cmd:      cmd,
@@ -39,7 +43,7 @@ func TestStartTunnelStreaming_AlreadyRunningHealthy(t *testing.T) {
 
 	// Should return error because tunnel is "already running"
 	// (health check uses signal check + TCP - signal will pass for our sleep process)
-	resp := d.startTunnelStreaming("running-tunnel", nil, nil, false)
+	resp := d.startTunnelStreaming("running-tunnel.", nil, nil, false)
 
 	// Even if TCP check fails (making health check fail), the stale cleanup path is exercised
 	_ = resp
@@ -59,17 +63,17 @@ func TestStartTunnelStreaming_StaleTunnelCleanup(t *testing.T) {
 	d := New()
 
 	// Create a stale tunnel with a dead PID and an askpass token
-	d.tunnels["stale-tunnel"] = Tunnel{
+	d.tunnels["stale-tunnel."] = Tunnel{
 		Hostname:     "test.example.com",
 		Pid:          999999999, // Non-existent PID
 		State:        StateConnected,
 		AskpassToken: "stale-token-123",
 	}
-	d.askpassTokens["stale-token-123"] = "stale-tunnel"
+	d.askpassTokens["stale-token-123"] = "stale-tunnel."
 
 	// startTunnelStreaming should clean up the stale entry and try to connect
 	// It will fail to connect (no valid SSH target), but the cleanup path is exercised
-	resp := d.startTunnelStreaming("stale-tunnel", nil, nil, false)
+	resp := d.startTunnelStreaming("stale-tunnel.", nil, nil, false)
 
 	// The stale token should be cleaned up
 	if _, exists := d.askpassTokens["stale-token-123"]; exists {
@@ -101,14 +105,14 @@ func TestStartTunnelStreaming_StaleTunnelWithDatabase(t *testing.T) {
 	d.database = database
 
 	// Add stale tunnel
-	d.tunnels["stale-db"] = Tunnel{
+	d.tunnels["stale-db."] = Tunnel{
 		Hostname: "test.example.com",
 		Pid:      999999999,
 		State:    StateConnected,
 	}
 
 	// Should clean up stale entry and log to database
-	resp := d.startTunnelStreaming("stale-db", nil, nil, false)
+	resp := d.startTunnelStreaming("stale-db.", nil, nil, false)
 	_ = resp
 }
 
@@ -127,7 +131,7 @@ func TestStartTunnelStreaming_NoTunnelConfig(t *testing.T) {
 
 	// No tunnel in config, but SSH alias exists on the system
 	// startTunnelStreaming should skip companion section and go straight to SSH
-	resp := d.startTunnelStreaming("no-config-alias", nil, nil, false)
+	resp := d.startTunnelStreaming("no-config-alias.", nil, nil, false)
 
 	// Will fail because SSH can't connect, but the no-companions code path is exercised
 	_ = resp
@@ -141,8 +145,8 @@ func TestStartTunnelStreaming_WithEnvironment(t *testing.T) {
 	core.Config = &core.Configuration{
 		Companion: core.CompanionSettings{HistorySize: 50},
 		Tunnels: map[string]*core.TunnelConfig{
-			"env-tunnel": {
-				Name:        "env-tunnel",
+			"env-tunnel.": {
+				Name:        "env-tunnel.",
 				Environment: map[string]string{"OVERSEER_TAG": "default-tag"},
 			},
 		},
@@ -152,7 +156,7 @@ func TestStartTunnelStreaming_WithEnvironment(t *testing.T) {
 	d := New()
 
 	// Test with CLI env that overrides config env
-	resp := d.startTunnelStreaming("env-tunnel", map[string]string{"OVERSEER_TAG": "cli-tag"}, nil, false)
+	resp := d.startTunnelStreaming("env-tunnel.", map[string]string{"OVERSEER_TAG": "cli-tag"}, nil, false)
 	_ = resp
 }
 
@@ -174,7 +178,7 @@ func TestStartTunnelStreaming_WithSSHConfig(t *testing.T) {
 	d := New()
 	d.sshConfigFile = sshConfigPath
 
-	resp := d.startTunnelStreaming("config-test", nil, nil, false)
+	resp := d.startTunnelStreaming("config-test.", nil, nil, false)
 	_ = resp
 }
 
@@ -194,7 +198,7 @@ func TestStartTunnelStreaming_WithServerAliveInterval(t *testing.T) {
 
 	d := New()
 
-	resp := d.startTunnelStreaming("alive-test", nil, nil, false)
+	resp := d.startTunnelStreaming("alive-test.", nil, nil, false)
 	_ = resp
 }
 
@@ -214,6 +218,6 @@ func TestStartTunnel_NoConfig(t *testing.T) {
 	t.Cleanup(d.cancelFunc)
 
 	// startTunnel calls startTunnelStreaming with nil stream
-	resp := d.startTunnel("basic-alias", nil)
+	resp := d.startTunnel("basic-alias.", nil)
 	_ = resp
 }

@@ -33,6 +33,10 @@ func TestStartTunnelWhenIPReady_TunnelAlreadyExists(t *testing.T) {
 	d.startTunnelWhenIPReady("existing-tunnel", "")
 }
 
+// Aliases used for spawning real ssh end with a trailing dot: that makes the
+// name fully qualified so the resolver skips DNS search domains, and the
+// lookup fails immediately instead of matching a wildcard record and hanging
+// in a TCP connect until the OS timeout.
 func TestStartTunnelWhenIPReady_IPAlreadyKnown(t *testing.T) {
 	quietLogger(t)
 
@@ -55,5 +59,5 @@ func TestStartTunnelWhenIPReady_IPAlreadyKnown(t *testing.T) {
 	// With nil orchestrator, isPublicIPKnown returns true immediately
 	// startTunnelWhenIPReady will call startTunnel which will fail (no SSH)
 	// but the code path is exercised
-	d.startTunnelWhenIPReady("test-tunnel", "")
+	d.startTunnelWhenIPReady("test-tunnel.", "")
 }
