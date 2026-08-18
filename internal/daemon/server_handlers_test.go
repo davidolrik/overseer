@@ -318,6 +318,7 @@ func TestGetStatus(t *testing.T) {
 					State:             StateConnected,
 					AutoReconnect:     true,
 					Environment:       map[string]string{"OVERSEER_TAG": "work"},
+					HopAuths:          []HopAuth{{Identity: "/home/djo/.ssh/id_ed25519", Method: "publickey"}},
 				},
 			},
 		}
@@ -342,6 +343,9 @@ func TestGetStatus(t *testing.T) {
 		}
 		if statuses[0].Environment["OVERSEER_TAG"] != "work" {
 			t.Errorf("expected environment OVERSEER_TAG='work', got %q", statuses[0].Environment["OVERSEER_TAG"])
+		}
+		if len(statuses[0].HopAuths) != 1 || statuses[0].HopAuths[0] != (HopAuth{Identity: "/home/djo/.ssh/id_ed25519", Method: "publickey"}) {
+			t.Errorf("expected hop auths for id_ed25519/publickey, got %+v", statuses[0].HopAuths)
 		}
 	})
 
@@ -377,6 +381,63 @@ func TestGetStatus(t *testing.T) {
 		}
 		if env["OVERSEER_LOCATION"] != "home" {
 			t.Errorf("expected OVERSEER_LOCATION='home', got %q", env["OVERSEER_LOCATION"])
+		}
+	})
+
+	t.Run("reused hop resolves auth from the tunnel owning the mux master", func(t *testing.T) {
+		now := time.Now()
+		d := &Daemon{
+			tunnels: map[string]Tunnel{
+				"jump": {
+					Hostname:          "jump",
+					Pid:               1,
+					StartDate:         now,
+					LastConnectedTime: now,
+					State:             StateConnected,
+					ControlPath:       "/Users/djo/.ssh/control/jump__22__djo",
+					HopAuths:          []HopAuth{{Identity: "/Users/djo/.ssh/id_jump", Method: "publickey"}},
+				},
+				"deep": {
+					Hostname:          "deep",
+					Pid:               2,
+					StartDate:         now,
+					LastConnectedTime: now,
+					State:             StateConnected,
+					HopAuths: []HopAuth{
+						{Reused: true, ControlPath: "/Users/djo/.ssh/control/jump__22__djo"},
+						{Reused: true, ControlPath: "/Users/djo/.ssh/control/not-ours__22__djo"},
+						{Identity: "/Users/djo/.ssh/id_dest", Method: "publickey"},
+					},
+				},
+			},
+		}
+
+		resp := d.getStatus()
+		statuses := resp.Data.([]DaemonStatus)
+		var deep DaemonStatus
+		for _, s := range statuses {
+			if s.Hostname == "deep" {
+				deep = s
+			}
+		}
+		if len(deep.HopAuths) != 3 {
+			t.Fatalf("expected 3 hop auths, got %+v", deep.HopAuths)
+		}
+		want0 := HopAuth{Reused: true, ControlPath: "/Users/djo/.ssh/control/jump__22__djo", Identity: "/Users/djo/.ssh/id_jump", Method: "publickey"}
+		if deep.HopAuths[0] != want0 {
+			t.Errorf("hop 0: expected %+v, got %+v", want0, deep.HopAuths[0])
+		}
+		want1 := HopAuth{Reused: true, ControlPath: "/Users/djo/.ssh/control/not-ours__22__djo"}
+		if deep.HopAuths[1] != want1 {
+			t.Errorf("hop 1: expected unresolved %+v, got %+v", want1, deep.HopAuths[1])
+		}
+
+		// The stored tunnel keeps only what ssh reported
+		d.mu.Lock()
+		stored := d.tunnels["deep"].HopAuths[0]
+		d.mu.Unlock()
+		if stored.Identity != "" {
+			t.Errorf("expected stored hop auth to stay unresolved, got %+v", stored)
 		}
 	})
 

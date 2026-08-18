@@ -307,6 +307,12 @@ func TestTunnelState_RoundTrip(t *testing.T) {
 				Environment:       map[string]string{"OVERSEER_TAG": "production"},
 				ResolvedHost:      "10.0.0.1",
 				JumpChain:         []string{"bastion1", "bastion2"},
+				ControlPath:       "/home/djo/.ssh/control/prod__22__djo",
+				HopAuths: []HopAuth{
+					{Reused: true, ControlPath: "/home/djo/.ssh/control/jump__22__djo"},
+					{Identity: "/home/djo/.ssh/jump_key", Method: "publickey"},
+					{Method: "keyboard-interactive"},
+				},
 			},
 		},
 	}
@@ -350,6 +356,15 @@ func TestTunnelState_RoundTrip(t *testing.T) {
 	}
 	if len(info.JumpChain) != 2 || info.JumpChain[0] != "bastion1" || info.JumpChain[1] != "bastion2" {
 		t.Errorf("JumpChain: expected [bastion1, bastion2], got %v", info.JumpChain)
+	}
+	if info.ControlPath != "/home/djo/.ssh/control/prod__22__djo" {
+		t.Errorf("ControlPath: expected '/home/djo/.ssh/control/prod__22__djo', got %q", info.ControlPath)
+	}
+	if len(info.HopAuths) != 3 ||
+		info.HopAuths[0] != (HopAuth{Reused: true, ControlPath: "/home/djo/.ssh/control/jump__22__djo"}) ||
+		info.HopAuths[1] != (HopAuth{Identity: "/home/djo/.ssh/jump_key", Method: "publickey"}) ||
+		info.HopAuths[2] != (HopAuth{Method: "keyboard-interactive"}) {
+		t.Errorf("HopAuths: unexpected value %+v", info.HopAuths)
 	}
 	if info.RetryCount != 3 {
 		t.Errorf("RetryCount: expected 3, got %d", info.RetryCount)

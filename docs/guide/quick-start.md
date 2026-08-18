@@ -104,6 +104,7 @@ Sensors:
 
 Active Tunnels:
   ✓ dev-server (PID: 12345, Age: 2h15m)
+  └── → 203.0.113.5:22 (Key: id_ed25519)
 ```
 
 ## 5. Manual Tunnel Control

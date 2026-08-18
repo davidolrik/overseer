@@ -1023,10 +1023,10 @@ The status output displays SSH hops and companions in a tree beneath each tunnel
 ```plain
 Active Tunnels:
   ✓ gateway (PID: 22187, Age: 6m17s)
-  ├── → 203.0.113.10:22
+  ├── → 203.0.113.10:22 (Key: id_ed25519)
   └── ✓ vpn [running]
   ✓ dev-server (PID: 74917, Age: 1h1m7s)
-  └── → 198.51.100.50:22
+  └── → 198.51.100.50:22 (Key: id_ed25519)
 ```
 
 ## Shell Completion

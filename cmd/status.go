@@ -149,6 +149,60 @@ func formatEnvInfo(env map[string]string) string {
 	return fmt.Sprintf(" \033[2m[%s]\033[0m", strings.Join(envParts, ", "))
 }
 
+// formatAuthInfo formats how one hop authenticated, for display next to the
+// hop in the tunnel tree. When the SSH identity is known it is shown as
+// "Key: <name>"; otherwise the authentication method is shown as
+// "Auth: <method>". A hop that went through an existing ControlMaster
+// socket is marked "reused" (after the master's key/method, when the master
+// belongs to one of our tunnels). Returns "" when nothing is known (e.g.
+// adopted tunnels).
+//
+// The keychain password is handed to ssh through askpass, which answers
+// whatever prompt the server sends. Servers normally offer
+// keyboard-interactive before password, so ssh reports that method for what
+// is, from the user's point of view, password auth — both are shown as
+// "password". Other methods are shown as ssh reports them.
+//
+// Keys under ~/.ssh/ are shown relative to that directory, other paths under
+// the home directory are shortened with "~", and anything else (paths outside
+// home, agent key comments) is shown as-is. A ".pub" suffix (IdentityFile
+// pointing at the public key, with the agent holding the private half) is
+// dropped since it names the same key.
+func formatAuthInfo(auth daemon.HopAuth) string {
+	const colorGray, colorReset = "\033[90m", "\033[0m"
+
+	reused := ""
+	if auth.Reused {
+		reused = colorGray + ", reused" + colorReset
+	}
+
+	if auth.Identity == "" {
+		switch auth.Method {
+		case "":
+			if auth.Reused {
+				return colorGray + "reused" + colorReset
+			}
+			return ""
+		case "keyboard-interactive":
+			auth.Method = "password"
+		}
+		return fmt.Sprintf("%sAuth:%s %s%s", colorGray, colorReset, auth.Method, reused)
+	}
+
+	name := auth.Identity
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		sshDir := home + "/.ssh/"
+		if strings.HasPrefix(name, sshDir) {
+			name = strings.TrimPrefix(name, sshDir)
+		} else if strings.HasPrefix(name, home+"/") {
+			name = "~" + strings.TrimPrefix(name, home)
+		}
+	}
+	name = strings.TrimSuffix(name, ".pub")
+
+	return fmt.Sprintf("%sKey:%s %s%s", colorGray, colorReset, name, reused)
+}
+
 // companionInfo holds parsed companion information for display
 type companionInfo struct {
 	Name  string
@@ -204,6 +258,25 @@ func getCompanionMap(response daemon.Response) map[string][]companionInfo {
 	}
 
 	return result
+}
+
+// hopAuthForIndex maps hop index i (of numHops in the displayed chain) to its
+// HopAuth. The destination is always the last of both the hop chain and
+// hopAuths; the leading auths map to the leading hops from the start. When
+// hopAuths is shorter than the chain (ControlMaster reuse collapsed some
+// hops), the middle hops have no auth and ok is false.
+func hopAuthForIndex(i, numHops int, hopAuths []daemon.HopAuth) (daemon.HopAuth, bool) {
+	n := len(hopAuths)
+	if n == 0 {
+		return daemon.HopAuth{}, false
+	}
+	if i == numHops-1 {
+		return hopAuths[n-1], true
+	}
+	if i < n-1 {
+		return hopAuths[i], true
+	}
+	return daemon.HopAuth{}, false
 }
 
 // displayTunnels renders the active tunnels section with companion tree display
@@ -317,6 +390,21 @@ func displayTunnels(statuses []daemon.DaemonStatus, companionMap map[string][]co
 				hopStr = fmt.Sprintf("%s%s%s:%s%s%s%s", colorBoldBlue, host, colorGray, colorReset, colorBlue, port, colorReset)
 			} else {
 				hopStr = fmt.Sprintf("%s%s%s", colorBoldBlue, hop, colorReset)
+			}
+
+			// Annotate the hop with how it authenticated. hop_auths is the
+			// actual connection sequence (jump hosts first, destination
+			// last); jump_chain is the config-derived topology. They match
+			// 1:1 for a straightforward chain, but ControlMaster reuse can
+			// collapse several config hops into one reused entry, making
+			// hop_auths shorter. The destination is always the last of each,
+			// and the leading auths belong to the leading hops, so any gap
+			// (a collapsed/phantom hop) falls in the middle and is left
+			// unannotated.
+			if auth, ok := hopAuthForIndex(i, len(hops), status.HopAuths); ok {
+				if authInfo := formatAuthInfo(auth); authInfo != "" {
+					hopStr += fmt.Sprintf(" %s(%s%s%s)%s", colorGray, colorReset, authInfo, colorGray, colorReset)
+				}
 			}
 
 			// Build prefix for nesting depth

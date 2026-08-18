@@ -93,3 +93,37 @@ func TestResolveJumpChain_WithEnv(t *testing.T) {
 	// Result depends on SSH config, just verify no panic
 	_ = chain
 }
+
+func TestResolveControlPath_ExpandsTokens(t *testing.T) {
+	quietLogger(t)
+
+	if _, err := exec.LookPath("ssh"); err != nil {
+		t.Skip("ssh not available")
+	}
+
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "ssh_config")
+	config := `Host mux-test
+    HostName 10.0.0.1
+    Port 2222
+    User alice
+    ControlPath ` + tmpDir + `/%h__%p__%r
+
+Host nomux-test
+    HostName 10.0.0.2
+    ControlPath none
+`
+	if err := os.WriteFile(configPath, []byte(config), 0600); err != nil {
+		t.Fatalf("failed to write SSH config: %v", err)
+	}
+
+	got := resolveControlPath("mux-test", nil, configPath)
+	want := tmpDir + "/10.0.0.1__2222__alice" // %h expands to the HostName
+	if got != want {
+		t.Errorf("expected control path %q, got %q", want, got)
+	}
+
+	if got := resolveControlPath("nomux-test", nil, configPath); got != "" {
+		t.Errorf("expected empty control path for ControlPath none, got %q", got)
+	}
+}

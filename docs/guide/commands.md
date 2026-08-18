@@ -102,7 +102,7 @@ The text output includes:
 - Context age (how long you've been in the current context)
 - All sensor readings with values
 - Active tunnels with state icons, PIDs, connection age, and reconnect counts
-- SSH hops displayed as a cascading tree beneath each tunnel
+- SSH hops displayed as a cascading tree beneath each tunnel, each with how it authenticated (`Key: <name>` for public keys, `Auth: password` for keychain passwords, `reused` when the hop went through an existing ControlMaster connection)
 - Companion scripts shown as tree siblings below hops
 - Recent events (sensor changes, tunnel events, context transitions)
 
@@ -110,19 +110,19 @@ Example output with a single-hop tunnel with a companion, and a single-hop tunne
 
 ```plain
   ✓ gateway (PID: 22187, Age: 6m17s)
-  ├── → 203.0.113.10:22
+  ├── → 203.0.113.10:22 (Key: id_ed25519)
   └── ✓ vpn [running]
   ✓ dev-server (PID: 74917, Age: 1h1m7s)
-  └── → 198.51.100.50:22
+  └── → 198.51.100.50:22 (Key: id_ed25519)
 ```
 
 Multi-hop tunnels show a cascading tree of hops:
 
 ```plain
   ✓ deep-internal (PID: 4521, Age: 1h30m)
-  └── → gate.example.com:22
-      └── → dmz.example.com:22
-          └── → 10.10.1.50:22
+  └── → gate.example.com:22 (Key: id_jump)
+      └── → dmz.example.com:22 (Auth: password)
+          └── → 10.10.1.50:22 (Key: id_ed25519)
 ```
 
 Use `--resolve` to translate IP addresses in the hop chain to hostnames via reverse DNS.

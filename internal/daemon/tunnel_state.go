@@ -33,6 +33,8 @@ type TunnelInfo struct {
 	Environment       map[string]string `json:"environment,omitempty"`
 	ResolvedHost      string            `json:"resolved_host,omitempty"`
 	JumpChain         []string  `json:"jump_chain,omitempty"`
+	HopAuths          []HopAuth `json:"hop_auths,omitempty"`
+	ControlPath       string    `json:"control_path,omitempty"`
 	// Note: AskpassToken is NOT persisted for security reasons
 	// New tokens will be generated when adopting tunnels
 }
@@ -79,6 +81,8 @@ func (d *Daemon) SaveTunnelState() error {
 			Environment:       tunnel.Environment,
 			ResolvedHost:      tunnel.ResolvedHost,
 			JumpChain:         tunnel.JumpChain,
+			HopAuths:          tunnel.HopAuths,
+			ControlPath:       tunnel.ControlPath,
 			// AskpassToken intentionally omitted for security
 		}
 

@@ -72,6 +72,23 @@ type Tunnel struct {
 	HealthCheckFailures int         // Consecutive health check failures (requires multiple before killing)
 	ResolvedHost        string      // Actual IP:port from SSH "Authenticated to" output
 	JumpChain           []string    // All resolved IP:port hops in order (jump hosts first, destination last)
+	HopAuths            []HopAuth   // How each hop authenticated, in connection order (jump hosts first, destination last)
+	ControlPath         string      // This tunnel's ControlMaster socket path (from ssh -G), used to recognise hops of other tunnels that reuse it
+}
+
+// HopAuth records how one hop in a tunnel's connection chain authenticated,
+// parsed from SSH's verbose output. With ProxyJump the child ssh processes
+// inherit -v, so every hop reports its authentication, jump hosts first.
+//
+// A hop that goes through an existing ControlMaster socket (e.g. one owned by
+// another tunnel to the same host) doesn't authenticate at all; it is marked
+// Reused with the socket path. Identity/Method are then filled in from the
+// tunnel owning that master when the status is reported.
+type HopAuth struct {
+	Identity    string `json:"identity,omitempty"`     // Key file or agent key comment (from "Server accepts key"), for publickey auth
+	Method      string `json:"method,omitempty"`       // SSH authentication method (publickey, password, keyboard-interactive, ...)
+	Reused      bool   `json:"reused,omitempty"`       // Hop went through an existing ControlMaster socket instead of authenticating
+	ControlPath string `json:"control_path,omitempty"` // The master socket a reused hop went through
 }
 
 func New() *Daemon {
@@ -823,6 +840,7 @@ func (d *Daemon) startTunnelStreaming(alias string, cliEnv map[string]string, st
 
 	// Resolve ProxyJump chain from SSH config for multi-hop display
 	jumpChain := resolveJumpChain(alias, mergedEnv, d.sshConfigFile)
+	controlPath := resolveControlPath(alias, mergedEnv, d.sshConfigFile)
 
 	sshArgs := buildTunnelSSHArgs(alias, d.sshConfigFile, core.Config.SSH.ServerAliveInterval, core.Config.SSH.ServerAliveCountMax)
 
@@ -884,6 +902,7 @@ func (d *Daemon) startTunnelStreaming(alias string, cliEnv map[string]string, st
 		State:             StateConnecting,                  // Initial state is connecting, updated to connected after verification
 		Environment:       mergedEnv,                         // Store environment for reconnection
 		JumpChain:         jumpChain,
+		ControlPath:       controlPath,
 	}
 	slog.Info(fmt.Sprintf("Attempting to start tunnel for '%s' (PID %d)", alias, cmd.Process.Pid))
 
@@ -1423,47 +1442,66 @@ func buildTunnelSSHArgs(alias, sshConfigFile string, aliveInterval, aliveCountMa
 // Returns a slice of "hostname:port" strings representing each hop in order
 // (first jump host first, final destination last).
 // Returns nil if there is no ProxyJump (direct connection).
-func resolveJumpChain(alias string, env map[string]string, sshConfigFile string) []string {
-	type hopInfo struct {
-		hostname  string
-		port      string
-		proxyJump string
+// sshHostInfo holds the fields of interest from `ssh -G <alias>`.
+type sshHostInfo struct {
+	hostname    string
+	port        string
+	proxyJump   string
+	controlPath string // Expanded ControlPath ("" when none)
+}
+
+// querySSHHost runs `ssh -G` for an alias (optionally with -F for a custom
+// config and extra environment for Match exec rules) and returns the resolved
+// fields. Returns a zero value when ssh fails.
+func querySSHHost(alias string, env map[string]string, sshConfigFile string) sshHostInfo {
+	args := []string{"-G"}
+	if sshConfigFile != "" {
+		args = append(args, "-F", sshConfigFile)
+	}
+	args = append(args, alias)
+	cmd := exec.Command("ssh", args...)
+	if len(env) > 0 {
+		cmd.Env = os.Environ()
+		for k, v := range env {
+			cmd.Env = append(cmd.Env, k+"="+v)
+		}
+	}
+	out, err := cmd.Output()
+	if err != nil {
+		return sshHostInfo{}
 	}
 
-	resolve := func(a string) hopInfo {
-		args := []string{"-G"}
-		if sshConfigFile != "" {
-			args = append(args, "-F", sshConfigFile)
+	var info sshHostInfo
+	for _, line := range strings.Split(string(out), "\n") {
+		parts := strings.SplitN(strings.TrimSpace(line), " ", 2)
+		if len(parts) != 2 {
+			continue
 		}
-		args = append(args, a)
-		cmd := exec.Command("ssh", args...)
-		if len(env) > 0 {
-			cmd.Env = os.Environ()
-			for k, v := range env {
-				cmd.Env = append(cmd.Env, k+"="+v)
+		switch parts[0] {
+		case "hostname":
+			info.hostname = parts[1]
+		case "port":
+			info.port = parts[1]
+		case "proxyjump":
+			info.proxyJump = parts[1]
+		case "controlpath":
+			if parts[1] != "none" {
+				info.controlPath = parts[1]
 			}
 		}
-		out, err := cmd.Output()
-		if err != nil {
-			return hopInfo{}
-		}
+	}
+	return info
+}
 
-		var info hopInfo
-		for _, line := range strings.Split(string(out), "\n") {
-			parts := strings.SplitN(strings.TrimSpace(line), " ", 2)
-			if len(parts) != 2 {
-				continue
-			}
-			switch parts[0] {
-			case "hostname":
-				info.hostname = parts[1]
-			case "port":
-				info.port = parts[1]
-			case "proxyjump":
-				info.proxyJump = parts[1]
-			}
-		}
-		return info
+// resolveControlPath returns the expanded ControlMaster socket path ssh would
+// use for an alias, or "" when multiplexing is off or ssh -G fails.
+func resolveControlPath(alias string, env map[string]string, sshConfigFile string) string {
+	return querySSHHost(alias, env, sshConfigFile).controlPath
+}
+
+func resolveJumpChain(alias string, env map[string]string, sshConfigFile string) []string {
+	resolve := func(a string) sshHostInfo {
+		return querySSHHost(a, env, sshConfigFile)
 	}
 
 	// Resolve the destination
@@ -1516,6 +1554,38 @@ func resolveJumpChain(alias string, env map[string]string, sshConfigFile string)
 var authenticatedToRe = regexp.MustCompile(`Authenticated to \S+ \(\[([^\]]+)\]:(\d+)\)`)
 var authenticatingToRe = regexp.MustCompile(`Authenticating to (.+):(\d+) as '`)
 
+// Matches the identity SSH offers or gets accepted for publickey auth. The
+// identity is the key filename (or the key comment for agent keys, which may
+// contain spaces), followed by the key type and fingerprint:
+//   "Offering public key: <identity> <TYPE> <fingerprint> [explicit] [authenticator] [agent]"
+//   "Server accepts key: <identity> <TYPE> <fingerprint> [explicit] [authenticator] [agent]"
+// A private key without a matching .pub file is signed with directly and only
+// logs "Trying private key: <identity>".
+var offeredKeyRe = regexp.MustCompile(`(?:Offering public key|Server accepts key): (.+) (?:RSA|DSA|ECDSA|ED25519|XMSS)(?:-SK)?(?:-CERT)? \S+`)
+var tryingPrivateKeyRe = regexp.MustCompile(`Trying private key: (.+)$`)
+
+// Matches the ControlMaster socket ssh probes before connecting:
+//   "auto-mux: Trying existing master at '<path>'"
+var muxMasterRe = regexp.MustCompile(`Trying existing master at '([^']+)'`)
+
+// Matches the authentication method SSH reports on success. Older OpenSSH
+// logs it as "Authentication succeeded (password)."; newer releases put it on
+// the "Authenticated to" line as 'using "password"'.
+var authMethodRe = regexp.MustCompile(`Authentication succeeded \(([^)]+)\)|using "([^"]+)"`)
+
+// parseAuthMethod returns the authentication method named on an
+// authentication line, or "" when the line doesn't name one.
+func parseAuthMethod(line string) string {
+	matches := authMethodRe.FindStringSubmatch(line)
+	if len(matches) != 3 {
+		return ""
+	}
+	if matches[1] != "" {
+		return matches[1]
+	}
+	return matches[2]
+}
+
 func (d *Daemon) verifyConnection(stderr io.ReadCloser, alias string, result chan<- error) {
 	defer func() {
 		// Ensure we always send a result, even if we exit unexpectedly
@@ -1530,6 +1600,10 @@ func (d *Daemon) verifyConnection(stderr io.ReadCloser, alias string, result cha
 	authenticated := false
 	verified := false
 	var lastAuthenticatingTo string // host:port from "Authenticating to" line (for proxy hops)
+	var lastOfferedKey string       // identity from the most recent key offer/acceptance line
+	var hopAuths []HopAuth          // one entry per authenticated hop, in connection order
+	hopOpen := false                // last hopAuths entry came from "Authentication succeeded" and awaits its "Authenticated to" line
+	var lastMuxMaster string        // socket path from the most recent "auto-mux: Trying existing master" line
 
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -1541,14 +1615,38 @@ func (d *Daemon) verifyConnection(stderr io.ReadCloser, alias string, result cha
 			lastAuthenticatingTo = matches[1] + ":" + matches[2]
 		}
 
-		// After verification, keep reading to drain stderr and prevent pipe buffer deadlock.
-		// If we stop reading, SSH's stderr pipe buffer fills up (~64KB) and the SSH process
-		// blocks on write(), freezing the tunnel and all multiplexed connections.
-		if verified {
-			continue
+		// Track ControlMaster reuse. Every ssh in the chain probes its own
+		// socket first ("Trying existing master"); only a hop that then gets
+		// a session from that master ("mux_client_request_...: master
+		// session id") actually went through one, and such a hop never
+		// authenticates, so record it here. (A master serving someone else
+		// logs "multiplexing control connection" — that is not a hop.)
+		if matches := muxMasterRe.FindStringSubmatch(line); len(matches) == 2 {
+			lastMuxMaster = matches[1]
+		} else if strings.Contains(line, "mux_client_request_") && strings.Contains(line, "master session id") {
+			hopAuths = append(hopAuths, HopAuth{Reused: true, ControlPath: lastMuxMaster})
+			d.mu.Lock()
+			if t, exists := d.tunnels[alias]; exists {
+				t.HopAuths = append([]HopAuth(nil), hopAuths...)
+				d.tunnels[alias] = t
+			}
+			d.mu.Unlock()
+			lastMuxMaster = ""
 		}
 
-		// Track authentication completion and resolve the destination host.
+		// Track the key being tried. Rejected keys are followed by another
+		// offer, so the last one seen before "Authentication succeeded" is
+		// the key that was actually used.
+		if matches := offeredKeyRe.FindStringSubmatch(line); len(matches) == 2 {
+			lastOfferedKey = matches[1]
+		} else if matches := tryingPrivateKeyRe.FindStringSubmatch(line); len(matches) == 2 {
+			lastOfferedKey = matches[1]
+		}
+
+		// Track authentication completion, resolve the destination host and
+		// record how each hop authenticated. This runs even after
+		// verification: with ProxyJump the jump host's session opens (which
+		// is what verifies the tunnel) before the destination authenticates.
 		if strings.Contains(line, "Authentication succeeded") ||
 			strings.Contains(line, "Authenticated to") {
 			authenticated = true
@@ -1563,16 +1661,49 @@ func (d *Daemon) verifyConnection(stderr io.ReadCloser, alias string, result cha
 			} else if lastAuthenticatingTo != "" {
 				resolvedHost = lastAuthenticatingTo
 			}
-			if resolvedHost != "" {
-				d.mu.Lock()
-				if t, exists := d.tunnels[alias]; exists {
-					t.ResolvedHost = resolvedHost
-					d.tunnels[alias] = t
-				}
-				d.mu.Unlock()
+
+			// The identity only applies to publickey auth. When another
+			// method succeeded (e.g. password after keys were rejected),
+			// drop the offered key so it isn't reported as in use. Lines
+			// that don't name a method leave the offered key in place.
+			authMethod := parseAuthMethod(line)
+			identity := lastOfferedKey
+			if authMethod != "" && authMethod != "publickey" {
+				identity = ""
 			}
+
+			// Older OpenSSH logs "Authentication succeeded (method)."
+			// followed by "Authenticated to ..." for the same hop; newer
+			// releases only log the latter. Start a hop on whichever comes
+			// first and let a following "Authenticated to" close it.
+			if strings.Contains(line, "Authentication succeeded") {
+				hopAuths = append(hopAuths, HopAuth{Identity: identity, Method: authMethod})
+				hopOpen = true
+			} else if hopOpen {
+				hopOpen = false
+			} else {
+				hopAuths = append(hopAuths, HopAuth{Identity: identity, Method: authMethod})
+			}
+
+			d.mu.Lock()
+			if t, exists := d.tunnels[alias]; exists {
+				if resolvedHost != "" {
+					t.ResolvedHost = resolvedHost
+				}
+				t.HopAuths = append([]HopAuth(nil), hopAuths...)
+				d.tunnels[alias] = t
+			}
+			d.mu.Unlock()
 			lastAuthenticatingTo = ""
+			lastOfferedKey = ""
 			// Don't return yet - we need to wait for the session to be established
+		}
+
+		// After verification, keep reading to drain stderr and prevent pipe buffer deadlock.
+		// If we stop reading, SSH's stderr pipe buffer fills up (~64KB) and the SSH process
+		// blocks on write(), freezing the tunnel and all multiplexed connections.
+		if verified {
+			continue
 		}
 
 		// Look for success indicators - session fully established
@@ -1750,6 +1881,7 @@ type DaemonStatus struct {
 	Environment       map[string]string `json:"environment,omitempty"`
 	ResolvedHost      string            `json:"resolved_host,omitempty"`
 	JumpChain         []string    `json:"jump_chain,omitempty"`
+	HopAuths          []HopAuth   `json:"hop_auths,omitempty"` // How each hop authenticated, jump hosts first, destination last
 }
 
 func (d *Daemon) getStatus() Response {
@@ -1779,6 +1911,15 @@ func (d *Daemon) getStatus() Response {
 		return response
 	}
 
+	// Tunnels that own a ControlMaster socket, so hops of other tunnels that
+	// reused it can report how the master authenticated.
+	masters := make(map[string]Tunnel)
+	for _, tunnel := range d.tunnels {
+		if tunnel.ControlPath != "" && len(tunnel.HopAuths) > 0 {
+			masters[tunnel.ControlPath] = tunnel
+		}
+	}
+
 	// We have tunnels
 	response.AddMessage("OK", "INFO")
 	for alias, tunnel := range d.tunnels {
@@ -1794,6 +1935,7 @@ func (d *Daemon) getStatus() Response {
 			Environment:       tunnel.Environment,
 			ResolvedHost:      tunnel.ResolvedHost,
 			JumpChain:         tunnel.JumpChain,
+			HopAuths:          resolveReusedHops(tunnel.HopAuths, masters),
 		}
 
 		// Add disconnected time if tunnel is disconnected or reconnecting
@@ -1811,6 +1953,30 @@ func (d *Daemon) getStatus() Response {
 	response.AddData(statuses)
 
 	return response
+}
+
+// resolveReusedHops returns a copy of hopAuths where hops that reused a
+// ControlMaster socket owned by one of the given tunnels carry that tunnel's
+// destination authentication. Hops whose master isn't ours are left as-is.
+func resolveReusedHops(hopAuths []HopAuth, masters map[string]Tunnel) []HopAuth {
+	if len(hopAuths) == 0 {
+		return hopAuths
+	}
+	resolved := make([]HopAuth, len(hopAuths))
+	copy(resolved, hopAuths)
+	for i, hop := range resolved {
+		if !hop.Reused || hop.ControlPath == "" {
+			continue
+		}
+		master, ok := masters[hop.ControlPath]
+		if !ok {
+			continue
+		}
+		masterAuth := master.HopAuths[len(master.HopAuths)-1]
+		resolved[i].Identity = masterAuth.Identity
+		resolved[i].Method = masterAuth.Method
+	}
+	return resolved
 }
 
 func (d *Daemon) getVersion() Response {
@@ -2764,6 +2930,8 @@ func (d *Daemon) adoptTunnel(info TunnelInfo) bool {
 		Environment:       info.Environment,
 		ResolvedHost:      info.ResolvedHost,
 		JumpChain:         info.JumpChain,
+		HopAuths:          info.HopAuths,
+		ControlPath:       info.ControlPath,
 	}
 
 	d.tunnels[info.Alias] = tunnel

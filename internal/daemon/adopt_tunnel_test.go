@@ -72,6 +72,8 @@ func TestAdoptTunnel_WithAllFields(t *testing.T) {
 		Environment:       map[string]string{"OVERSEER_TAG": "production"},
 		ResolvedHost:      "10.0.0.1",
 		JumpChain: []string{"jump1.example.com:22"},
+		HopAuths:          []HopAuth{{Identity: "/home/djo/.ssh/id_ed25519", Method: "publickey"}},
+		ControlPath:       "/home/djo/.ssh/control/test__22__djo",
 	}
 
 	// Will fail validation (dead PID) but exercises field mapping
