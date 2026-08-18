@@ -43,6 +43,12 @@ type Daemon struct {
 	ctx           context.Context   // Context for lifecycle management
 	cancelFunc    context.CancelFunc
 	sshConfigFile string // Path to SSH config file (empty = use system default)
+
+	// Test seams for the public-IP readiness gate. ipReady overrides
+	// isPublicIPKnown when set; publicIPWaitTimeout overrides the default
+	// wait when non-zero.
+	ipReady             func() bool
+	publicIPWaitTimeout time.Duration
 }
 
 type TunnelState string
@@ -724,6 +730,17 @@ func (d *Daemon) startTunnelStreaming(alias string, cliEnv map[string]string, st
 		}
 	}
 
+	// A manual connect (streaming) can arrive the instant the daemon
+	// autostarts — before sensors have populated OVERSEER_PUBLIC_IP, which
+	// SSH Match rules depend on. Wait for it first so the tunnel connects
+	// with the right network context. The automatic context-change path
+	// (stream == nil) does its own gating and must not double-wait here.
+	if stream != nil {
+		d.waitForPublicIP(func() {
+			sendMessage("Waiting for network context (public IP)...", "INFO")
+		})
+	}
+
 	// Pull in any stranded overseer ssh children before we evaluate the
 	// alias. If the master that's about to cause a "mux conflict" turns out
 	// to be one of our own, this turns the conflict into an adoption.
@@ -996,6 +1013,51 @@ func (d *Daemon) startTunnel(alias string, env map[string]string) Response {
 	return d.startTunnelStreaming(alias, env, nil, true)
 }
 
+// defaultPublicIPWaitTimeout bounds how long a manual connect waits for the
+// public IP to be discovered before proceeding with whatever network state is
+// known.
+const defaultPublicIPWaitTimeout = 10 * time.Second
+
+// isPublicIPReady reports whether the public IP is known, honouring the
+// ipReady test seam when set.
+func (d *Daemon) isPublicIPReady() bool {
+	if d.ipReady != nil {
+		return d.ipReady()
+	}
+	return d.isPublicIPKnown()
+}
+
+// waitForPublicIP blocks until the public IP is known or the wait times out,
+// so a manually requested tunnel isn't started before OVERSEER_PUBLIC_IP is
+// populated (SSH Match rules depend on it). notify is invoked once, only when
+// we actually have to wait, so the caller can surface progress.
+func (d *Daemon) waitForPublicIP(notify func()) {
+	timeout := d.publicIPWaitTimeout
+	if timeout == 0 {
+		timeout = defaultPublicIPWaitTimeout
+	}
+	d.waitForPublicIPWith(d.isPublicIPReady, timeout, 200*time.Millisecond, notify)
+}
+
+// waitForPublicIPWith is waitForPublicIP with the readiness check, timeout and
+// poll interval injected, for testing.
+func (d *Daemon) waitForPublicIPWith(ready func() bool, timeout, interval time.Duration, notify func()) {
+	if ready() {
+		return
+	}
+	if notify != nil {
+		notify()
+	}
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		time.Sleep(interval)
+		if ready() {
+			return
+		}
+	}
+	slog.Warn("Timed out waiting for public IP, proceeding with current network state")
+}
+
 // isPublicIPKnown returns true if the public IPv4 has been determined
 // and written to the env file. We check the last-written value rather than
 // in-memory state to avoid a race where the state manager has the real IP
@@ -1022,7 +1084,7 @@ func (d *Daemon) isPublicIPKnown() bool {
 func (d *Daemon) startTunnelWhenIPReady(alias, ctx string) {
 	slog.Info("Deferring tunnel until public IP is known", "alias", alias, "context", ctx)
 
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(defaultPublicIPWaitTimeout)
 	for time.Now().Before(deadline) {
 		time.Sleep(200 * time.Millisecond)
 

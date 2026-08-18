@@ -51,6 +51,8 @@ overseer connect <alias> [flags]
 
 Connects to an SSH host by its alias (as defined in `~/.ssh/config`). The daemon manages the SSH process and handles reconnection if configured.
 
+If the daemon has to be started for this command, `connect` waits for the network context (public IP) to be discovered before opening the tunnel — printing `Waiting for network context...` — so `Match` rules in your SSH config that depend on `OVERSEER_PUBLIC_IP`/location resolve correctly. It proceeds anyway after a short timeout if discovery is slow.
+
 | Flag                  | Description                                              |
 | --------------------- | -------------------------------------------------------- |
 | `-E, --env KEY=VALUE` | Set environment variable on the SSH process (repeatable) |
