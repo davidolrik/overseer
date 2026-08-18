@@ -32,6 +32,7 @@ import (
 type Daemon struct {
 	tunnels       map[string]Tunnel
 	askpassTokens map[string]string // Maps token -> alias for validation
+	connecting    map[string]bool   // Aliases with a connect in flight, to coalesce concurrent connect requests
 	mu            sync.Mutex
 	listener      net.Listener
 	shutdownOnce  sync.Once
@@ -102,6 +103,7 @@ func New() *Daemon {
 	d := &Daemon{
 		tunnels:       make(map[string]Tunnel),
 		askpassTokens: make(map[string]string),
+		connecting:    make(map[string]bool),
 		logBroadcast:  NewLogBroadcaster(core.Config.Companion.HistorySize),
 		companionMgr:  NewCompanionManager(),
 		ctx:           ctx,
@@ -757,11 +759,29 @@ func (d *Daemon) startTunnelStreaming(alias string, cliEnv map[string]string, st
 	// to execute afterward. Using defer would cause a double-unlock panic.
 	d.mu.Lock()
 
+	// Coalesce with any connect already in flight for this alias — e.g. an
+	// auto-connect rule racing a manual `connect`, or a duplicate request.
+	// Report success and let the in-flight connect finish rather than
+	// spawning a second ssh (which races into a hard port conflict).
+	if d.connecting[alias] {
+		d.mu.Unlock()
+		sendMessage(fmt.Sprintf("Tunnel '%s' connection already in progress.", alias), "INFO")
+		return response
+	}
+
 	if existingTunnel, exists := d.tunnels[alias]; exists {
-		// Check if the existing tunnel process is actually still alive
-		if d.checkTunnelHealth(alias, existingTunnel.Pid) {
+		switch {
+		case existingTunnel.State == StateConnecting || existingTunnel.State == StateReconnecting:
+			// A connect is mid-flight (e.g. the monitor's auto-reconnect).
+			// Its TCP isn't up yet, so a health check would read it as stale
+			// and respawn — coalesce instead of double-connecting.
 			d.mu.Unlock()
-			sendMessage(fmt.Sprintf("Tunnel '%s' is already running.", alias), "ERROR")
+			sendMessage(fmt.Sprintf("Tunnel '%s' connection already in progress.", alias), "INFO")
+			return response
+		case d.checkTunnelHealth(alias, existingTunnel.Pid):
+			// Already connected — an explicit connect is idempotent.
+			d.mu.Unlock()
+			sendMessage(fmt.Sprintf("Tunnel '%s' is already connected.", alias), "INFO")
 			return response
 		}
 
@@ -779,6 +799,18 @@ func (d *Daemon) startTunnelStreaming(alias string, cliEnv map[string]string, st
 			}
 		}
 	}
+
+	// Reserve this connect so concurrent requests coalesce above. Cleared
+	// when this function returns (success or failure); by then the tunnel is
+	// either StateConnected or removed, so a later connect sees the real
+	// state. All return paths below leave d.mu unlocked, so this defer can
+	// take the lock safely.
+	d.connecting[alias] = true
+	defer func() {
+		d.mu.Lock()
+		delete(d.connecting, alias)
+		d.mu.Unlock()
+	}()
 
 	// Mux conflict pre-check: a non-overseer ssh with ControlPersist may have
 	// left a live mux master bound to this alias. If we connected with

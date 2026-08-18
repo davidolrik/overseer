@@ -121,17 +121,24 @@ func TestStartTunnel_AlreadyRunning(t *testing.T) {
 		}
 	}
 
-	// Try starting the same alias again
+	// Connecting the same healthy alias again is idempotent: it reports the
+	// tunnel is already connected (INFO), not an error, and does not spawn a
+	// second ssh.
 	resp2 := d.startTunnel(alias, nil)
 
+	for _, msg := range resp2.Messages {
+		if msg.Status == "ERROR" {
+			t.Errorf("expected no error for an already-connected tunnel, got: %s", msg.Message)
+		}
+	}
 	found := false
 	for _, msg := range resp2.Messages {
-		if msg.Status == "ERROR" && strings.Contains(msg.Message, "already running") {
+		if msg.Status == "INFO" && strings.Contains(msg.Message, "already connected") {
 			found = true
 		}
 	}
 	if !found {
-		t.Errorf("expected 'already running' error, got messages: %+v", resp2.Messages)
+		t.Errorf("expected 'already connected' info message, got messages: %+v", resp2.Messages)
 	}
 
 	d.stopTunnel(alias, false)
