@@ -34,7 +34,7 @@ run = ["goreleaser build --snapshot --clean"]
 
 [tasks."test"]
 description = "🧪 Run tests"
-run = ["go test ./..."]
+run = ["go tool gotestsum --format testname -- ./..."]
 
 [tasks."docs:server"]
 description = "🚀 Run documentation server"
