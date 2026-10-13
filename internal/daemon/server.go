@@ -715,7 +715,6 @@ func (d *Daemon) handleConnection(conn net.Conn) {
 
 // startTunnelStreaming starts a tunnel with optional streaming of progress messages.
 // If stream is non-nil, progress messages are written as they occur.
-// Tag is passed to SSH as a -P argument for use with Match tagged in ssh_config.
 // force controls how a conflicting foreign mux master (left behind by a
 // non-overseer ssh/scp/rsync with ControlPersist) is handled: force=true
 // evicts it and proceeds; force=false reports it with a process tree and
