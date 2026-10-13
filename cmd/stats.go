@@ -9,9 +9,9 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"go.olrik.dev/overseer/internal/awareness"
 	"go.olrik.dev/overseer/internal/core"
 	"go.olrik.dev/overseer/internal/db"
-	"go.olrik.dev/overseer/internal/awareness"
 )
 
 // ANSI color codes
@@ -140,11 +140,12 @@ type OnlineSession struct {
 // IPStats holds statistics for a specific IP/network
 type IPStats struct {
 	IP            string
-	LocationName  string // Location name from config (if matched)
-	Sessions      []OnlineSession
+	LocationName  string          // Location name from config (if matched)
+	Sessions      []OnlineSession // IP segments, one per IP, used for online time
+	FullSessions  []OnlineSession // Unsplit sessions ending on this IP, used for brief-session analysis
 	TotalOnline   time.Duration
 	SessionCount  int
-	ShortSessions int // Sessions < 5 minutes
+	ShortSessions int // Full sessions < 5 minutes
 }
 
 // getLocationForIP finds the location name that matches a given IP address
@@ -330,8 +331,15 @@ func runStats(start, end time.Time, label string) {
 		return
 	}
 
-	// Parse into sessions with IP tracking
+	printStatsReport(onlineChanges, ipChanges, start, end, label, config)
+}
+
+// printStatsReport prints the full connectivity report for the given sensor changes
+func printStatsReport(onlineChanges, ipChanges []db.SensorChange, start, end time.Time, label string, config *core.Configuration) {
+	// Parse into sessions with IP tracking, then split them at IP change
+	// boundaries so each segment has one IP for per-IP accounting
 	sessions := parseOnlineSessions(onlineChanges, ipChanges, start, end)
+	segments := splitSessionsByIP(sessions, ipChanges)
 
 	// Print header
 	fmt.Printf("%s%sConnectivity Statistics%s (%s)\n\n", colorBold, colorCyan, colorReset, label)
@@ -340,7 +348,7 @@ func runStats(start, end time.Time, label string) {
 	printSummary(sessions, start, end)
 
 	// Group sessions by IP and print per-network stats
-	ipStats := groupSessionsByIP(sessions, start, end, config)
+	ipStats := groupSessionsByIP(segments, sessions, start, end, config)
 	if len(ipStats) > 0 {
 		fmt.Printf("\n%s%sNetwork Quality by IP:%s\n", colorBold, colorWhite, colorReset)
 		printIPStats(ipStats, start, end)
@@ -348,7 +356,7 @@ func runStats(start, end time.Time, label string) {
 
 	// Print sessions grouped by day
 	fmt.Printf("\n%s%sOnline Sessions:%s\n", colorBold, colorWhite, colorReset)
-	printSessions(sessions)
+	printSessions(segments)
 
 	// Print overall network quality assessment
 	fmt.Println()
@@ -408,21 +416,28 @@ func getSensorChanges(database *db.DB, start, end time.Time) (online, ip []db.Se
 }
 
 // getIPForSession finds the IP that was active during a session
-// It looks at all IP changes during the session and returns the most recent valid one
+// It looks at all IP changes during the session and returns the most recent valid one.
+// The result matches the IP of the last segment splitSessionsByIP would produce
+// for the same session, so whole sessions and their segments agree on the IP.
 func getIPForSession(ipChanges []db.SensorChange, sessionStart, sessionEnd time.Time) string {
 	var lastIP string
 
 	for _, c := range ipChanges {
-		// Stop if we're past the session end
-		if c.Timestamp.After(sessionEnd) {
+		// Stop at the session end; a change at that exact moment belongs to what follows
+		if !c.Timestamp.Before(sessionEnd) {
 			break
 		}
 
 		// Track any valid IP that occurred before or during the session
 		// This includes IPs from before the session (as baseline) and during the session
 		if c.NewValue == "169.254.0.0" || c.NewValue == "0.0.0.0" || c.NewValue == "" {
-			// IP was cleared (e.g. at sleep) or is link-local — reset to unknown
-			lastIP = ""
+			// IP was cleared (e.g. at sleep) or is link-local. Before the session
+			// this resets the baseline to unknown. During the session it is ignored:
+			// the IP is cleared a moment before the online sensor goes false at
+			// sleep, and that clear must not relabel the whole session as unknown.
+			if !c.Timestamp.After(sessionStart) {
+				lastIP = ""
+			}
 		} else {
 			lastIP = c.NewValue
 		}
@@ -435,7 +450,10 @@ func getIPForSession(ipChanges []db.SensorChange, sessionStart, sessionEnd time.
 }
 
 // splitSessionsByIP takes sessions and splits any session where the public IP
-// changed mid-session into multiple sub-sessions, one per IP.
+// changed mid-session into multiple segments, one per IP. The segments are
+// only for per-IP accounting and display; session-level analysis such as
+// brief-session detection must use the unsplit sessions, otherwise a
+// transient IP flip inside a long session looks like several reconnects.
 func splitSessionsByIP(sessions []OnlineSession, ipChanges []db.SensorChange) []OnlineSession {
 	var result []OnlineSession
 
@@ -490,7 +508,25 @@ func splitSessionsByIP(sessions []OnlineSession, ipChanges []db.SensorChange) []
 		}
 	}
 
-	return result
+	// Drop brief unknown-IP segments (wake-up artifacts before IP probe runs)
+	filtered := dropBriefUnknownIP(result)
+
+	if len(filtered) == 0 {
+		return filtered
+	}
+
+	// Merge adjacent segments with the same IP and touching timestamps
+	merged := []OnlineSession{filtered[0]}
+	for _, s := range filtered[1:] {
+		last := &merged[len(merged)-1]
+		if last.End.Equal(s.Start) && last.IP == s.IP {
+			last.End = s.End
+			last.Duration = last.End.Sub(last.Start)
+		} else {
+			merged = append(merged, s)
+		}
+	}
+	return merged
 }
 
 // parseOnlineSessions converts online/offline events into sessions with IP tracking
@@ -546,10 +582,14 @@ func parseOnlineSessions(onlineChanges, ipChanges []db.SensorChange, start, end 
 		})
 	}
 
-	// Split sessions at IP change boundaries so each sub-session has one IP
-	sessions = splitSessionsByIP(sessions, ipChanges)
+	// Drop brief unknown-IP sessions (wake-up artifacts before IP probe runs)
+	return dropBriefUnknownIP(sessions)
+}
 
-	// Drop brief unknown-IP segments (wake-up artifacts before IP probe runs)
+// dropBriefUnknownIP removes sessions shorter than a minute whose IP never
+// became known. These are wake-up artifacts from before the IP probe runs,
+// not real connectivity events.
+func dropBriefUnknownIP(sessions []OnlineSession) []OnlineSession {
 	filtered := sessions[:0]
 	for _, s := range sessions {
 		if s.IP == "unknown" && s.Duration < time.Minute {
@@ -557,35 +597,20 @@ func parseOnlineSessions(onlineChanges, ipChanges []db.SensorChange, start, end 
 		}
 		filtered = append(filtered, s)
 	}
-
-	if len(filtered) == 0 {
-		return filtered
-	}
-
-	// Merge adjacent sessions with the same IP and touching timestamps
-	merged := []OnlineSession{filtered[0]}
-	for _, s := range filtered[1:] {
-		last := &merged[len(merged)-1]
-		if last.End.Equal(s.Start) && last.IP == s.IP {
-			last.End = s.End
-			last.Duration = last.End.Sub(last.Start)
-		} else {
-			merged = append(merged, s)
-		}
-	}
-	return merged
+	return filtered
 }
 
-// groupSessionsByIP groups sessions by their IP address
-func groupSessionsByIP(sessions []OnlineSession, start, end time.Time, config *core.Configuration) []IPStats {
+// groupSessionsByIP groups IP segments by their IP address. Online time and
+// segment counts come from the segments, while brief-session counts come
+// from the unsplit sessions so an IP flip inside a long session is not
+// mistaken for a reconnect.
+func groupSessionsByIP(segments, sessions []OnlineSession, start, end time.Time, config *core.Configuration) []IPStats {
 	ipMap := make(map[string]*IPStats)
 
-	for _, s := range sessions {
-		ip := s.IP
+	statsFor := func(ip string) *IPStats {
 		if ip == "" {
 			ip = "unknown"
 		}
-
 		stats, exists := ipMap[ip]
 		if !exists {
 			stats = &IPStats{
@@ -594,25 +619,20 @@ func groupSessionsByIP(sessions []OnlineSession, start, end time.Time, config *c
 			}
 			ipMap[ip] = stats
 		}
+		return stats
+	}
 
-		// Clip session to query period for duration calculation
-		sessionStart := s.Start
-		sessionEnd := s.End
-		if sessionStart.Before(start) {
-			sessionStart = start
-		}
-		if sessionEnd.After(end) {
-			sessionEnd = end
-		}
-		clippedDuration := time.Duration(0)
-		if sessionEnd.After(sessionStart) {
-			clippedDuration = sessionEnd.Sub(sessionStart)
-		}
-
+	for _, s := range segments {
+		stats := statsFor(s.IP)
 		stats.Sessions = append(stats.Sessions, s)
-		stats.TotalOnline += clippedDuration
+		stats.TotalOnline += clipToPeriod(s, start, end)
 		stats.SessionCount++
-		if clippedDuration < 5*time.Minute {
+	}
+
+	for _, s := range sessions {
+		stats := statsFor(s.IP)
+		stats.FullSessions = append(stats.FullSessions, s)
+		if clipToPeriod(s, start, end) < 5*time.Minute {
 			stats.ShortSessions++
 		}
 	}
@@ -633,6 +653,22 @@ func groupSessionsByIP(sessions []OnlineSession, start, end time.Time, config *c
 	}
 
 	return result
+}
+
+// clipToPeriod returns how much of a session falls within the query period
+func clipToPeriod(s OnlineSession, start, end time.Time) time.Duration {
+	sessionStart := s.Start
+	sessionEnd := s.End
+	if sessionStart.Before(start) {
+		sessionStart = start
+	}
+	if sessionEnd.After(end) {
+		sessionEnd = end
+	}
+	if !sessionEnd.After(sessionStart) {
+		return 0
+	}
+	return sessionEnd.Sub(sessionStart)
 }
 
 // countMaxConsecutiveShort returns the maximum streak of consecutive short sessions
@@ -667,8 +703,9 @@ func assessIPQuality(stats IPStats) (quality, qualityColor string, issues []stri
 		avgDuration = stats.TotalOnline / time.Duration(stats.SessionCount)
 	}
 
-	// Count consecutive short sessions - the clearest instability indicator
-	maxConsecutiveShort := countMaxConsecutiveShort(stats.Sessions)
+	// Count consecutive short sessions - the clearest instability indicator.
+	// Uses the unsplit sessions so IP flips inside a session don't count.
+	maxConsecutiveShort := countMaxConsecutiveShort(stats.FullSessions)
 
 	// Calculate reconnect rate per hour of online time
 	// (more meaningful than per calendar day)
